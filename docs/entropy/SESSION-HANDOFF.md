@@ -34,37 +34,24 @@
 ## 交接报告（2026-04-07）
 
 ### 本次会话完成
-- completedNodes: [NODE-A01]
+- completedNodes: []
 - changedFiles:
-  - build.gradle（根工程改为聚合构建）
-  - settings.gradle（注册 9 个子模块）
-  - stratum-common/build.gradle（模块骨架）
-  - stratum-domain/build.gradle（模块骨架与依赖方向）
-  - stratum-application/build.gradle（模块骨架与依赖方向）
-  - stratum-query/build.gradle（模块骨架与依赖方向）
-  - stratum-interface/build.gradle（模块骨架与依赖方向）
-  - stratum-infrastructure/build.gradle（模块骨架与依赖方向）
-  - stratum-job/build.gradle（模块骨架与依赖方向）
-  - stratum-gateway/build.gradle（模块骨架与依赖方向）
-  - stratum-starter/build.gradle（模块聚合依赖）
-  - docs/CONTEXT.md（节点状态与决策更新）
-  - .github/copilot-instructions.md（固化会话收尾强制规则）
-  - .github/prompts/stratum-node.prompt.md（节点执行时强制双文档更新）
+  - build.gradle（新增 Spring Boot 与 dependency-management 插件版本统一声明，供子模块复用）
+  - stratum-starter/build.gradle（移除模块内插件版本号，仅保留插件 ID）
+  - docs/CONTEXT.md（新增“版本外部统一约定”决策并同步更新记录）
   - docs/entropy/SESSION-HANDOFF.md（当前交接报告覆盖写入）
 
 ### 验收结果
-- ✅ `gradlew projects` 可识别全部 9 个模块
-- ✅ 关键模块 compileClasspath 依赖方向符合项目结构规范
-- ✅ 根工程不再承载应用启动职责与业务依赖
-- ✅ 会话收尾规则已固化到工作区级与节点级提示文件
+- ✅ `gradlew :stratum-starter:help` 构建配置解析通过
+- ✅ starter 模块插件版本已从子模块移除并由根工程统一管理
 
 ### 未解决项（Unresolved）
 - 无
 
 ### 下一节点
-- nextNode: NODE-A02
-- 前置条件: 已满足（NODE-A01 已完成）
-- 建议优先读取: CONTEXT.md, AI可执行开发计划.md 的 NODE-A02 小节
+- nextNode: NODE-A03
+- 前置条件: 已满足（NODE-A02 已完成）
+- 建议优先读取: CONTEXT.md, AI可执行开发计划.md 的 NODE-A03 小节
 
 ### 发现的规范问题
 - 无
