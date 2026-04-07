@@ -1,0 +1,11 @@
+description = 'Stratum Starter'
+
+dependencies {
+    implementation project(':stratum-gateway')
+    implementation project(':stratum-interface')
+    implementation project(':stratum-query')
+    implementation project(':stratum-application')
+    implementation project(':stratum-infrastructure')
+    implementation project(':stratum-job')
+    implementation project(':stratum-common')
+}

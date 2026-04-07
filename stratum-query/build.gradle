@@ -1,0 +1,6 @@
+description = 'Stratum Query'
+
+dependencies {
+    api project(':stratum-application')
+    api project(':stratum-common')
+}

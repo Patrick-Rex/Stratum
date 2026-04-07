@@ -1,0 +1,6 @@
+description = 'Stratum Interface'
+
+dependencies {
+    api project(':stratum-application')
+    api project(':stratum-common')
+}

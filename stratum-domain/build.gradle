@@ -1,0 +1,5 @@
+description = 'Stratum Domain'
+
+dependencies {
+    api project(':stratum-common')
+}

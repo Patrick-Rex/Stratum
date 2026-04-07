@@ -1,0 +1,13 @@
+rootProject.name = 'Stratum'
+
+include(
+	'stratum-gateway',
+	'stratum-interface',
+	'stratum-query',
+	'stratum-application',
+	'stratum-domain',
+	'stratum-infrastructure',
+	'stratum-job',
+	'stratum-common',
+	'stratum-starter'
+)
