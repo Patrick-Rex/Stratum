@@ -8,37 +8,26 @@
 
 ## 交接报告格式
 
-```markdown
+- completedNodes: [NODE-A02]
 ## 交接报告（DATE）
-
-### 本次会话完成
-- completedNodes: [NODE-XXX, ...]
-- changedFiles:
-  - path/to/file1.java（描述）
-  - path/to/file2.java（描述）
-
-### 验收结果
-- ✅ 模块依赖方向正确
-- ✅ Domain 无框架依赖
-- ❌ <未通过项描述>
-
-### 未解决项（Unresolved）
-- [UNRESOLVED-001] <描述，原因，阻塞情况>
-
+  - stratum-starter/build.gradle（接入 Spring Boot 启动插件与 actuator/web 依赖）
+  - stratum-starter/src/main/java/com/patrick/stratum/starter/StratumStarterApplication.java（新增启动入口）
+  - stratum-starter/src/main/resources/application.yml（新增 profiles 与 Nacos 配置占位，开放 actuator 基础端点）
+  - docs/CONTEXT.md（节点状态、决策与更新记录同步）
+  - docs/entropy/SESSION-HANDOFF.md（当前交接报告覆盖写入）
 ### 下一节点
 - nextNode: NODE-XXX
-- 前置条件: <是否满足>
-- 建议优先读取: CONTEXT.md, NODE-XXX 节
-
-### 发现的规范问题
+- ✅ `gradlew build` 构建通过
+- ✅ `:stratum-starter:bootRun` 可本地启动（激活 `local` profile）
+- ✅ `http://localhost:8080/actuator/health` 可访问并返回 `"status":"UP"`
 - [DRIFT-XXX] <描述>（已记录至 entropy/DRIFT-LOG.md）
 
 ### 上下文状态
 - 当前技术栈状态：无变化 / <有变化时描述>
 - CONTEXT.md 已更新：是 / 否（原因）
-```
-
----
+- nextNode: NODE-A03
+- 前置条件: 已满足（NODE-A02 已完成）
+- 建议优先读取: CONTEXT.md, AI可执行开发计划.md 的 NODE-A03 小节
 
 ## 当前交接报告
 
@@ -81,7 +70,7 @@
 - 无
 
 ### 上下文状态
-- 当前技术栈状态：无变化（仅完成构建骨架与流程规则固化）
+- 当前技术栈状态：无变化（沿用 Spring Boot 4.x、Gradle 9.x，仅完成 starter 启动与配置骨架）
 - CONTEXT.md 已更新：是
 
 ---
