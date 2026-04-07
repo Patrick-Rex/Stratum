@@ -55,7 +55,8 @@
 |------|------|----------|
 | DECISION-A01 | 根工程收敛为 Gradle 聚合根，并按 `stratum-*` 统一模块命名与注册 | `build.gradle`、`settings.gradle` |
 | DECISION-A02 | 将“变更后必须同步更新 CONTEXT 与 SESSION-HANDOFF”固化为工作区级强制规则 | `.github/copilot-instructions.md`、`.github/prompts/stratum-node.prompt.md` |
-| DECISION-A03 | starter 模块采用 Spring Boot 4.0.5 启动，默认启用 local profile，并预留 Nacos 配置导入占位 | `stratum-starter/build.gradle`、`stratum-starter/src/main/resources/application.yml` |
+| DECISION-A03 | starter 模块采用 Spring Boot 4.0.5 启动，默认启用 local profile，并预留 Nacos 配置导入占位 | `build.gradle`、`stratum-starter/build.gradle`、`stratum-starter/src/main/resources/application.yml` |
+| DECISION-A04 | 版本由外部统一约定；子模块构建脚本禁止声明版本号（包括插件版本） | `build.gradle`、`stratum-starter/build.gradle` |
 
 ---
 
@@ -101,6 +102,7 @@ Stratum/
 | 2026-04-07 | 完成 NODE-A01：初始化 Gradle 多模块骨架并通过基础验证 | AI执行后人工确认 |
 | 2026-04-07 | 固化会话收尾规则：每次变更后必须同步更新 CONTEXT 与 SESSION-HANDOFF | AI执行后人工确认 |
 | 2026-04-07 | 完成 NODE-A02：建立 starter 启动骨架、profiles 与 Nacos 配置占位，并开放 actuator health 端点 | AI执行后人工确认 |
+| 2026-04-07 | 调整构建版本策略：Spring Boot 插件版本上提到根工程统一管理，starter 子模块移除插件版本号 | AI执行后人工确认 |
 
 ---
 
