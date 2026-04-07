@@ -1,0 +1,5 @@
+description = 'Stratum Gateway'
+
+dependencies {
+    api project(':stratum-common')
+}
