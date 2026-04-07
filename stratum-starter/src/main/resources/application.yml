@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: stratum-starter
+  profiles:
+    active: local
+
+  # Nacos 配置中心占位：后续接入 spring-cloud-alibaba 时启用。
+  config:
+    import: optional:nacos:${spring.application.name}.yaml
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
