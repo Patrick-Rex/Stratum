@@ -10,9 +10,9 @@
 
 ```
 阶段：Phase A（基础骨架）
-当前节点：NODE-A01（尚未开始）
-上次会话日期：2026-03-31
-项目状态：规范文档建立完成，代码尚未初始化
+当前节点：NODE-A02（待开始）
+上次会话日期：2026-04-07
+项目状态：NODE-A01 已完成，Gradle 多模块骨架已初始化
 ```
 
 ---
@@ -21,7 +21,7 @@
 
 | 节点 | 描述 | 完成日期 | 验收状态 |
 |------|------|----------|----------|
-| —    | 无   | —        | —        |
+| NODE-A01 | 初始化 Gradle 多模块骨架 | 2026-04-07 | 通过（`gradlew projects`、依赖方向检查） |
 
 ---
 
@@ -29,7 +29,6 @@
 
 | 节点 | 描述 | 依赖 |
 |------|------|------|
-| NODE-A01 | 初始化 Gradle 多模块骨架 | 无 |
 | NODE-A02 | 建立 starter 启动骨架与基础配置加载 | NODE-A01 |
 | NODE-A03 | 建立公共基础模块 | NODE-A01 |
 | NODE-B01 | 安全认证基础设施（Security + JWT） | NODE-A02, NODE-A03 |
@@ -54,7 +53,8 @@
 
 | 决策 | 内容 | 记录位置 |
 |------|------|----------|
-| —    | 无   | —        |
+| DECISION-A01 | 根工程收敛为 Gradle 聚合根，并按 `stratum-*` 统一模块命名与注册 | `build.gradle`、`settings.gradle` |
+| DECISION-A02 | 将“变更后必须同步更新 CONTEXT 与 SESSION-HANDOFF”固化为工作区级强制规则 | `.github/copilot-instructions.md`、`.github/prompts/stratum-node.prompt.md` |
 
 ---
 
@@ -62,6 +62,8 @@
 
 ```
 Stratum/
+├── build.gradle         ✅ 已更新为聚合根构建
+├── settings.gradle      ✅ 已注册 9 个子模块
 ├── CONSTITUTION.md       ✅ 已建立（架构宪法）
 ├── CONTEXT.md            ✅ 本文件（上下文快照）
 ├── FORBIDDEN.md          ✅ 已建立（禁止项清单）
@@ -72,6 +74,15 @@ Stratum/
 ├── 技术架构.md            ✅ 已建立
 ├── 项目结构.md            ✅ 已建立
 ├── 各专题设计文档         ✅ 已建立（SPEC-001 ~ SPEC-013）
+├── stratum-gateway/      ✅ 已建立（模块骨架）
+├── stratum-interface/    ✅ 已建立（模块骨架）
+├── stratum-query/        ✅ 已建立（模块骨架）
+├── stratum-application/  ✅ 已建立（模块骨架）
+├── stratum-domain/       ✅ 已建立（模块骨架）
+├── stratum-infrastructure/ ✅ 已建立（模块骨架）
+├── stratum-job/          ✅ 已建立（模块骨架）
+├── stratum-common/       ✅ 已建立（模块骨架）
+├── stratum-starter/      ✅ 已建立（模块骨架）
 ├── adr/
 │   └── （待添加）
 └── entropy/
@@ -86,7 +97,9 @@ Stratum/
 | 日期 | 更新内容 | 来源 |
 |------|----------|------|
 | 2026-03-31 | 初始化本文件，规范文档建立完成 | 人工 |
+| 2026-04-07 | 完成 NODE-A01：初始化 Gradle 多模块骨架并通过基础验证 | AI执行后人工确认 |
+| 2026-04-07 | 固化会话收尾规则：每次变更后必须同步更新 CONTEXT 与 SESSION-HANDOFF | AI执行后人工确认 |
 
 ---
 
-_当前版本：v1.0 | 最后更新：2026-03-31_
+_当前版本：v1.1 | 最后更新：2026-04-07_

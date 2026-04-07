@@ -38,4 +38,6 @@ agent: "agent"
 - 执行时必须遵守 [CONSTITUTION.md](../../CONSTITUTION.md)、[CONTEXT.md](../../CONTEXT.md)、[FORBIDDEN.md](../../FORBIDDEN.md)、[Spec清单.md](../../Spec清单.md) 与节点专题规范的约束。
 - 若文档之间存在冲突，按以下优先级裁决：CONSTITUTION.md > CONTEXT.md > FORBIDDEN.md > Spec清单.md > 本节点专题规范 > 其他参考文档。
 - 不得在 readyToImplement = yes 之前直接开始节点实现。
+- 只要产生任何文件变更，完成节点前 MUST 同步更新 [CONTEXT.md](../../CONTEXT.md) 与 [entropy/SESSION-HANDOFF.md](../../entropy/SESSION-HANDOFF.md)。
+- 若未完成上述双文档更新，不得宣告节点完成。
 - 完成节点后，输出：completedNode、changedFiles、validations、unresolved、nextNode。
