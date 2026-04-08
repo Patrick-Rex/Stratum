@@ -73,6 +73,13 @@
 - 对任务执行记录 jobCode、attempt、durationMs、result、traceId
 - 重试事件必须输出结构化 warn 日志
 
+## 6.3 缓存与锁埋点
+
+- 缓存访问必须记录 cacheKey、hit/miss、loadDurationMs、traceId
+- single-flight 必须记录合并请求数 mergedCount
+- 分布式锁必须记录 lockKey、acquireResult、waitMs、holdMs、traceId
+- 锁竞争失败与等待超时必须输出结构化 warn 日志
+
 ## 7. 动态开关（Nacos）
 
 - observability.httpLog.enabled
@@ -81,6 +88,8 @@
 - observability.slowCall.thresholdMs
 - observability.query.slowThresholdMs
 - observability.job.slowThresholdMs
+- observability.cache.trace.enabled
+- observability.lock.trace.enabled
 - audit.operationLog.enabled
 - audit.dataChange.enabled
 
@@ -91,3 +100,4 @@
 - 注解切面可正确记录成功/失败场景
 - 慢调用可触发 warn 日志
 - 查询与后台任务埋点可稳定输出
+- 缓存与分布式锁埋点可在日志与指标中按 traceId 关联

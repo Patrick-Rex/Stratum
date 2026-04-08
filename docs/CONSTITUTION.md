@@ -26,8 +26,8 @@ CONSTITUTION.md
 | 项目 | 冻结值 |
 |------|--------|
 | JDK | 25 |
-| Spring Boot | 4.x |
-| 构建工具 | Gradle 8.x |
+| Spring Boot | 4.0.5+ |
+| 构建工具 | Gradle 9.4.1 |
 | ORM | Easy-Query |
 | 鉴权签名 | RS256（JWT） |
 | 消息总线 | RabbitMQ Topic + Outbox |
