@@ -25,9 +25,9 @@
 
 | 决策项 | 结论 |
 |--------|------|
-| 构建工具 | Gradle 8.x |
+| 构建工具 | Gradle 9.4.1 |
 | JDK | 25 |
-| Spring Boot | 4.x |
+| Spring Boot | 4.0.5+ |
 | 结构策略 | 多模块 DDD |
 | Redis 开发拓扑 | 单节点 |
 | Redis 生产拓扑 | Sentinel |
@@ -52,7 +52,7 @@
 | 网关与负载均衡 | 网关与负载均衡设计.md | 网关路由与故障切换演练 |
 | 审计与链路追踪 | 可观测性设计.md + 横切关注点与AOP设计.md | 日志/追踪联调 |
 | 中间件与配置 | 基础设施配置.md | 集成测试 |
-| 本地与部署流程 | 容器化与部署(Docker Compose).md | compose 演练 |
+| 本地与部署流程 | 容器化与部署.md | compose 演练 |
 
 ## 5. Definition of Done（统一完成标准）
 

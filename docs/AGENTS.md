@@ -15,7 +15,7 @@ Stratum 是一个单体可扩展的 Java Web 方案，核心目标是：
 |------|------|-----------|
 | JDK | OpenJDK | 25 |
 | 核心框架 | Spring Boot | 4.0.5+ |
-| 构建工具 | Gradle | 9.4.1+ |
+| 构建工具 | Gradle | 9.4.1 |
 | 架构 | DDD | Interface -> Application -> Domain -> Infrastructure |
 | 结构策略 | 多模块 | interface/application/domain/infrastructure/common/starter |
 | 数据库 | MariaDB | 10.11+ |
@@ -52,7 +52,7 @@ Stratum 是一个单体可扩展的 Java Web 方案，核心目标是：
 
 - Docker Desktop（含 compose）
 - JDK 25
-- Gradle 9.4.1+
+- Gradle 9.4.1
 
 ### 4.2 启动依赖
 

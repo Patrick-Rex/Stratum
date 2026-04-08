@@ -157,6 +157,7 @@
 - prerequisites: NODE-A02, NODE-B01
 - actions:
   - 接入 MariaDB、Flyway、Easy-Query
+  - 接入 Redis、Caffeine 基础客户端与配置装配
   - 定义 UoW 实现与事务适配
   - 定义基础仓储实现模板
 - outputs:
@@ -181,6 +182,28 @@
   - 事务内事件落盘逻辑
 - validation:
   - 事务失败时业务数据与 outbox 一起回滚
+- handoff: 交给 NODE-B05
+
+#### NODE-B05
+
+- objective: 建立缓存治理与分布式并发控制基建
+- inputSpecs: SPEC-003, SPEC-011
+- prerequisites: NODE-B03, NODE-A05
+- actions:
+  - 在 infrastructure/common 建立缓存访问门面与 single-flight 本地合并机制
+  - 建立 Redis 分布式锁组件（lockTTL=30 秒，acquireWaitTimeout=5 秒）
+  - 落地缓存防护策略：空值缓存（TTL=60 秒）、热点 key 互斥重建、TTL 抖动
+  - 固化旁路更新缓存与补偿任务约定（更新失败降级删缓存并记录补偿事件）
+  - 输出缓存与锁的埋点指标约定，供 query/application/job 复用
+- outputs:
+  - 缓存治理组件
+  - 分布式锁组件
+  - 缓存键与锁键规范
+  - 埋点与补偿约定
+- validation:
+  - 热点 key 并发重建时仅单请求回源
+  - 锁竞争等待超时行为可复现且输出 traceId
+  - 下游模块可复用统一缓存与锁组件，无重复实现
 - handoff: 交给 Phase C
 
 ### Phase C: 读模型与 API
@@ -189,7 +212,7 @@
 
 - objective: 建立 Query 基架
 - inputSpecs: SPEC-006, SPEC-005
-- prerequisites: NODE-A03, NODE-B02
+- prerequisites: NODE-A03, NODE-B02, NODE-B05
 - actions:
   - 定义 QueryGateway、QueryHandler、QuerySpec、QueryResult
   - 定义分页排序白名单机制
@@ -223,7 +246,7 @@
 
 - objective: 建立一个端到端示例能力
 - inputSpecs: SPEC-002, SPEC-005, SPEC-006, SPEC-007
-- prerequisites: NODE-A02, NODE-B04, NODE-C02
+- prerequisites: NODE-A02, NODE-B05, NODE-C02
 - actions:
   - 选择一个简单领域对象
   - 打通创建、查询、详情接口
