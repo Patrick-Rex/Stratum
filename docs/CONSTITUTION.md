@@ -59,7 +59,7 @@ STEP 1: 读取 CONSTITUTION.md（本文件）
 STEP 2: 读取 CONTEXT.md，获取当前阶段、已完成节点、活跃阻塞项
 STEP 3: 读取 FORBIDDEN.md，确认本次任务不触犯任何禁止项
 STEP 4: 读取 Spec清单.md，确认当前节点绑定的 specId
-STEP 5: 读取对应节点提示词（节点提示词清单.md）
+STEP 5: 读取对应节点提示词（AI可执行开发计划.md）
 ```
 
 **违反入口协议 = 会话无效，必须重新从 STEP 1 开始。**

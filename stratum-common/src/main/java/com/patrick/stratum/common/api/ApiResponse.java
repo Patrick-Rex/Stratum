@@ -63,6 +63,30 @@ public final class ApiResponse<T> {
     }
 
     /**
+     * 按错误码与指定文案构建失败响应，message 可由 i18n 解析后的本地化文本覆盖。
+     *
+     * @param errorCode 统一错误码对象，不能为空。
+     * @param message 本地化错误文案，允许为空；为空时回退到错误码默认文案。
+     * @param details 错误明细列表；无明细时请传空列表。
+     * @return 失败响应对象，code 为非 0。
+     * @throws IllegalArgumentException 当 errorCode 为空时抛出异常。
+     * @apiNote 使用示例：ApiResponse.failure(CommonErrorCode.BAD_REQUEST, "Bad request", List.of())
+     */
+    public static <T> ApiResponse<T> failure(ErrorCode errorCode, String message, List<String> details) {
+        if (errorCode == null) {
+            throw new IllegalArgumentException("errorCode cannot be null");
+        }
+        String resolvedMessage = (message == null || message.isBlank()) ? errorCode.getDefaultMessage() : message;
+        return new ApiResponse<>(
+                errorCode.getCode(),
+                resolvedMessage,
+                null,
+                details == null ? List.of() : details,
+                TraceIdContext.getRequiredTraceId()
+        );
+    }
+
+    /**
      * 获取业务状态码。
      *
      * @param 无。
