@@ -14,7 +14,7 @@ agent: "agent"
 	- [FORBIDDEN.md](../../FORBIDDEN.md)
 	- [GLOSSARY.md](../../GLOSSARY.md)
 	- [Spec清单.md](../../Spec清单.md)
-3. 读取 [节点提示词清单.md](../../节点提示词清单.md)，定位对应 nodeId 的节点定义。
+3. 读取 [AI可执行开发计划.md](../../AI可执行开发计划.md)，定位对应 nodeId 的节点定义。
 4. 根据该节点中的“参考文档”执行节点级二次加载，至少覆盖：
 	- AI可执行开发计划.md
 	- Spec清单.md

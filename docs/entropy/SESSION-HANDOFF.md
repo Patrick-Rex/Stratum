@@ -31,36 +31,34 @@
 
 ## 当前交接报告
 
-## 交接报告（2026-04-08）
+## 交接报告（2026-04-09）
 
 ### 本次会话完成
-- completedNodes: [NODE-A03]
+- completedNodes: [NODE-A04]
 - changedFiles:
-  - stratum-common/src/main/java/com/patrick/stratum/common/api/ApiResponse.java（新增统一响应模型）
-  - stratum-common/src/main/java/com/patrick/stratum/common/error/ErrorCode.java（新增统一错误码契约）
-  - stratum-common/src/main/java/com/patrick/stratum/common/error/CommonErrorCode.java（新增基础错误码枚举实现）
-  - stratum-common/src/main/java/com/patrick/stratum/common/trace/TraceIdContext.java（新增 traceId 线程上下文工具）
-  - stratum-interface/src/main/java/com/patrick/stratum/interfaceadapter/response/ApiResponseFactory.java（新增 interface 对 common 响应对象复用入口）
-  - docs/CONTEXT.md（同步 NODE-A03 完成状态、待执行节点与新增决策）
+  - stratum-common/src/main/java/com/patrick/stratum/common/api/ApiResponse.java（新增支持本地化文案注入的失败响应重载）
+  - stratum-common/src/main/java/com/patrick/stratum/common/error/StratumException.java（新增全局异常基类）
+  - stratum-starter/src/main/java/com/patrick/stratum/starter/web/GlobalExceptionHandler.java（新增全局异常映射策略、MessageSource 接入、locale 解析与统一兜底）
+  - stratum-starter/src/main/resources/messages.properties（新增中文错误消息资源）
+  - stratum-starter/src/main/resources/messages_en_US.properties（新增英文错误消息资源）
+  - docs/CONTEXT.md（同步 NODE-A04 完成状态、待执行节点与新增决策）
   - docs/entropy/SESSION-HANDOFF.md（当前交接报告覆盖写入）
 
 ### 验收结果
-- ✅ `gradlew :stratum-common:build :stratum-interface:build` 构建通过
-- ✅ `stratum-interface` 模块已可直接复用 `stratum-common` 中的 `ApiResponse`
+- ✅ `gradlew :stratum-common:build :stratum-starter:build` 构建通过
+- ✅ 同一错误码可按 `Accept-Language` 返回不同文案（`messages.properties` 与 `messages_en_US.properties`）
+- ✅ 未知异常统一映射为 `50000`，并通过统一响应模型输出 `traceId`
 
 ### 未解决项（Unresolved）
 - 无
 
 ### 下一节点
-- nextNode: NODE-A04
-- 前置条件: 已满足（NODE-A03 已完成）
-- 建议优先读取: CONTEXT.md, AI可执行开发计划.md 的 NODE-A04 小节
-
-### 发现的规范问题
-- 无
+- nextNode: NODE-A05
+- 前置条件: 已满足（NODE-A03 已完成，NODE-A04 已完成）
+- 建议优先读取: CONTEXT.md, AI可执行开发计划.md 的 NODE-A05 小节
 
 ### 上下文状态
-- 当前技术栈状态：无变化（沿用 Spring Boot 4.x、Gradle 9.x，新增公共响应/错误码/traceId 基础能力）
+- 当前技术栈状态：无变化（沿用 Spring Boot 4.x、Gradle 9.x）
 - CONTEXT.md 已更新：是
 
 ---
