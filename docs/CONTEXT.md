@@ -10,9 +10,9 @@
 
 ```
 阶段：Phase A（基础骨架）
-当前节点：NODE-A05（待开始）
+当前节点：NODE-B01（待开始）
 上次会话日期：2026-04-09
-项目状态：NODE-A04 已完成，统一异常处理与多语言消息基础设施已建立
+项目状态：NODE-A05 已完成，common 扩展与帮助类复用基线已建立
 ```
 
 ---
@@ -25,6 +25,7 @@
 | NODE-A02 | 建立 starter 启动骨架与基础配置加载 | 2026-04-07 | 通过（`gradlew build`、`bootRun`、`/actuator/health`） |
 | NODE-A03 | 建立公共基础模块（ApiResponse、错误码、traceId 工具） | 2026-04-08 | 通过（`:stratum-common:build`、`:stratum-interface:build`） |
 | NODE-A04 | 建立统一异常处理与多语言消息基础设施 | 2026-04-09 | 通过（`:stratum-common:build`、`:stratum-starter:build`） |
+| NODE-A05 | 建立基础扩展类与帮助类复用基线 | 2026-04-09 | 通过（`:stratum-common:build`、`:stratum-application:build`、`:stratum-query:build`、`:stratum-interface:build`） |
 
 ---
 
@@ -32,8 +33,8 @@
 
 | 节点 | 描述 | 依赖 |
 |------|------|------|
-| NODE-A05 | 建立基础扩展类与帮助类复用基线 | NODE-A03 |
-| NODE-B01 | 安全认证基础设施（Security + JWT） | NODE-A02, NODE-A03 |
+| NODE-B01 | 建立 Domain 核心抽象 | NODE-A01 |
+| NODE-B02 | 建立 Application 写用例基架 | NODE-B01, NODE-A03, NODE-A05 |
 | … | 见 AI可执行开发计划.md | … |
 
 ---
@@ -61,6 +62,7 @@
 | DECISION-A04 | 版本由外部统一约定；子模块构建脚本禁止声明版本号（包括插件版本） | `build.gradle`、`stratum-starter/build.gradle` |
 | DECISION-A05 | 统一响应模型、错误码结构与 traceId 线程上下文下沉到 common；interface 通过工厂类复用 | `stratum-common/src/main/java/com/patrick/stratum/common/**`、`stratum-interface/src/main/java/com/patrick/stratum/interfaceadapter/response/ApiResponseFactory.java` |
 | DECISION-A06 | 全局异常处理放置于 starter，异常映射优先识别 StratumException，统一通过 ErrorCode.messageKey + MessageSource 输出本地化 message，Accept-Language 缺失时默认 zh-CN | `stratum-common/src/main/java/com/patrick/stratum/common/error/StratumException.java`、`stratum-starter/src/main/java/com/patrick/stratum/starter/web/GlobalExceptionHandler.java`、`stratum-starter/src/main/resources/messages*.properties` |
+| DECISION-A07 | common 模块冻结 extension/helper/base/enums 四类基础目录与命名约定；字符串、集合、时间、分页、校验能力统一下沉 common，application/interface/query 禁止重复实现同类逻辑 | `stratum-common/src/main/java/com/patrick/stratum/common/**`、`docs/项目结构.md` |
 
 ---
 
@@ -109,7 +111,8 @@ Stratum/
 | 2026-04-07 | 调整构建版本策略：Spring Boot 插件版本上提到根工程统一管理，starter 子模块移除插件版本号 | AI执行后人工确认 |
 | 2026-04-08 | 完成 NODE-A03：新增 ApiResponse、统一错误码结构与 TraceIdContext，并在 interface 模块建立复用入口 | AI执行后人工确认 |
 | 2026-04-09 | 完成 NODE-A04：新增 StratumException 全局异常基类、全局异常映射与 i18n 消息解析，并在统一响应模型中输出本地化错误消息与 traceId | AI执行后人工确认 |
+| 2026-04-09 | 完成 NODE-A05：建立 extension/helper/base/enums 复用基线，下沉字符串、集合、时间、分页、校验最小能力，并补充 application/interface/query 复用示例与复用约束 | AI执行后人工确认 |
 
 ---
 
-_当前版本：v1.4 | 最后更新：2026-04-09_
+_当前版本：v1.5 | 最后更新：2026-04-09_
