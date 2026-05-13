@@ -22,7 +22,7 @@ Stratum 是一个单体可扩展的 Java Web 方案，核心目标是：
 | 缓存 | Redis | 开发单节点，生产 Sentinel |
 | 消息队列 | RabbitMQ | 4.2.0+ |
 | 后台任务 | Spring Scheduler + Quartz + ShedLock | - |
-| 网关 | Nginx Gateway | 1.29+ |
+| 网关 | Spring Boot Gateway | 4.0.5+ |
 | 配置中心 | Nacos | 3.2.0+ |
 | 认证授权 | Spring Security + JWT + RBAC | 启用 token 撤销 |
 | 可观测性 | OpenTelemetry + Prometheus + Loki + Grafana + Jaeger | 全链路追踪 |

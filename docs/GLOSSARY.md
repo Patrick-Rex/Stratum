@@ -36,7 +36,7 @@
 | **Job 层** | `stratum-job` | 后台任务调度与执行 |
 | **Common 模块** | `stratum-common` | 共享工具、枚举、常量，不含业务 |
 | **Starter 模块** | `stratum-starter` | 装配启动，不含业务逻辑 |
-| **Gateway 层** | `stratum-gateway` | Nginx 统一入口、路由、限流 |
+| **Gateway 层** | `stratum-gateway` | Spring Boot Gateway 统一入口、路由、限流 |
 
 ---
 

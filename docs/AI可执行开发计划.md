@@ -307,19 +307,20 @@
 
 #### NODE-D04
 
-- objective: 建立网关与负载均衡配置
+- objective: 建立网关配置与项目外负载均衡对接约束
 - inputSpecs: SPEC-010, SPEC-013, SPEC-012
 - prerequisites: NODE-A02, NODE-C02
 - actions:
-  - 增加 Nginx 网关配置
-  - 配置 upstream、限流、Header 灰度与 trace 透传
-  - 输出网关日志与 exporter 指标
+  - 在 `stratum-gateway` 建立 Spring Boot Gateway 路由、限流、Header 灰度与 trace 透传配置
+  - 定义项目外负载均衡对接约定（裸金属 Nginx 或容器编排层 Ingress），不在项目内实现 upstream
+  - 输出网关访问日志与 `/actuator/prometheus` 指标
 - outputs:
   - gateway 配置文件
-  - compose 中的网关服务
+  - compose 中的 gateway 服务
+  - 项目外负载均衡对接说明
 - validation:
   - 经网关访问应用成功
-  - 关闭一个 app 副本后自动切换
+  - 关闭一个 app 副本后由项目外负载均衡自动切换
 - handoff: 交给 Phase E
 
 ### Phase E: 消息与任务

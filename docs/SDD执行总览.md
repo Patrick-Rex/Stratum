@@ -34,7 +34,7 @@
 | API 版本管理 | Header: X-API-Version |
 | JWT 签名算法 | RS256 |
 | 后台任务调度 | Quartz + ShedLock |
-| 网关策略 | Nginx 网关统一入口 |
+| 网关策略 | Spring Boot Gateway 统一入口，负载均衡由项目外组件提供 |
 | 消息总线模式 | RabbitMQ Topic + Outbox |
 | 工作单元 | Application 事务 + UoW + Outbox |
 
