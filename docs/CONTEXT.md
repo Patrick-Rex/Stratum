@@ -63,6 +63,8 @@
 | DECISION-A05 | 统一响应模型、错误码结构与 traceId 线程上下文下沉到 common；interface 通过工厂类复用 | `stratum-common/src/main/java/com/patrick/stratum/common/**`、`stratum-interface/src/main/java/com/patrick/stratum/interfaceadapter/response/ApiResponseFactory.java` |
 | DECISION-A06 | 全局异常处理放置于 starter，异常映射优先识别 StratumException，统一通过 ErrorCode.messageKey + MessageSource 输出本地化 message，Accept-Language 缺失时默认 zh-CN | `stratum-common/src/main/java/com/patrick/stratum/common/error/StratumException.java`、`stratum-starter/src/main/java/com/patrick/stratum/starter/web/GlobalExceptionHandler.java`、`stratum-starter/src/main/resources/messages*.properties` |
 | DECISION-A07 | common 模块冻结 extension/helper/base/enums 四类基础目录与命名约定；字符串、集合、时间、分页、校验能力统一下沉 common，application/interface/query 禁止重复实现同类逻辑 | `stratum-common/src/main/java/com/patrick/stratum/common/**`、`docs/项目结构.md` |
+| DECISION-A08 | 网关技术基线调整为 Spring Boot Gateway；负载均衡由项目外组件负责（裸金属 Nginx 或容器编排层） | `docs/网关与负载均衡设计.md`、`docs/技术架构.md`、`docs/容器化与部署.md`、`docs/SDD执行总览.md` |
+| DECISION-A09 | AI 执行节点口径同步：NODE-D04 改为 Spring Boot Gateway 配置 + 项目外负载均衡对接约束，移除项目内 upstream 实现要求 | `docs/AI可执行开发计划.md` |
 
 ---
 
@@ -112,7 +114,9 @@ Stratum/
 | 2026-04-08 | 完成 NODE-A03：新增 ApiResponse、统一错误码结构与 TraceIdContext，并在 interface 模块建立复用入口 | AI执行后人工确认 |
 | 2026-04-09 | 完成 NODE-A04：新增 StratumException 全局异常基类、全局异常映射与 i18n 消息解析，并在统一响应模型中输出本地化错误消息与 traceId | AI执行后人工确认 |
 | 2026-04-09 | 完成 NODE-A05：建立 extension/helper/base/enums 复用基线，下沉字符串、集合、时间、分页、校验最小能力，并补充 application/interface/query 复用示例与复用约束 | AI执行后人工确认 |
+| 2026-05-14 | 同步网关与负载均衡技术文档：网关改为 Spring Boot Gateway，负载均衡改为项目外处理（裸金属 Nginx/容器编排层） | AI执行后人工确认 |
+| 2026-05-14 | 同步 AI 可执行节点口径：NODE-D04 改为 Spring Boot Gateway + 项目外负载均衡，不再要求项目内 upstream 实现 | AI执行后人工确认 |
 
 ---
 
-_当前版本：v1.5 | 最后更新：2026-04-09_
+_当前版本：v1.6 | 最后更新：2026-05-14_
