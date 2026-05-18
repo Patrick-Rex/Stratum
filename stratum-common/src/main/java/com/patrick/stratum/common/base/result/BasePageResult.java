@@ -4,6 +4,8 @@ import java.util.List;
 
 import com.patrick.stratum.common.helper.PageHelper;
 
+import lombok.Builder;
+
 /**
  * 基础分页结果对象，负责沉淀跨模块统一的分页结果结构。
  * 适用场景：query/interface 返回分页数据体时的基础结果模型。
@@ -28,7 +30,9 @@ public class BasePageResult<T> {
      * @param items 当前页数据项集合，允许为 null；为 null 时回退为空列表。
      * @return 无返回值。
      * @throws 无。
+     * @apiNote 使用示例：BasePageResult.<String>builder().page(1).pageSize(20).total(100).items(List.of("A")).build()
      */
+    @Builder
     public BasePageResult(int page, int pageSize, long total, List<T> items) {
         this.page = PageHelper.normalizePage(page);
         this.pageSize = PageHelper.normalizePageSize(pageSize);

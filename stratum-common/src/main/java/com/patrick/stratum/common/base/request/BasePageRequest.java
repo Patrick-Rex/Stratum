@@ -3,6 +3,8 @@ package com.patrick.stratum.common.base.request;
 import com.patrick.stratum.common.enums.SortDirection;
 import com.patrick.stratum.common.helper.PageHelper;
 
+import lombok.Builder;
+
 /**
  * 基础分页请求对象，负责沉淀跨模块统一的分页参数规范化能力。
  * 适用场景：query/application 的分页查询入参基类。
@@ -21,7 +23,9 @@ public class BasePageRequest {
      * @param sortDirection 排序方向，允许为 null；为 null 时默认 ASC。
      * @return 无返回值。
      * @throws 无。
+     * @apiNote 使用示例：BasePageRequest.builder().page(1).pageSize(20).sortDirection(SortDirection.ASC).build()
      */
+    @Builder
     public BasePageRequest(int page, int pageSize, SortDirection sortDirection) {
         this.page = PageHelper.normalizePage(page);
         this.pageSize = PageHelper.normalizePageSize(pageSize);

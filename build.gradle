@@ -4,6 +4,10 @@ plugins {
     id 'io.spring.dependency-management' version '1.1.7' apply false
 }
 
+ext {
+    lombokVersion = '1.18.38'
+}
+
 allprojects {
     group = 'com.patrick.stratum'
     version = '0.0.1-SNAPSHOT'
@@ -23,6 +27,11 @@ subprojects {
     }
 
     dependencies {
+        compileOnly "org.projectlombok:lombok:${lombokVersion}"
+        annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+        testCompileOnly "org.projectlombok:lombok:${lombokVersion}"
+        testAnnotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+
         constraints {
             implementation 'org.slf4j:slf4j-api:2.0.17'
             implementation 'org.apache.commons:commons-lang3:3.18.0'

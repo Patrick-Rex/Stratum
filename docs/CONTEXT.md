@@ -12,7 +12,7 @@
 阶段：Phase A（基础骨架）
 当前节点：NODE-B01（待开始）
 上次会话日期：2026-05-18
-项目状态：NODE-A05 已完成，common 扩展与帮助类复用基线已建立，common.base 已细化为 request/result 子包并补齐统一分页结果基类 BasePageResult，repo-local Copilot skills 已扩展到查询、Outbox、网关实现面，提交信息生成规范已收敛为中文短标题 Conventional Commits 口径，SCM 提交信息生成入口已绑定工作区规则文件，tdd-workflow 技能已收窄为按需显式启用
+项目状态：NODE-A05 已完成，common 扩展与帮助类复用基线已建立，common.base 已细化为 request/result 子包并补齐统一分页结果基类 BasePageResult，repo-local Copilot skills 已扩展到查询、Outbox、网关实现面，提交信息生成规范已收敛为中文短标题 Conventional Commits 口径，SCM 提交信息生成入口已绑定工作区规则文件，tdd-workflow 技能已收窄为按需显式启用，AI Java 注解与 Lombok 使用口径已统一，根工程已接入 Lombok 并在 common/query 现有纯数据模型落地 @Builder，interface/query/application 分层白名单固定模板已补齐且确认当前无更多现有 DTO/Request/Result 迁移候选
 ```
 
 ---
@@ -30,6 +30,9 @@
 | TOOLING-SKILLS-003 | 收紧 Copilot 提交信息生成规范，统一中文、简短、GitHub 常见 Conventional Commits 风格 | 2026-05-18 | 通过（提交技能文档诊断检查） |
 | TOOLING-SKILLS-004 | 将 SCM 提交信息生成入口绑定到工作区 commitMessageGeneration 设置，确保源代码管理器按钮读取中文短标题规范 | 2026-05-18 | 通过（`.vscode/settings.json` 诊断检查） |
 | TOOLING-SKILLS-005 | 收窄 Copilot TDD 技能触发条件，避免普通开发默认走测试驱动模式 | 2026-05-18 | 通过（技能文档诊断检查） |
+| TOOLING-SKILLS-006 | 收敛 AI Java 注解与 Lombok 使用规范，明确 Builder、Data、校验、事务与配置绑定口径 | 2026-05-18 | 通过（指令/技能文档检查、诊断检查） |
+| TOOLING-BUILD-001 | 根工程统一接入 Lombok，并按规范将现有纯数据模型切换为 @Builder 用法 | 2026-05-18 | 通过（`:stratum-common:build`、`:stratum-query:build`） |
+| TOOLING-SKILLS-007 | 补齐分层 Lombok 注解白名单固定模板，并确认 application/query/interface 当前无额外 DTO/Request/Result 迁移候选 | 2026-05-18 | 通过（文件搜索、文档诊断检查） |
 
 ---
 
@@ -75,6 +78,9 @@
 | DECISION-A13 | VS Code 源代码管理器“生成提交信息”入口通过工作区设置 `github.copilot.chat.commitMessageGeneration.instructions` 显式绑定 `.github/skills/commit/references/commit-message.md`，不再依赖 skill 自动发现 | `.vscode/settings.json`、`.github/skills/commit/references/commit-message.md`、`docs/CONTEXT.md`、`docs/entropy/SESSION-HANDOFF.md` |
 | DECISION-A14 | repo-local Copilot tdd-workflow skill 改为按需启用：仅在用户明确要求 TDD 或高风险逻辑需优先设计测试策略时触发，普通实现与低风险改动不默认启用 | `.github/skills/tdd-workflow/SKILL.md`、`docs/CONTEXT.md`、`docs/entropy/SESSION-HANDOFF.md` |
 | DECISION-A15 | common.base 目录细化为 request/result 子包；统一分页请求与分页结果分别下沉为 BasePageRequest、BasePageResult，避免基础请求/结果模型继续堆叠在同一目录 | `stratum-common/src/main/java/com/patrick/stratum/common/base/**`、`stratum-query/src/main/java/com/patrick/stratum/query/reuse/QueryCommonReuseExample.java`、`docs/项目结构.md` |
+| DECISION-A16 | AI 写 Java 代码时统一遵循注解与 Lombok 规范：当前未显式引入 Lombok 时禁止直接新增相关注解；`@Builder` 仅限 DTO/Result/测试构造等纯数据承载场景，`@Data` 默认禁用，`@Transactional` 只允许出现在 Application 写用例边界，配置绑定优先 `@ConfigurationProperties`，参数校验优先 `jakarta.validation` + `@Valid`/`@Validated` | `.github/copilot-instructions.md`、`.github/skills/coding-standards/SKILL.md`、`docs/CONTEXT.md`、`docs/entropy/SESSION-HANDOFF.md` |
+| DECISION-A17 | 根工程统一接入 Lombok 的 compileOnly/annotationProcessor 基线；允许在 common/interface/query/application/test 的纯数据承载模型按规范使用 `@Builder`，并将 Lombok 生成的 getter/setter/constructor/builder 视为生成代码，不要求逐一补中文方法注释 | `build.gradle`、`.github/copilot-instructions.md`、`.github/skills/coding-standards/SKILL.md`、`stratum-common/src/main/java/com/patrick/stratum/common/base/**`、`stratum-query/src/main/java/com/patrick/stratum/query/reuse/QueryCommonReuseExample.java` |
+| DECISION-A18 | Lombok 分层使用改为固定白名单模板：interface/query/application 的纯数据类统一采用 `@Getter` + `@Builder` 模板，Spring 托管组件统一采用 `@RequiredArgsConstructor` 并按需追加 `@Slf4j`，若当前模块无匹配 DTO/Request/Response/Result，则不得为凑风格新增样板类 | `.github/copilot-instructions.md`、`.github/skills/coding-standards/SKILL.md`、`docs/CONTEXT.md`、`docs/entropy/SESSION-HANDOFF.md` |
 
 ---
 
@@ -132,7 +138,10 @@ Stratum/
 | 2026-05-18 | 为源代码管理器提交信息生成入口补充工作区设置绑定，确保 SCM 按钮读取 commitMessageGeneration 规则文件 | AI执行后人工确认 |
 | 2026-05-18 | 收窄 repo-local Copilot TDD skill 触发条件，仅在显式 TDD 请求或高风险逻辑需优先设计测试策略时启用 | AI执行后人工确认 |
 | 2026-05-18 | 拆分 common.base 请求/结果子包，迁移 BasePageRequest 并新增 BasePageResult，补齐统一分页结果基类与结构文档 | AI执行后人工确认 |
+| 2026-05-18 | 收敛 AI Java 注解与 Lombok 使用规范，明确 Builder/Data 适用边界以及校验、事务、配置绑定注解口径 | AI执行后人工确认 |
+| 2026-05-18 | 根工程统一接入 Lombok，并将 BasePageRequest、BasePageResult 与 QueryCommonReuseExample 按规范改造为 builder 友好用法 | AI执行后人工确认 |
+| 2026-05-18 | 补齐 Lombok 分层白名单固定模板，并确认 application/query/interface 当前主代码无额外纯 DTO/Request/Result 可继续迁移 | AI执行后人工确认 |
 
 ---
 
-_当前版本：v1.12 | 最后更新：2026-05-18_
+_当前版本：v1.15 | 最后更新：2026-05-18_
