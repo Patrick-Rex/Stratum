@@ -12,7 +12,7 @@
 阶段：Phase A（基础骨架）
 当前节点：NODE-B01（待开始）
 上次会话日期：2026-05-18
-项目状态：NODE-A05 已完成，common 扩展与帮助类复用基线已建立，repo-local Copilot skills 已扩展到查询、Outbox、网关实现面，提交信息生成规范已收敛为中文短标题 Conventional Commits 口径，SCM 提交信息生成入口已绑定工作区规则文件
+项目状态：NODE-A05 已完成，common 扩展与帮助类复用基线已建立，repo-local Copilot skills 已扩展到查询、Outbox、网关实现面，提交信息生成规范已收敛为中文短标题 Conventional Commits 口径，SCM 提交信息生成入口已绑定工作区规则文件，tdd-workflow 技能已收窄为按需显式启用
 ```
 
 ---
@@ -28,6 +28,7 @@
 | NODE-A05 | 建立基础扩展类与帮助类复用基线 | 2026-04-09 | 通过（`:stratum-common:build`、`:stratum-application:build`、`:stratum-query:build`、`:stratum-interface:build`） |
 | TOOLING-SKILLS-003 | 收紧 Copilot 提交信息生成规范，统一中文、简短、GitHub 常见 Conventional Commits 风格 | 2026-05-18 | 通过（提交技能文档诊断检查） |
 | TOOLING-SKILLS-004 | 将 SCM 提交信息生成入口绑定到工作区 commitMessageGeneration 设置，确保源代码管理器按钮读取中文短标题规范 | 2026-05-18 | 通过（`.vscode/settings.json` 诊断检查） |
+| TOOLING-SKILLS-005 | 收窄 Copilot TDD 技能触发条件，避免普通开发默认走测试驱动模式 | 2026-05-18 | 通过（技能文档诊断检查） |
 
 ---
 
@@ -71,6 +72,7 @@
 | DECISION-A11 | repo-local Copilot skills 继续扩展到实现面：新增 query-patterns、outbox-workflow、gateway-routing，分别绑定查询基架、事务一致性与网关职责边界 | `.github/skills/**`、`docs/查询基架设计.md`、`docs/工作单元与事务一致性设计.md`、`docs/网关与负载均衡设计.md` |
 | DECISION-A12 | repo-local Copilot commit skill 统一使用中文短标题，默认省略正文，并遵循 GitHub 常见 Conventional Commits 风格生成提交信息 | `.github/skills/commit/references/commit-message.md`、`docs/CONTEXT.md`、`docs/entropy/SESSION-HANDOFF.md` |
 | DECISION-A13 | VS Code 源代码管理器“生成提交信息”入口通过工作区设置 `github.copilot.chat.commitMessageGeneration.instructions` 显式绑定 `.github/skills/commit/references/commit-message.md`，不再依赖 skill 自动发现 | `.vscode/settings.json`、`.github/skills/commit/references/commit-message.md`、`docs/CONTEXT.md`、`docs/entropy/SESSION-HANDOFF.md` |
+| DECISION-A14 | repo-local Copilot tdd-workflow skill 改为按需启用：仅在用户明确要求 TDD 或高风险逻辑需优先设计测试策略时触发，普通实现与低风险改动不默认启用 | `.github/skills/tdd-workflow/SKILL.md`、`docs/CONTEXT.md`、`docs/entropy/SESSION-HANDOFF.md` |
 
 ---
 
@@ -126,7 +128,8 @@ Stratum/
 | 2026-05-18 | 扩展 repo-local Copilot skills：新增查询基架、Outbox 工作流、网关路由技能，对齐实现侧专题文档 | AI执行后人工确认 |
 | 2026-05-18 | 收紧 repo-local Copilot commit skill 提交信息规范：统一中文、简短标题、正文默认省略，并对齐 GitHub 常见 Conventional Commits 风格 | AI执行后人工确认 |
 | 2026-05-18 | 为源代码管理器提交信息生成入口补充工作区设置绑定，确保 SCM 按钮读取 commitMessageGeneration 规则文件 | AI执行后人工确认 |
+| 2026-05-18 | 收窄 repo-local Copilot TDD skill 触发条件，仅在显式 TDD 请求或高风险逻辑需优先设计测试策略时启用 | AI执行后人工确认 |
 
 ---
 
-_当前版本：v1.10 | 最后更新：2026-05-18_
+_当前版本：v1.11 | 最后更新：2026-05-18_

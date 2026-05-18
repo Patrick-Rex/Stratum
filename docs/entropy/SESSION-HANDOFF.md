@@ -34,16 +34,16 @@
 ## 交接报告（2026-05-18）
 
 ### 本次会话完成
-- completedNodes: [TOOLING-SKILLS-004]
+- completedNodes: [TOOLING-SKILLS-005]
 - changedFiles:
-  - .vscode/settings.json（新增 github.copilot.chat.commitMessageGeneration.instructions，绑定 SCM 提交信息生成规则文件）
-  - docs/CONTEXT.md（新增 TOOLING-SKILLS-004、DECISION-A13 与更新记录）
+  - .github/skills/tdd-workflow/SKILL.md（收窄 TDD 技能触发条件，改为按需显式启用）
+  - docs/CONTEXT.md（新增 TOOLING-SKILLS-005、DECISION-A14 与更新记录）
   - docs/entropy/SESSION-HANDOFF.md（当前交接报告覆盖写入）
 
 ### 验收结果
-- ✅ `.vscode/settings.json` 经编辑器诊断检查无错误
-- ✅ 工作区已显式配置 `github.copilot.chat.commitMessageGeneration.instructions`
-- ✅ 源代码管理器“生成提交信息”入口将读取 `.github/skills/commit/references/commit-message.md` 中的中文短标题规范
+- ✅ `.github/skills/tdd-workflow/SKILL.md` 经编辑器诊断检查无错误
+- ✅ tdd-workflow 前置描述已收敛为显式 TDD 请求或高风险逻辑测试策略场景
+- ✅ 普通实现、文档调整、低风险配置修改不再作为 TDD 技能默认触发条件
 - ✅ CONTEXT 与 SESSION-HANDOFF 已同步更新
 
 ### 未解决项（Unresolved）
