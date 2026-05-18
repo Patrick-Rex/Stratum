@@ -2,7 +2,7 @@ package com.patrick.stratum.query.reuse;
 
 import java.util.List;
 
-import com.patrick.stratum.common.base.BasePageRequest;
+import com.patrick.stratum.common.base.request.BasePageRequest;
 import com.patrick.stratum.common.enums.SortDirection;
 import com.patrick.stratum.common.extension.CollectionExtensions;
 import com.patrick.stratum.common.helper.ValidationHelper;

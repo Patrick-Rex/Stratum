@@ -1,4 +1,4 @@
-package com.patrick.stratum.common.base;
+package com.patrick.stratum.common.base.request;
 
 import com.patrick.stratum.common.enums.SortDirection;
 import com.patrick.stratum.common.helper.PageHelper;
