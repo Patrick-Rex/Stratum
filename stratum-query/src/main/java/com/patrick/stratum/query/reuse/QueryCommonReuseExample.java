@@ -26,7 +26,11 @@ public final class QueryCommonReuseExample {
      * @throws 无。
      */
     public static BasePageRequest toPageRequest(int page, int pageSize, String sortDirectionToken) {
-        return new BasePageRequest(page, pageSize, SortDirection.fromToken(sortDirectionToken));
+        return BasePageRequest.builder()
+                .page(page)
+                .pageSize(pageSize)
+                .sortDirection(SortDirection.fromToken(sortDirectionToken))
+                .build();
     }
 
     /**
