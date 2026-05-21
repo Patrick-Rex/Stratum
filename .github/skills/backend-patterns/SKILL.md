@@ -12,15 +12,15 @@ description: Stratum 后端分层与实现模式技能。当设计 DDD 单体链
 - 设计缓存、锁、Outbox、后台任务
 - 定义异常处理、审计、追踪、限流等横切能力
 
-## 先读这些规范
+## 按需检索这些规范
 
-- docs/CONSTITUTION.md
-- docs/FORBIDDEN.md
-- docs/技术架构.md
-- docs/项目结构.md
-- docs/工作单元与事务一致性设计.md
-- docs/消息总线设计.md
-- docs/后台任务设计.md
+- 不要默认预读全部规范；仅在任务触及对应主题时，用 `rg` 精确搜索后回读命中段落。
+- 先搜关键词、模块名、注解或边界规则，再决定是否展开阅读整篇文档。
+- 常用检索示例：
+	- 分层边界：`rg "Interface -> Application -> Domain|依赖方向|仓储接口|Infrastructure" docs/技术架构.md docs/项目结构.md`
+	- 事务与 Outbox：`rg "事务|@Transactional|Outbox|工作单元|最终一致性" docs/工作单元与事务一致性设计.md docs/消息总线设计.md`
+	- 后台任务：`rg "Job|ShedLock|调度|重试|可观测" docs/后台任务设计.md`
+	- 禁止事项：`rg "禁止|不得|MUST NOT|反例" docs/FORBIDDEN.md docs/CONSTITUTION.md`
 
 ## 模块落点速查
 
