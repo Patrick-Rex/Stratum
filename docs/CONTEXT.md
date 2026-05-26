@@ -26,13 +26,6 @@
 | NODE-A03 | 建立公共基础模块（ApiResponse、错误码、traceId 工具） | 2026-04-08 | 通过（`:stratum-common:build`、`:stratum-interface:build`） |
 | NODE-A04 | 建立统一异常处理与多语言消息基础设施 | 2026-04-09 | 通过（`:stratum-common:build`、`:stratum-starter:build`） |
 | NODE-A05 | 建立基础扩展类与帮助类复用基线 | 2026-04-09 | 通过（`:stratum-common:build`、`:stratum-application:build`、`:stratum-query:build`、`:stratum-interface:build`） |
-| COMMON-BASE-001 | 拆分 common.base 请求/结果子包并新增统一分页结果基类 | 2026-05-18 | 通过（`:stratum-common:build`、`:stratum-query:build`） |
-| TOOLING-SKILLS-003 | 收紧 Copilot 提交信息生成规范，统一中文、简短、GitHub 常见 Conventional Commits 风格 | 2026-05-18 | 通过（提交技能文档诊断检查） |
-| TOOLING-SKILLS-004 | 将 SCM 提交信息生成入口绑定到工作区 commitMessageGeneration 设置，确保源代码管理器按钮读取中文短标题规范 | 2026-05-18 | 通过（`.vscode/settings.json` 诊断检查） |
-| TOOLING-SKILLS-005 | 收窄 Copilot TDD 技能触发条件，避免普通开发默认走测试驱动模式 | 2026-05-18 | 通过（技能文档诊断检查） |
-| TOOLING-SKILLS-006 | 收敛 AI Java 注解与 Lombok 使用规范，明确 Builder、Data、校验、事务与配置绑定口径 | 2026-05-18 | 通过（指令/技能文档检查、诊断检查） |
-| TOOLING-BUILD-001 | 根工程统一接入 Lombok，并按规范将现有纯数据模型切换为 @Builder 用法 | 2026-05-18 | 通过（`:stratum-common:build`、`:stratum-query:build`） |
-| TOOLING-SKILLS-007 | 补齐分层 Lombok 注解白名单固定模板，并确认 application/query/interface 当前无额外 DTO/Request/Result 迁移候选 | 2026-05-18 | 通过（文件搜索、文档诊断检查） |
 
 ---
 
