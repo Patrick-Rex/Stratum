@@ -31,22 +31,30 @@
 
 ## 当前交接报告
 
-## 交接报告（2026-05-18）
+## 交接报告（2026-06-28）
 
 ### 本次会话完成
-- completedNodes: [TOOLING-SKILLS-007]
+- completedNodes: [NODE-B01]
 - changedFiles:
-  - .github/copilot-instructions.md（补充分层 Lombok 白名单规则，修正权威文档相对链接，并明确当前无匹配类时不新增样板 DTO）
-  - .github/skills/coding-standards/SKILL.md（新增 interface/query/application 的 Lombok 固定模板与禁用边界）
-  - docs/CONTEXT.md（新增 TOOLING-SKILLS-007、DECISION-A18 与更新记录）
+  - stratum-domain/src/main/java/com/patrick/stratum/domain/model/Entity.java（新增：实体基类，基于 ID 的相等性）
+  - stratum-domain/src/main/java/com/patrick/stratum/domain/model/AggregateRoot.java（新增：聚合根基类，内置乐观锁版本号）
+  - stratum-domain/src/main/java/com/patrick/stratum/domain/model/ValueObject.java（新增：值对象基类，基于字段数组的相等性）
+  - stratum-domain/src/main/java/com/patrick/stratum/domain/repository/Repository.java（新增：仓储接口基类，定义 findById/save/delete）
+  - stratum-domain/src/main/java/com/patrick/stratum/domain/event/DomainEvent.java（新增：领域事件基类，携带 eventId/occurredAt/aggregateId）
+  - docs/CONTEXT.md（更新阶段/节点状态与更新记录）
   - docs/entropy/SESSION-HANDOFF.md（当前交接报告覆盖写入）
 
 ### 验收结果
-- ✅ 文件搜索已确认 `stratum-interface`、`stratum-query`、`stratum-application` 当前主代码无额外纯 DTO/Request/Response/Result 可继续迁移
-- ✅ `.github/copilot-instructions.md` 已补充分层白名单规则，并修正首行权威文档链接错误
-- ✅ `.github/skills/coding-standards/SKILL.md` 已新增 `@Builder`、`@Getter`、`@RequiredArgsConstructor`、`@Slf4j` 的分层固定模板
-- ✅ 文档诊断检查通过，未发现本次新增错误
+- ✅ `gradlew :stratum-domain:build` 构建通过
+- ✅ `gradlew :stratum-domain:dependencies --configuration runtimeClasspath` 确认仅依赖 `project :stratum-common`
+- ✅ 源码 grep 确认无 Spring/Jakarta/ORM/Lombok/SLF4J import
+- ✅ domain 模块零框架依赖，满足架构约束
 - ✅ CONTEXT 与 SESSION-HANDOFF 已同步更新
+
+### 下一节点
+- nextNode: NODE-B02
+- 前置条件: NODE-B01 已完成，NODE-A03 已完成，NODE-A05 已完成
+- 建议优先读取: CONTEXT.md, AI可执行开发计划.md 的 NODE-B02 小节, 工作单元与事务一致性设计.md
 
 ### 未解决项（Unresolved）
 - VS Code Java 语言服务当前仍可能残留 `lombok cannot be resolved` 诊断；Gradle 构建已通过，后续需在编辑器侧完成 Lombok 支持扩展安装或工作区重载后再消除残留提示

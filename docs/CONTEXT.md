@@ -9,10 +9,10 @@
 ## 1. 当前阶段
 
 ```
-阶段：Phase A（基础骨架）
-当前节点：NODE-B01（待开始）
-上次会话日期：2026-05-18
-项目状态：NODE-A05 已完成，common 扩展与帮助类复用基线已建立，common.base 已细化为 request/result 子包并补齐统一分页结果基类 BasePageResult，repo-local Copilot skills 已扩展到查询、Outbox、网关实现面，提交信息生成规范已收敛为中文短标题 Conventional Commits 口径，SCM 提交信息生成入口已绑定工作区规则文件，tdd-workflow 技能已收窄为按需显式启用，AI Java 注解与 Lombok 使用口径已统一，根工程已接入 Lombok 并在 common/query 现有纯数据模型落地 @Builder，interface/query/application 分层白名单固定模板已补齐且确认当前无更多现有 DTO/Request/Result 迁移候选
+阶段：Phase B（写模型骨架）
+当前节点：NODE-B02（待开始）
+上次会话日期：2026-06-28
+项目状态：NODE-B01 已完成，Domain 核心抽象已建立（AggregateRoot、Entity、ValueObject、Repository、DomainEvent），domain 模块仅依赖 common，无框架依赖；Phase A 全部节点已完成
 ```
 
 ---
@@ -26,6 +26,7 @@
 | NODE-A03 | 建立公共基础模块（ApiResponse、错误码、traceId 工具） | 2026-04-08 | 通过（`:stratum-common:build`、`:stratum-interface:build`） |
 | NODE-A04 | 建立统一异常处理与多语言消息基础设施 | 2026-04-09 | 通过（`:stratum-common:build`、`:stratum-starter:build`） |
 | NODE-A05 | 建立基础扩展类与帮助类复用基线 | 2026-04-09 | 通过（`:stratum-common:build`、`:stratum-application:build`、`:stratum-query:build`、`:stratum-interface:build`） |
+| NODE-B01 | 建立 Domain 核心抽象 | 2026-06-28 | 通过（`:stratum-domain:build`、依赖方向与源码检查无框架依赖） |
 
 ---
 
@@ -33,7 +34,6 @@
 
 | 节点 | 描述 | 依赖 |
 |------|------|------|
-| NODE-B01 | 建立 Domain 核心抽象 | NODE-A01 |
 | NODE-B02 | 建立 Application 写用例基架 | NODE-B01, NODE-A03, NODE-A05 |
 | … | 见 AI可执行开发计划.md | … |
 
@@ -134,7 +134,8 @@ Stratum/
 | 2026-05-18 | 收敛 AI Java 注解与 Lombok 使用规范，明确 Builder/Data 适用边界以及校验、事务、配置绑定注解口径 | AI执行后人工确认 |
 | 2026-05-18 | 根工程统一接入 Lombok，并将 BasePageRequest、BasePageResult 与 QueryCommonReuseExample 按规范改造为 builder 友好用法 | AI执行后人工确认 |
 | 2026-05-18 | 补齐 Lombok 分层白名单固定模板，并确认 application/query/interface 当前主代码无额外纯 DTO/Request/Result 可继续迁移 | AI执行后人工确认 |
+| 2026-06-28 | 完成 NODE-B01：建立 Domain 核心抽象（AggregateRoot、Entity、ValueObject、Repository 接口、DomainEvent），domain 模块仅依赖 common，无框架依赖 | AI执行后人工确认 |
 
 ---
 
-_当前版本：v1.15 | 最后更新：2026-05-18_
+_当前版本：v1.16 | 最后更新：2026-06-28_
