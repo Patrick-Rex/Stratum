@@ -10,7 +10,7 @@ AI 在执行任何开发任务前，必须先读取本清单，再按条目跳�
 - 每个开发任务必须至少绑定 1 个 specId。
 - 一个任务若跨越多个主题，必须绑定主 spec 与补充 spec。
 - 实现、测试、文档三者必须同时满足对应 spec 的完成标准。
-- 若 spec 冲突，以 [SDD执行总览](SDD执行总览.md) 为最高优先级。
+- 若 spec 冲突，遵循 [CONSTITUTION](CONSTITUTION.md) 第 1 节的规范优先级；当前状态见 [CONTEXT](CONTEXT.md)，不以状态记录覆盖规范。
 
 ## 3. Spec 索引
 

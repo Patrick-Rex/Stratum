@@ -11,13 +11,15 @@
 ```
 阶段：Phase B（写模型骨架）
 当前节点：NODE-B02（待开始）
-上次会话日期：2026-06-28
-项目状态：NODE-B01 已完成，Domain 核心抽象已建立（AggregateRoot、Entity、ValueObject、Repository、DomainEvent），domain 模块仅依赖 common，无框架依赖；Phase A 全部节点已完成
+上次会话日期：2026-10-23（顺序执行计划准备）
+项目状态：NODE-B01 已完成，Domain 核心抽象已建立（AggregateRoot、Entity、ValueObject、Repository、DomainEvent），domain 模块直接声明 common 依赖，源码无框架导入；根构建统一配置 Lombok 编译期依赖；Phase A 全部节点已完成
 ```
 
 ---
 
 ## 2. 已完成节点
+
+以下为历史节点验收记录，非本次重新执行的结果。2026-10-23 仅核对仓库文件与文档；当前配置与已实现范围见 [开发与迭代](development.md)。
 
 | 节点 | 描述 | 完成日期 | 验收状态 |
 |------|------|----------|----------|
@@ -34,25 +36,22 @@
 
 | 节点 | 描述 | 依赖 |
 |------|------|------|
-| NODE-B02 | 建立 Application 写用例基架 | NODE-B01, NODE-A03, NODE-A05 |
-| … | 见 AI可执行开发计划.md | … |
+| NODE-B02.1 → NODE-B02.2 | 建立 Application 写用例契约，再实现统一入口和行为测试 | NODE-B01, NODE-A03, NODE-A05 |
+| 后续节点 | 见 [AI 可执行开发计划](AI可执行开发计划.md) | 按各节点 prerequisites 执行 |
 
 ---
+
+本轮用户已授权依次执行计划的非部署范围，每节点或子节点验证、审查、提交并推送后继续；部署节点暂缓，已有 Docker 资源可用于本地联调。节点范围和门禁以 [开发计划](AI可执行开发计划.md) 第 4 节为准。
 
 ## 4. 活跃阻塞项
 
-> 无阻塞项。如有，按如下格式添加：
-
-```
-- [BLOCKED-001] NODE-XXX 依赖 YYY 未就绪，等待：<原因>
-```
+当前未登记阻塞项。新增阻塞时记录编号、受影响节点、原因及解除条件；不将旧交接中的编辑器提示自动作为当前阻塞。
 
 ---
 
-## 5. 当前已知技术决策（最新状态）
+## 5. 已确认决策与沿革
 
-所有已冻结决策见 `SDD执行总览.md` 第 3 节。
-本节仅记录本 Sprint/阶段的新增决策：
+架构约束与优先级见 [CONSTITUTION](CONSTITUTION.md)，阶段冻结决策见 [SDD 执行总览](SDD执行总览.md) 第 3 节。下表保留既有决策沿革，不作为活动任务；DECISION-A16 的“未引入 Lombok”前提已由 A17 替代，现行使用范围见 A18 与 [开发与迭代](development.md)。
 
 | 决策 | 内容 | 记录位置 |
 |------|------|----------|
@@ -79,35 +78,32 @@
 
 ## 6. 文件结构现状
 
-```
+```text
 Stratum/
-├── build.gradle         ✅ 已更新为聚合根构建
-├── settings.gradle      ✅ 已注册 9 个子模块
-├── CONSTITUTION.md       ✅ 已建立（架构宪法）
-├── CONTEXT.md            ✅ 本文件（上下文快照）
-├── FORBIDDEN.md          ✅ 已建立（禁止项清单）
-├── GLOSSARY.md           ✅ 已建立（术语表）
-├── SDD执行总览.md         ✅ 已建立
-├── Spec清单.md            ✅ 已建立
-├── AI可执行开发计划.md    ✅ 已建立
-├── 技术架构.md            ✅ 已建立
-├── 项目结构.md            ✅ 已建立
-├── 各专题设计文档         ✅ 已建立（SPEC-001 ~ SPEC-013）
-├── stratum-gateway/      ✅ 已建立（模块骨架）
-├── stratum-interface/    ✅ 已建立（模块骨架）
-├── stratum-query/        ✅ 已建立（模块骨架）
-├── stratum-application/  ✅ 已建立（模块骨架）
-├── stratum-domain/       ✅ 已建立（模块骨架）
-├── stratum-infrastructure/ ✅ 已建立（模块骨架）
-├── stratum-job/          ✅ 已建立（模块骨架）
-├── stratum-common/       ✅ 已建立（模块骨架）
-├── stratum-starter/      ✅ 已建立（启动类、profiles/Nacos 配置占位、actuator 基础端点）
-├── adr/
-│   └── （待添加）
-└── entropy/
-    ├── DRIFT-LOG.md      ✅ 已建立
-    └── SESSION-HANDOFF.md ✅ 模板已建立
+├── AGENTS.md                 # 共享开发指引
+├── README.md                 # 项目入口
+├── build.gradle              # 聚合根构建
+├── settings.gradle           # 注册 9 个子模块
+├── gradle/wrapper/           # Gradle 9.4.1
+├── .github/                  # Copilot 入口、提示词与按需技能
+├── stratum-*/                # 9 个模块，能力现状见开发与迭代
+└── docs/
+    ├── README.md             # 文档导航
+    ├── AGENTS.md             # 文档维护补充指引
+    ├── development.md        # 基线、命令与验证方式
+    ├── CONSTITUTION.md       # 架构宪法
+    ├── CONTEXT.md            # 当前状态与决策沿革
+    ├── FORBIDDEN.md          # 禁止项
+    ├── GLOSSARY.md           # 术语
+    ├── SDD执行总览.md
+    ├── Spec清单.md
+    ├── AI可执行开发计划.md
+    ├── 各专题设计文档
+    ├── adr/                  # ADR-001 索引、ADR-002 ORM 决策
+    └── entropy/              # 偏移日志与最近交接
 ```
+
+专题文档入口见 [文档导航](README.md)，源码模块职责见 [项目结构](项目结构.md)。当前没有 `docker/compose/`、迁移脚本和 `src/test` 测试源码。
 
 ---
 
@@ -135,7 +131,8 @@ Stratum/
 | 2026-05-18 | 根工程统一接入 Lombok，并将 BasePageRequest、BasePageResult 与 QueryCommonReuseExample 按规范改造为 builder 友好用法 | AI执行后人工确认 |
 | 2026-05-18 | 补齐 Lombok 分层白名单固定模板，并确认 application/query/interface 当前主代码无额外纯 DTO/Request/Result 可继续迁移 | AI执行后人工确认 |
 | 2026-06-28 | 完成 NODE-B01：建立 Domain 核心抽象（AggregateRoot、Entity、ValueObject、Repository 接口、DomainEvent），domain 模块仅依赖 common，无框架依赖 | AI执行后人工确认 |
+| 2026-10-23 | 整理文档入口，新增根目录 AGENTS / README 与开发指引；修正失效路径、规范优先级和过期状态，NODE-B02 仍待开始 | 用户请求，仓库文件核对 |
 
 ---
 
-_当前版本：v1.16 | 最后更新：2026-06-28_
+_当前版本：v1.17 | 最后更新：2026-10-23_

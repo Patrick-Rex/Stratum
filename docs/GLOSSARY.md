@@ -12,10 +12,11 @@
 | **聚合（Aggregate）** | Domain 层的一致性边界单元，包含聚合根与从属实体 | 不得称为 Model、Entity、Pojo |
 | **聚合根（AggregateRoot）** | 聚合对外的唯一访问入口 | 不得直接暴露内部实体 |
 | **仓储（Repository）** | Domain 层声明的持久化接口，Infrastructure 实现 | 不得称为 Dao、Mapper |
-| **应用服务（ApplicationService）** | Application 层的用例编排类，负责事务边界 | 不得称为 Manager、Handler（Handler 留给 Query） |
+| **应用服务（ApplicationService）** | Application 层的用例编排类，负责事务边界 | 不得称为 Manager；CommandHandler 是写命令契约，QueryHandler 是读查询契约 |
 | **领域服务（DomainService）** | 跨聚合的 Domain 层业务逻辑，无状态 | 不得将业务规则放入 ApplicationService |
 | **查询处理器（QueryHandler）** | 实现 QueryGateway 的读模型查询单元 | 不得在 QueryHandler 中执行写操作 |
 | **查询规格（QuerySpec）** | 封装过滤、排序、分页参数的不可变对象 | 不得将 QuerySpec 用于写用例 |
+| **命令处理器（CommandHandler）** | Application 层按 Command 类型执行写用例的契约，由统一入口调用 | 不得绕过工作单元执行写用例 |
 | **命令（Command）** | Application 层写用例的输入 DTO | 不得称为 Request（Request 是 Interface 层的 HTTP 入参） |
 | **领域事件（DomainEvent）** | 聚合内部行为产生的事件，领域层声明 | 不得与集成事件混淆 |
 | **集成事件（IntegrationEvent）** | 跨界的 MQ 消息，通过 Outbox 投递 | 不得在 Domain 层发布集成事件 |

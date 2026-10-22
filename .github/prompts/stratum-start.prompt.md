@@ -5,19 +5,23 @@ agent: "agent"
 ---
 
 按以下顺序读取全局入口文档：
-- [CONSTITUTION.md](../../CONSTITUTION.md)
-- [CONTEXT.md](../../CONTEXT.md)
-- [FORBIDDEN.md](../../FORBIDDEN.md)
-- [GLOSSARY.md](../../GLOSSARY.md)
-- [Spec清单.md](../../Spec清单.md)
+- [CONSTITUTION.md](../../docs/CONSTITUTION.md)
+- [CONTEXT.md](../../docs/CONTEXT.md)
+- [FORBIDDEN.md](../../docs/FORBIDDEN.md)
+- [GLOSSARY.md](../../docs/GLOSSARY.md)
+- [Spec清单.md](../../docs/Spec清单.md)
 
 这是全局上下文建立步骤，不进入任何 NODE 实现，不输出计划、代码或修改建议。
 
 若文档之间存在冲突，按以下优先级裁决：
 - CONSTITUTION.md
-- CONTEXT.md
 - FORBIDDEN.md
+- SDD执行总览.md
 - Spec清单.md
+- 专题规范
+- AI可执行开发计划.md
+
+CONTEXT.md 仅用于确认阶段、节点与阻塞状态，不覆盖规范。
 
 只输出以下 4 个字段，不要附加解释、计划、实现细节、代码或额外说明：
 - currentPhase
@@ -27,4 +31,4 @@ agent: "agent"
 
 补充约束：
 - blockers 为空时输出 `无`。
-- readyForNode 必须基于 [CONTEXT.md](../../CONTEXT.md) 的已完成节点、待执行节点与阻塞项综合判断。
+- readyForNode 必须基于 [CONTEXT.md](../../docs/CONTEXT.md) 的已完成节点、待执行节点与阻塞项综合判断。
