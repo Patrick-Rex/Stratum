@@ -37,7 +37,8 @@
 | stratum-common | ApiResponse、错误码、异常、traceId 上下文、基础扩展与帮助类、分页模型 |
 | stratum-domain | Entity、AggregateRoot、ValueObject、Repository、DomainEvent |
 | stratum-interface | ApiResponseFactory |
-| stratum-application / stratum-query | Common 复用示例 |
+| stratum-application | Common 复用示例；Command / CommandHandler / UseCaseResult、UnitOfWork 与 OperationLog 契约（NODE-B02.1） |
+| stratum-query | Common 复用示例 |
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
 | stratum-gateway / stratum-infrastructure / stratum-job | Gradle 模块骨架 |
 
