@@ -24,11 +24,11 @@
 | Gradle Wrapper | 9.4.1 | [Wrapper 配置](../gradle/wrapper/gradle-wrapper.properties) |
 | Spring Boot 插件 | 4.0.5 | 根构建；仅 starter 应用插件 |
 | Spring Dependency Management 插件 | 1.1.7 | 根构建；仅 starter 应用插件 |
-| Lombok | 1.18.38 | 根构建对所有子模块配置 compileOnly / annotationProcessor 及测试对应项 |
-| 测试执行 | Gradle Test + useJUnitPlatform() | 根构建；目前未发现 src/test 测试源码 |
+| Lombok | 1.18.44 | 根构建对所有子模块配置 compileOnly / annotationProcessor 及测试对应项 |
+| 测试执行 | JUnit Jupiter 5.13.4 + Gradle Test | 根构建统一引入 BOM、Jupiter 与 Platform Launcher；application 已有命令入口测试 |
 | 子模块 | 9 个 | [settings.gradle](../settings.gradle) |
 
-根构建还声明 SLF4J、Commons Lang、Jakarta Validation 和 JUnit Jupiter 的版本约束；版本约束本身不会引入依赖。不要据此宣称对应库或测试能力已经接入。新增依赖及插件版本集中维护，子模块不自行声明版本号。
+根构建还声明 SLF4J、Commons Lang、Jakarta Validation 的版本约束；版本约束本身不会引入依赖。不要据此宣称对应库或测试能力已经接入。新增依赖及插件版本集中维护，子模块不自行声明版本号。
 
 当前实现范围：
 
@@ -37,7 +37,7 @@
 | stratum-common | ApiResponse、错误码、异常、traceId 上下文、基础扩展与帮助类、分页模型 |
 | stratum-domain | Entity、AggregateRoot、ValueObject、Repository、DomainEvent |
 | stratum-interface | ApiResponseFactory |
-| stratum-application | Common 复用示例；Command / CommandHandler / UseCaseResult、UnitOfWork 与 OperationLog 契约（NODE-B02.1） |
+| stratum-application | Common 复用示例；Command / CommandHandler / UseCaseResult、UnitOfWork 与 OperationLog 契约及 CommandGateway 统一入口（NODE-B02） |
 | stratum-query | Common 复用示例 |
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
 | stratum-gateway / stratum-infrastructure / stratum-job | Gradle 模块骨架 |
@@ -105,7 +105,9 @@ Invoke-RestMethod http://localhost:8080/actuator/health
 
 - 优先复用 common 已有基础能力；保持 Domain 不依赖技术框架，事务只在 Application 写用例边界开启，其他分层约束见 [项目结构](项目结构.md)。
 - Java 开发按需读取 [编码规范](../.github/skills/coding-standards/SKILL.md)：优先稳定 JDK 特性、不可变模型和构造器注入；Lombok 禁止 `@Data`，纯数据模型按白名单使用 `@Getter` / `@Builder`，Domain 优先显式构造及工厂。
-- 仅运行能验证本次变更的检查。编译查看 error 和退出码；测试读取失败详情和通过/失败数量。现有仓库未提供测试源码，Gradle `build` 成功不能作为行为测试覆盖的证据。
+- 仅运行能验证本次变更的检查。编译查看 error 和退出码；测试读取失败详情和通过/失败数量。application 已提供命令路由及工作单元边界测试；其他模块没有测试时，Gradle `build` 成功仍不能作为行为覆盖证据。
 - 文档变更核对本地链接、路径、命令前提、已实现与规划状态、UTF-8 编码、BOM、行尾和末尾换行，并执行 `git diff --check`；无需启动应用或构建。
 - 仓库当前没有 `.editorconfig`；新增 Markdown 使用 UTF-8 无 BOM、LF 和末尾换行，已有文件保留一致的既有行尾。脚本格式遵循 [.gitattributes](../.gitattributes)。
 - 交付前同步受影响文档，按 [AGENTS](../AGENTS.md) 更新 CONTEXT 和 SESSION-HANDOFF。报告实际检查结果、未解决项和下一节点，历史验收不改写为本次验收。
+
+Lombok 升级到 1.18.44 以覆盖 JDK 25 兼容修复，依据 [官方变更记录](https://projectlombok.org/changelog)；项目沿用其 MIT 许可，不引入商业依赖。

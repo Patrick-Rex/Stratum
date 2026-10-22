@@ -585,6 +585,14 @@
 NODE-B02 仅建立可注入的工作单元契约与调用边界；真实数据库事务适配在 NODE-B03 落地，事务策略和 `@Transactional` 保持在 Application 层。其他节点在实现前按预计文件数补充子节点，不为文件数限制压缩职责或省略测试。
 
 
+### NODE-B03 子节点
+
+| 子节点 | 范围 | 验证 | 前置 |
+|--------|------|------|------|
+| NODE-B03.1 | 统一 Spring Boot 依赖管理；引入 Boot 4 对应 Easy-Query、MariaDB、Flyway、Redis、Caffeine 与集成测试依赖 | 相关模块编译、依赖解析和许可核对 | NODE-B02 |
+| NODE-B03.2 | 数据源与迁移、Application 事务适配及启动装配 | 真实 MariaDB 迁移、提交及回滚测试；无反向依赖 | NODE-B03.1 |
+| NODE-B03.3 | Easy-Query 仓储实现模板与客户端配置验证 | 真实数据库 CRUD 与乐观锁、Redis/Caffeine 连通性验证 | NODE-B03.2 |
+
 ## 5. AI 执行提示词模板
 
 执行任一节点时，输入最少包含：

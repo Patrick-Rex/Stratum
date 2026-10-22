@@ -4,7 +4,7 @@ Stratum 是采用 Java、Spring Boot 和 DDD 分层的多模块单体应用脚�
 
 ## 当前状态
 
-仓库已建立 9 个 Gradle 子模块、Starter 启动骨架、公共响应与异常处理、基础工具及 Domain 核心抽象。按现有验收记录，Phase A 与 NODE-B01 已完成，下一节点为 NODE-B02（Application 写用例基架）。详见 [当前状态](docs/CONTEXT.md)。
+仓库已建立 9 个 Gradle 子模块、Starter 启动骨架、公共响应与异常处理、基础工具及 Domain 核心抽象。按现有验收记录，Phase A 与 NODE-B01 已完成，NODE-B02 已建立统一命令入口并通过行为测试，下一节点为 NODE-B03（持久化骨架）。详见 [当前状态](docs/CONTEXT.md)。
 
 数据库、缓存、消息、认证、网关路由、查询基架和容器化仍属于后续实现范围；设计文档中的能力与验收项不代表当前已交付。
 

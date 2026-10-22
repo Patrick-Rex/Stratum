@@ -10,9 +10,9 @@
 
 ```
 阶段：Phase B（写模型骨架）
-当前节点：NODE-B02.2（待开始）
-上次会话日期：2026-10-23（NODE-B02.1 验收）
-项目状态：NODE-B01 已完成，Domain 核心抽象已建立（AggregateRoot、Entity、ValueObject、Repository、DomainEvent），domain 模块直接声明 common 依赖，源码无框架导入；根构建统一配置 Lombok 编译期依赖；Phase A 全部节点已完成
+当前节点：NODE-B03.1（待开始）
+上次会话日期：2026-10-23（NODE-B02.2 验收）
+项目状态：NODE-B01 已完成，Domain 核心抽象已建立（AggregateRoot、Entity、ValueObject、Repository、DomainEvent），domain 模块直接声明 common 依赖，源码无框架导入；根构建统一配置 Lombok 编译期依赖；Phase A 与 NODE-B02 已完成
 ```
 
 ---
@@ -30,12 +30,13 @@
 | NODE-A05 | 建立基础扩展类与帮助类复用基线 | 2026-04-09 | 通过（`:stratum-common:build`、`:stratum-application:build`、`:stratum-query:build`、`:stratum-interface:build`） |
 | NODE-B01 | 建立 Domain 核心抽象 | 2026-06-28 | 通过（`:stratum-domain:build`、依赖方向与源码检查无框架依赖） |
 | NODE-B02.1 | 建立写命令、工作单元与审计契约 | 2026-10-23 | application build 退出码 0；契约无框架导入；本子节点不含行为实现 |
+| NODE-B02.2 | 完成统一命令入口，父节点 NODE-B02 完成 | 2026-10-23 | application test 6项通过、0失败；Lombok 1.18.44 与 JUnit 工具链重新编译成功 |
 
 ---
 
 ## 3. 待执行节点（按顺序）
 
-下一节点为 **NODE-B02.2**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
+下一节点为 **NODE-B03.1**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
 
 ---
 
@@ -99,7 +100,7 @@ Stratum/
     └── entropy/              # 偏移日志与最近交接
 ```
 
-专题文档入口见 [文档导航](README.md)，源码模块职责见 [项目结构](项目结构.md)。当前没有 `docker/compose/`、迁移脚本和 `src/test` 测试源码。
+专题文档入口见 [文档导航](README.md)，源码模块职责见 [项目结构](项目结构.md)。当前没有 `docker/compose/` 或迁移脚本；application 已新增 6 项命令入口测试。
 
 ---
 
