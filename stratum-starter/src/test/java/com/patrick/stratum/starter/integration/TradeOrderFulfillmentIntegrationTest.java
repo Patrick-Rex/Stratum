@@ -22,6 +22,15 @@ import com.patrick.stratum.domain.masterdata.MasterData;
 import com.patrick.stratum.domain.masterdata.MasterDataRepository;
 import com.patrick.stratum.domain.trade.TradeOrder;
 import com.patrick.stratum.domain.trade.TradeOrderRepository;
+import com.patrick.stratum.query.QueryGateway;
+import com.patrick.stratum.query.QueryContext;
+import com.patrick.stratum.query.inventory.StockBalanceQuery;
+import com.patrick.stratum.query.inventory.StockMovementQuery;
+import com.patrick.stratum.query.masterdata.MasterDataQuery;
+import com.patrick.stratum.query.spec.QuerySpec;
+import com.patrick.stratum.query.trade.FulfillmentQuery;
+import com.patrick.stratum.query.trade.TradeOrderDetailQuery;
+import com.patrick.stratum.query.trade.TradeOrderQuery;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -47,6 +56,7 @@ class TradeOrderFulfillmentIntegrationTest extends MariaDbIntegrationTest {
     private final StockBalanceRepository balances;
     private final UnitOfWork unitOfWork;
     private final JdbcTemplate jdbc;
+    private final QueryGateway queries;
     private final String subject = UUID.randomUUID().toString();
     private final List<String> masterIds = new ArrayList<>();
     private final List<String> orderIds = new ArrayList<>();
@@ -59,12 +69,14 @@ class TradeOrderFulfillmentIntegrationTest extends MariaDbIntegrationTest {
      * @param balances 余额仓储
      * @param unitOfWork 工作单元
      * @param jdbc 断言及清理客户端
+     * @param queries 只读查询入口
      */
     @Autowired
     TradeOrderFulfillmentIntegrationTest(CommandGateway gateway, MasterDataRepository masters, TradeOrderRepository orders,
-            StockBalanceRepository balances, UnitOfWork unitOfWork, JdbcTemplate jdbc) {
+            StockBalanceRepository balances, UnitOfWork unitOfWork, JdbcTemplate jdbc, QueryGateway queries) {
         this.gateway = gateway; this.masters = masters; this.orders = orders; this.balances = balances;
         this.unitOfWork = unitOfWork; this.jdbc = jdbc;
+        this.queries = queries;
     }
 
     /** 关联测试事件，工作线程另行显式传播。 */
@@ -117,6 +129,71 @@ class TradeOrderFulfillmentIntegrationTest extends MariaDbIntegrationTest {
         var completed = post(command(partial.getOrder(), "0.75"));
         assertEquals(TradeOrder.Status.COMPLETED, completed.getOrder().getStatus());
         assertStock(fixture, "1"); assertPostingCount(sale, 2, 2); assertCounts(8, 5);
+    }
+
+    /** 真实命令提交后六类查询一致，历史批次与当前进度分离，重放不产生新流水。 */
+    @Test
+    void queriesReflectCommittedPurchaseAndSaleWithoutDuplicatingReplay() {
+        var fixture = fixture(); var context = QueryContext.anonymous(subject);
+        var purchase = create(TradeOrder.Kind.PURCHASE, fixture, "2");
+        post(command(purchase, "2"));
+        var sale = create(TradeOrder.Kind.SALE, fixture, "1");
+        var request = command(sale, "0.25"); var first = post(request);
+        post(command(first.getOrder(), "0.75"));
+        assertEquals(TradeOrder.Status.PARTIAL, post(request).getOrder().getStatus());
+        var master = queries.execute(MasterDataQuery.create(MasterData.Kind.MATERIAL, 1, 1, List.of(), exact("id", fixture.material())), context);
+        assertEquals(fixture.material(), master.getItems().getFirst().id());
+        var summary = queries.execute(TradeOrderQuery.create(TradeOrder.Kind.SALE, 1, 1, List.of(), exact("id", sale.getId())), context).getItems().getFirst();
+        var detail = queries.execute(TradeOrderDetailQuery.create(sale.getKind(), sale.getId()), context).getItems().getFirst();
+        assertEquals(summary, detail.order());
+        assertEquals(TradeOrder.Status.COMPLETED, summary.status());
+        assertEquals(2L, summary.version());
+        assertEquals(0, BigDecimal.ONE.compareTo(detail.lines().getFirst().fulfilled()));
+        var balance = queries.execute(StockBalanceQuery.create(1, 1, List.of(), exact("materialId", fixture.material())), context).getItems().getFirst();
+        assertEquals(0, BigDecimal.ONE.compareTo(balance.quantity()));
+        var history = queries.execute(FulfillmentQuery.create(sale.getKind(), sale.getId(), 1, 20, List.of("orderVersion,asc"), List.of()), context);
+        assertEquals(2, history.getTotal());
+        assertEquals(first.getPostingId(), history.getItems().getFirst().id());
+        assertEquals(0, new BigDecimal("0.25").compareTo(history.getItems().getFirst().lines().getFirst().quantity()));
+        var movements = queries.execute(StockMovementQuery.create(1, 20, List.of("occurredAt,asc"), exact("orderId", sale.getId())), context);
+        assertEquals(2, movements.getTotal());
+        for (var movement : movements.getItems()) {
+            var posting = history.getItems().stream().filter(row -> row.id().equals(movement.postingId())).findFirst().orElseThrow();
+            assertEquals(balance.id(), movement.balanceId());
+            assertEquals(posting.lines().getFirst().orderLineId(), movement.orderLineId());
+            assertEquals(0, posting.lines().getFirst().quantity().compareTo(movement.quantity()));
+        }
+        assertCounts(8, 5);
+    }
+
+    /** 外层失败后查询只看到原订单，不暴露回滚的库存、履约和流水，事务内拒绝查询。 */
+    @Test
+    void queriesExcludeRolledBackFulfillmentAndRejectActiveTransaction() {
+        var fixture = fixture(); var order = create(TradeOrder.Kind.PURCHASE, fixture, "1");
+        var context = QueryContext.anonymous(subject);
+        var detailQuery = TradeOrderDetailQuery.create(order.getKind(), order.getId());
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
+            post(command(order, "1"));
+            return queries.execute(detailQuery, context);
+        }));
+        var detail = queries.execute(detailQuery, context).getItems().getFirst();
+        assertEquals(0L, detail.order().version());
+        assertEquals(TradeOrder.Status.PENDING, detail.order().status());
+        assertEquals(0, BigDecimal.ZERO.compareTo(detail.lines().getFirst().fulfilled()));
+        assertEquals(0, queries.execute(FulfillmentQuery.create(order.getKind(), order.getId(), 1, 20, List.of(), List.of()), context).getTotal());
+        assertEquals(0, queries.execute(StockMovementQuery.create(1, 20, List.of(), exact("orderId", order.getId())), context).getTotal());
+        assertEquals(0, queries.execute(StockBalanceQuery.create(1, 20, List.of(), exact("materialId", fixture.material())), context).getTotal());
+        assertCounts(1, 1);
+    }
+
+    /**
+     * 构造固定字段精确过滤。
+     * @param field 白名单字段
+     * @param value 参数值
+     * @return 单条件列表
+     */
+    private List<QuerySpec.FilterInput> exact(String field, Object value) {
+        return List.of(new QuerySpec.FilterInput(field, QuerySpec.Operator.EQ, value, null));
     }
 
     /** 同物料多行共享余额但保留各行来源和递增余额版本，引用主数据不能删除。 */

@@ -152,7 +152,7 @@ Application 的 CacheUpdateCoordinator 必须在已有工作单元中调用。�
 
 ## 查询条件基架
 
-QuerySpec.create 接收服务端字段白名单，将外部字段名转换成枚举，再由具体 QueryHandler 映射至 ORM 列。分页复用 BasePageRequest（默认 20，最大 200）；最多 3 个排序、20 个条件，文本参数最多 512 字符。支持精确、包含及同类型闭区间，未知字段、非法操作、类型不符或倒置区间均被拒绝。集合与参数类型保持不可变；包含查询的字面通配符转义和 SQL 参数绑定由后续业务查询适配验证，Query / QueryHandler 已定义类型契约，QueryResult 复用 common 的 page、pageSize、total、items 并拒绝超量或不一致的结果；QueryContext 显式携带不可变身份与权限快照，必须由服务器构造，不能从 HTTP 请求体采信。QueryGateway 已按请求精确类型统一路由，启动时拒绝重复类型与 queryCode；执行时核对结果分页、显式传递并恢复 traceId，拒绝隐式加入活动事务。`stratum.query.duration` 按注册的 queryCode 与 success/error 记录耗时；`observability.query.slow-threshold-ms` 默认 300，慢查询及失败输出警告。当前尚无 ERP 查询接口，身份认证与数据权限仍待 Phase D。
+QuerySpec.create 接收服务端字段白名单，将外部字段名转换成枚举，再由具体 QueryHandler 映射至 ORM 列。分页复用 BasePageRequest（默认 20，最大 200）；最多 3 个排序、20 个条件，文本参数最多 512 字符。支持精确、包含及同类型闭区间，未知字段、非法操作、类型不符或倒置区间均被拒绝。集合与参数类型保持不可变；包含查询的字面通配符转义和 SQL 参数绑定已由主数据真实库测试验证，Query / QueryHandler 已定义类型契约，QueryResult 复用 common 的 page、pageSize、total、items 并拒绝超量或不一致的结果；QueryContext 显式携带不可变身份与权限快照，必须由服务器构造，不能从 HTTP 请求体采信。QueryGateway 已按请求精确类型统一路由，启动时拒绝重复类型与 queryCode；执行时核对结果分页、显式传递并恢复 traceId，拒绝隐式加入活动事务。`stratum.query.duration` 按注册的 queryCode 与 success/error 记录耗时；`observability.query.slow-threshold-ms` 默认 300，慢查询及失败输出警告。当前尚无 ERP 查询接口，身份认证与数据权限仍待 Phase D。
 
 ## 实现与验证
 
@@ -213,7 +213,7 @@ MariaDB的 erp_master_data 保存UUID、类别、编码、名称、单位和版�
 
 创建、改名和删除均保存幂等回执，作用域绑定操作、v1、类别和服务器主体。改名/删除命令要求期望版本；不存在或跨类别ID返回40400，过期版本返回40900。主体字段是服务器内部输入，不代表已接入身份认证。业务与领域事件、缓存失效补偿意图同事务提交；主数据详情缓存键为 `biz:erp:master-data:{id}`，TTL为5分钟并加减30秒抖动。删除使用高于旧版本的屏障，防止旧缓存回填。
 
-C03.2完成写能力；C03.5a已增加内部主数据查询，尚未暴露HTTP业务接口。采购销售后续按已确认的分批履约实现，累计数量不得超过订单量；不包含审批、退货或反向冲销。
+C03.2完成写能力；C03.5a已增加内部主数据查询，尚未暴露HTTP业务接口。采购销售已按确认范围实现分批履约，累计数量不得超过订单量；不包含审批、退货或反向冲销。
 
 ## ERP库存内部能力
 
@@ -221,7 +221,7 @@ NODE-C03.3 已完成Quantity、StockBalance、StockMovement与内部StockPosting
 
 库存流水只追加，保存订单/履约/订单行来源、方向、正数量、变更后余额、余额版本与UTC微秒时间。同一履约行和同一余额版本各只允许一条流水。C03.4h已通过复合外键将订单、履约及订单行绑定到同一履约明细，拒绝不存在或跨订单拼接的来源，并阻止删除被流水引用的来源。
 
-StockPostingApplicationService.post必须加入调用方已有工作单元，同时保存余额、流水和erp.stock.received / erp.stock.issued事件。重复履约行、库存不足、并发冲突或事件写入失败均整体回滚；事务内不能吞掉这些失败后继续提交。此入口已由采购销售履约用例协调，未注册公共库存调整命令或HTTP端点；订单规则与幂等结果重放已完成，查询仍由后续节点交付。库存当前不维护详情缓存。
+StockPostingApplicationService.post必须加入调用方已有工作单元，同时保存余额、流水和erp.stock.received / erp.stock.issued事件。重复履约行、库存不足、并发冲突或事件写入失败均整体回滚；事务内不能吞掉这些失败后继续提交。此入口已由采购销售履约用例协调，未注册公共库存调整命令或HTTP端点；订单规则与幂等结果重放已完成，库存余额和流水已通过QueryGateway提供内部查询。库存当前不维护详情缓存。
 
 
 ## ERP采购销售写能力
@@ -230,7 +230,7 @@ NODE-C03.4已交付TradeOrder、OrderLine、Fulfillment及创建/履约命令。
 
 分批履约要求当前订单版本，按剩余量推进PENDING、PARTIAL、COMPLETED；采购增加库存，销售扣减且不得负库存。同次履约按物料及行ID排序过账，支持同物料多行；订单、履约凭据、余额、来源流水、Outbox与幂等回执处于同一工作单元。失败全部回滚，原幂等键可重试；重复请求返回当时的订单结果快照。库存流水复合外键校验完整的履约来源，不存在的来源及跨单据组合不能写入。
 
-创建事件为erp.purchase.created / erp.sale.created，履约事件为erp.purchase.fulfilled / erp.sale.fulfilled；库存事件继续独立落盘。事件可靠落盘不代表已发送MQ。当前仅提供内部命令入口，查询、业务HTTP和权限控制尚待C03.5/C03.6及Phase D；无审批、退货、反向冲销或财务记账。
+创建事件为erp.purchase.created / erp.sale.created，履约事件为erp.purchase.fulfilled / erp.sale.fulfilled；库存事件继续独立落盘。事件可靠落盘不代表已发送MQ。当前仅提供内部命令入口，内部查询已接通，业务HTTP和权限控制仍待C03.6及Phase D；无审批、退货、反向冲销或财务记账。
 
 
 ## ERP主数据读取
@@ -263,3 +263,9 @@ NODE-C03.5e提供TradeOrderDetailQuery及erp.order.detail，类别与UUID固定�
 ## 查询标量边界
 
 C03.5g1为QuerySpec补齐数值及时间边界：BigDecimal展开后的整数与小数总位数最多512，通过precision/scale和long计算提前拒绝极端指数，不实际分配展开文本。日期限1000至9999年；Instant按UTC限制为DATETIME(6)可表示范围且仅接受微秒精度，拒绝纳秒而非截断。区间两端分别验证，业务数量与价格仍沿用自身更严格限制；具体依据见[查询规范](查询基架设计.md)。
+
+## 履约历史与读写组合验收
+
+FulfillmentQuery通过erp.fulfillment.list读取指定类别和订单的历史批次；按批次分页，默认订单版本倒序并补ID稳定排序，每批最多100行。支持履约ID、当时订单版本及UTC时间过滤。仅批量加载当前页明细，保留不可变数量和原订单行号；头和履约行不可修改，关联读取只使用订单行的固定列。缺失、跨类别或未履约订单返回空历史，HTTP层负责区分资源不存在。
+
+C03.5g2通过真实采购收货与分批销售命令，验证主数据、订单摘要/详情、库存余额/流水及履约历史的一致结果；幂等重放返回当时快照而当前查询保留最新进度。外层失败后订单进度、库存、流水及履约均不暴露回滚数据，QueryGateway仍拒绝活动事务。此验收不代表业务HTTP、认证或消息投递已完成。
