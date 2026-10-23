@@ -119,6 +119,32 @@ class TradeOrderFulfillmentIntegrationTest extends MariaDbIntegrationTest {
         assertStock(fixture, "1"); assertPostingCount(sale, 2, 2); assertCounts(8, 5);
     }
 
+    /** 同物料多行共享余额但保留各行来源和递增余额版本，引用主数据不能删除。 */
+    @Test
+    void fulfillsMultipleLinesForSameMaterialAtomically() {
+        var fixture = fixture();
+        for (var kind : TradeOrder.Kind.values()) {
+            var order = create(kind, fixture, List.of(createLine(fixture.material(), "0.25"), createLine(fixture.material(), "0.75")));
+            var lines = order.getLines().stream().map(line -> FulfillOrderCommand.Line.builder()
+                    .orderLineId(line.getId()).quantity(line.getQuantity()).build()).toList();
+            var request = command(order, lines, kind);
+            var completed = post(request);
+            assertEquals(TradeOrder.Status.COMPLETED, completed.getOrder().getStatus());
+            assertEquals(completed.getPostingId(), post(request).getPostingId());
+            assertPostingCount(order, 1, 2);
+            for (UUID reference : List.of(fixture.material(), fixture.warehouse(), kind == TradeOrder.Kind.PURCHASE ? fixture.supplier() : fixture.customer())) {
+                assertThrows(DataIntegrityViolationException.class,
+                        () -> jdbc.update("DELETE FROM erp_master_data WHERE id = ?", reference.toString()));
+            }
+        }
+        assertStock(fixture, "0"); assertCounts(8, 4);
+        assertEquals(List.of(0L, 1L, 2L, 3L), jdbc.queryForList("""
+                SELECT m.balance_version FROM erp_stock_movement m
+                JOIN erp_stock_balance b ON b.id = m.balance_id
+                WHERE b.material_id = ? AND b.warehouse_id = ? ORDER BY m.balance_version
+                """, Long.class, fixture.material().toString(), fixture.warehouse().toString()));
+    }
+
     /** 过量、未知行、重复行、错误类别和过期版本均不能增加履约次数。 */
     @Test
     void rejectsInvalidFulfillmentRequests() {
