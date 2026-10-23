@@ -57,15 +57,30 @@ public class TradeOrderApplicationService {
             requireMaster(command.getPartyId(), command.getKind() == TradeOrder.Kind.PURCHASE ? MasterData.Kind.SUPPLIER : MasterData.Kind.CUSTOMER);
             requireMaster(command.getWarehouseId(), MasterData.Kind.WAREHOUSE);
             var validated = new HashSet<UUID>();
-            var lines = command.getLines().stream().map(line -> {
+            for (var line : command.getLines()) {
                 if (validated.add(line.getMaterialId())) requireMaster(line.getMaterialId(), MasterData.Kind.MATERIAL);
-                return OrderLine.create(line.getMaterialId(), new Quantity(line.getQuantity()), new UnitPrice(line.getUnitPrice()));
-            }).toList();
-            var order = TradeOrder.create(command.getKind(), command.getPartyId(), command.getWarehouseId(), lines);
+            }
+            var order = newOrder(command);
             orders.save(order);
             events.append(new OrderChanged(order, OrderChanged.Change.CREATED), "erp." + order.getKind().name().toLowerCase(Locale.ROOT) + ".created");
             return OrderResult.from(order);
         });
+    }
+
+    /**
+     * 在纯领域构造阶段转换已知输入错误，不捕获仓储、事件或幂等实现故障。
+     * @param command 创建命令
+     * @return 新订单聚合
+     * @throws StratumException 数量、单价或总金额违反输入边界
+     */
+    private TradeOrder newOrder(CreateOrderCommand command) {
+        try {
+            var lines = command.getLines().stream().map(line -> OrderLine.create(line.getMaterialId(),
+                    new Quantity(line.getQuantity()), new UnitPrice(line.getUnitPrice()))).toList();
+            return TradeOrder.create(command.getKind(), command.getPartyId(), command.getWarehouseId(), lines);
+        } catch (IllegalArgumentException invalidInput) {
+            throw new StratumException(CommonErrorCode.BAD_REQUEST);
+        }
     }
 
     /**

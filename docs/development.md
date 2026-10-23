@@ -287,3 +287,9 @@ C03.6b通过Query模块暴露GET /api/erp/masters/{kind}及/{id}，复用已有�
 C03.6c提供GET /api/erp/stock-balances和/stock-movements，统一经过QueryGateway。余额接受id/materialId/warehouseId精确UUID及quantity精确或quantityFrom/quantityTo闭区间；流水接受id/balanceId/orderId/postingId/orderLineId、direction（RECEIPT/ISSUE）、quantity及occurredAt，对数量/时间提供From/To闭区间。上下界须同时提供并各自验证，精确与区间条件按AND组合。
 
 数值直接转换BigDecimal并受QuerySpec展开位数约束，不转换浮点数；时间解析为Instant后验证UTC范围与微秒精度。非法方向、纳秒、超界指数、倒置/单边区间、未知参数及非法排序返回400。余额允许ID、物料、仓库、数量排序；流水允许ID、数量、时间排序，默认最新优先。不存在的维度或来源返回空分页；接口不开放库存调整操作。已通过真实HTTP与MariaDB核对精确数量、来源、时间、错误响应及生成OpenAPI参数。
+
+## 采购销售订单HTTP创建
+
+C03.6d提供POST /api/erp/orders/{kind}，kind为PURCHASE或SALE；请求含partyId、warehouseId及1至100条lines，每行含materialId、quantity、unitPrice。输入数量须为正且在26位整数/12位小数内，单价非负且在13位整数/6位小数内，额外最大值约束保护极端指数。领域聚合保持自动单号、固定明细和汇总后HALF_UP到分的规则；超出总金额存储边界返回400。
+
+写请求要求Idempotency-Key，服务端绑定local-erp，返回201、订单Location和快照；重复请求保留原订单及行标识，同键异参返回409，主数据不存在或类别不符返回404。应用层仅将纯领域构造中的明确输入校验转换400，主数据查询、仓储及Outbox故障不在捕获范围。已用真实HTTP验证两条1×0.005汇总为0.01、幂等与类别隔离、嵌套空行/超量/精度/极端指数及OpenAPI；履约和订单读取HTTP仍待后续节点。

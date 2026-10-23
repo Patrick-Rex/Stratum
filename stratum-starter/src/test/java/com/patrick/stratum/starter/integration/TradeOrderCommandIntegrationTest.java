@@ -93,7 +93,7 @@ class TradeOrderCommandIntegrationTest extends MariaDbIntegrationTest {
                 .quantity(BigDecimal.ZERO).unitPrice(BigDecimal.ONE).build();
         var invalid = CreateOrderCommand.builder().subjectId(subject).idempotencyKey("zero").kind(command.getKind())
                 .partyId(command.getPartyId()).warehouseId(command.getWarehouseId()).lines(List.of(zero)).build();
-        assertThrows(IllegalArgumentException.class, () -> gateway.execute(invalid));
+        assertEquals(CommonErrorCode.BAD_REQUEST, assertThrows(StratumException.class, () -> gateway.execute(invalid)).getErrorCode());
         assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM erp_trade_order WHERE party_id = ?", Integer.class, command.getPartyId().toString()));
         assertCounts(0, 0);
     }
