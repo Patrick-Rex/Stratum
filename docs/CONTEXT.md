@@ -9,10 +9,10 @@
 ## 1. 当前阶段
 
 ```
-阶段：Phase C（读模型与接口）
-当前节点：NODE-C03.7（待开始）
-上次会话日期：2026-10-24（NODE-C03.6g2 验收）
-项目状态：NODE-B01 已完成，Domain 核心抽象已建立（AggregateRoot、Entity、ValueObject、Repository、DomainEvent），domain 模块直接声明 common 依赖，源码无框架导入；根构建统一配置 Lombok 编译期依赖；Phase A 与 Phase B 已完成；Phase C 进行中
+阶段：Phase D（认证、权限与网关）
+当前节点：NODE-D01.1（待开始）
+上次会话日期：2026-10-24（NODE-C03.7 验收）
+项目状态：NODE-B01 已完成，Domain 核心抽象已建立（AggregateRoot、Entity、ValueObject、Repository、DomainEvent），domain 模块直接声明 common 依赖，源码无框架导入；根构建统一配置 Lombok 编译期依赖；Phase A 与 Phase B 已完成；Phase C 已完成；Phase D 待开始
 ```
 
 ---
@@ -94,12 +94,13 @@
 | NODE-C03.6f | 接通订单摘要、详情及履约历史HTTP查询 | 2026-10-24 | 19项query单元及20项真实订单HTTP/查询集成测试通过；Location可访问，履约postingId文档与路径id分离，当前进度与历史批次、过滤/错误/OpenAPI通过 |
 | NODE-C03.6g1 | 明确库存累计上限冲突并验证履约整体回滚 | 2026-10-24 | 35项领域单元通过，最终20项真实HTTP/库存集成通过；最大余额追加最小单位返回409，原余额/版本不变且凭据/流水/事件/回执回滚 |
 | NODE-C03.6g2 | 完成真实HTTP进销存闭环与错误文档验收，C03.6完成 | 2026-10-24 | 2项完整ERP HTTP工作流及5项OpenAPI/Knife4j集成通过；验证主数据到采购销售库存、失败重试、18事件/10回执/缓存版本及非法API版本，零失败/跳过 |
+| NODE-C03.7 | 完成ERP整体验收，Phase C完成 | 2026-10-24 | 全量重新运行93项单元和175项真实MariaDB/Redis集成测试，零失败/错误/跳过；模块依赖与读写边界检查通过 |
 
 ---
 
 ## 3. 待执行节点（按顺序）
 
-下一节点为 **NODE-C03.7**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
+下一节点为 **NODE-D01.1**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
 
 ---
 
