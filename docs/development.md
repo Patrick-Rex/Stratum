@@ -238,3 +238,8 @@ NODE-C03.4已交付TradeOrder、OrderLine、Fulfillment及创建/履约命令。
 NODE-C03.5a提供MasterDataQuery及erp.master.list处理器，经QueryGateway读取四类主数据的独立ORM投影并返回不可变结果。必填类别始终作为条件；id支持UUID精确匹配，code/name支持精确及字面包含，三字段可排序，同值补ID升序；分页默认20、最大200。ID详情仍经同一路由和类别过滤，未找到返回空结果。接口与数据权限尚未接入，当前上下文只用于本地验证及关联日志。
 
 Easy-Query的[官方条件文档](https://www.easy-query.com/easy-query-doc/ability/select/where.html)提供列引用及参数绑定表达式。真实MariaDB测试发现当前3.3.1的contains在仅含反斜线时未按字面匹配，因此本处理器使用固定LIKE模板、显式ESCAPE感叹号和绑定参数；百分号、下划线、感叹号及反斜线组合已验证，不拼接客户端SQL或属性路径。
+
+
+## ERP库存余额读取
+
+NODE-C03.5b提供StockBalanceQuery及erp.stock.balance.list处理器。id、materialId、warehouseId使用UUID精确条件，quantity支持BigDecimal精确匹配及闭区间；四字段可排序，同值补ID，分页沿用默认20、最大200。结果返回精确数量与余额版本，缺失余额返回空列表，不凭空创建零余额。QueryGateway拒绝活动写事务；当前仅内部读取，HTTP与数据权限按后续节点交付。
