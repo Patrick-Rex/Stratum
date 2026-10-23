@@ -5,11 +5,15 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import com.patrick.stratum.application.command.CommandGateway;
 import com.patrick.stratum.application.masterdata.CreateMasterDataCommand;
 import com.patrick.stratum.application.masterdata.DeleteMasterDataCommand;
 import com.patrick.stratum.application.masterdata.MasterDataApplicationService;
+import com.patrick.stratum.application.masterdata.MasterDataResult;
 import com.patrick.stratum.application.masterdata.RenameMasterDataCommand;
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.common.base.cache.VersionedCache;
@@ -233,6 +237,47 @@ class MasterDataCommandIntegrationTest extends MariaDbIntegrationTest {
         assertEquals(1, receiptCount());
         assertEquals(2, eventCount());
         assertNull(gateway.execute(delete).data());
+    }
+
+    /** 并发创建最终只有一份主数据，竞争方用原键重试获得相同结果。
+     * @throws Exception 并发任务失败或超时
+     */
+    @Test
+    void concurrentCreateConvergesToOneCommittedResult() throws Exception {
+        var command = command(MasterData.Kind.MATERIAL, "concurrent-create", "并发物料");
+        var ready = new CountDownLatch(2);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var first = executor.submit(() -> competingCreate(command, ready));
+            var second = executor.submit(() -> competingCreate(command, ready));
+            var firstResult = first.get(15, TimeUnit.SECONDS);
+            var secondResult = second.get(15, TimeUnit.SECONDS);
+            assertTrue(firstResult != null || secondResult != null);
+            var committed = firstResult != null ? firstResult : secondResult;
+            ids.add(committed.getId());
+            if (firstResult != null && secondResult != null) assertEquals(firstResult.getId(), secondResult.getId());
+            assertEquals(committed.getId(), gateway.execute(command).data().getId());
+        }
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM erp_master_data WHERE kind = 'MATERIAL' AND code = ?", Integer.class, command.getCode()));
+        assertEquals(1, receiptCount());
+        assertEquals(2, eventCount());
+    }
+
+    /**
+     * 同时进入真实CommandGateway，显式传播测试trace并接受数据库竞争冲突。
+     * @param command 相同创建命令
+     * @param ready 并发启动屏障
+     * @return 成功或已重放结果，竞争冲突为空
+     */
+    private MasterDataResult competingCreate(CreateMasterDataCommand command, CountDownLatch ready) {
+        TraceIdContext.setTraceId(subject);
+        try {
+            ready.countDown();
+            assertDoesNotThrow(() -> assertTrue(ready.await(5, TimeUnit.SECONDS)));
+            return gateway.execute(command).data();
+        } catch (StratumException conflict) {
+            assertEquals(CommonErrorCode.CONFLICT, conflict.getErrorCode());
+            return null;
+        } finally { TraceIdContext.clear(); }
     }
 
     /** 清理本测试主数据、回执、事件及关联缓存，不清空共享Redis。 */
