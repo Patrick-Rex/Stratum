@@ -17,16 +17,23 @@ public class VersionedCacheAdapterImpl implements VersionedCache {
     private final DistributedLock lock;
     private final SingleFlight<Optional<Value>> singleFlight;
     private final Duration rebuildTimeout;
+    private final CacheMetrics metrics;
 
     /** {@inheritDoc} */
     @Override
     public Optional<Value> get(String key, Policy policy, Supplier<Optional<Value>> loader) {
         Objects.requireNonNull(policy, "policy");
         Objects.requireNonNull(loader, "loader");
-        var cached = store.read(key);
-        if (cached.hit()) { return cached.value(); }
-        long deadline = System.nanoTime() + rebuildTimeout.toNanos();
-        return singleFlight.execute(key, () -> rebuild(key, policy, loader, deadline));
+        try {
+            var cached = store.read(key);
+            metrics.access(key, cached.hit());
+            if (cached.hit()) { return cached.value(); }
+            long deadline = System.nanoTime() + rebuildTimeout.toNanos();
+            return singleFlight.execute(key, () -> rebuild(key, policy, loader, deadline));
+        } catch (RuntimeException | Error failure) {
+            metrics.failed();
+            throw failure;
+        }
     }
 
     /** {@inheritDoc} */
@@ -65,7 +72,7 @@ public class VersionedCacheAdapterImpl implements VersionedCache {
             var beforeLoad = store.read(key);
             if (beforeLoad.hit()) { return beforeLoad.value(); }
             checkDeadline(deadline);
-            var loaded = Objects.requireNonNull(loader.get(), "回源结果不能为 null");
+            var loaded = metrics.load(key, loader);
             checkDeadline(deadline);
             boolean accepted = loaded.isPresent()
                     ? store.putIfUnchanged(key, loaded.orElseThrow(), policy, beforeLoad.stamp())

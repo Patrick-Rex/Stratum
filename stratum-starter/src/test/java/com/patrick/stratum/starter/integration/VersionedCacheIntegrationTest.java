@@ -12,6 +12,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
@@ -25,12 +28,16 @@ import com.patrick.stratum.infrastructure.cache.LocalCacheProperties;
 import com.patrick.stratum.infrastructure.cache.RedisVersionedCacheStore;
 import com.patrick.stratum.infrastructure.cache.SingleFlight;
 import com.patrick.stratum.infrastructure.cache.VersionedCacheAdapterImpl;
+import com.patrick.stratum.infrastructure.cache.CacheMetrics;
+import com.patrick.stratum.common.trace.TraceIdContext;
+import io.micrometer.core.instrument.MeterRegistry;
 
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /** 通过独立 L1 与合并器模拟多个应用实例，验证 Redis 互斥与回源竞争边界。 */
+@ExtendWith(OutputCaptureExtension.class)
 class VersionedCacheIntegrationTest extends MariaDbIntegrationTest {
     private static final Policy POLICY = new Policy(Duration.ofMinutes(5), Duration.ofSeconds(30));
     private final VersionedCache cache;
@@ -38,6 +45,8 @@ class VersionedCacheIntegrationTest extends MariaDbIntegrationTest {
     private final DistributedLock lock;
     private final StringRedisTemplate redis;
     private final JsonMapper json;
+    private final CacheMetrics metrics;
+    private final MeterRegistry registry;
     private final List<String> keys = new ArrayList<>();
 
     /**
@@ -47,15 +56,19 @@ class VersionedCacheIntegrationTest extends MariaDbIntegrationTest {
      * @param lock Redis 锁
      * @param redis Redis 客户端
      * @param json 序列化器
+     * @param metrics 缓存观测组件
+     * @param registry 指标注册表
      */
     @Autowired
     VersionedCacheIntegrationTest(VersionedCache cache, RedisVersionedCacheStore store, DistributedLock lock,
-            StringRedisTemplate redis, JsonMapper json) {
+            StringRedisTemplate redis, JsonMapper json, CacheMetrics metrics, MeterRegistry registry) {
         this.cache = cache;
         this.store = store;
         this.lock = lock;
         this.redis = redis;
         this.json = json;
+        this.metrics = metrics;
+        this.registry = registry;
     }
 
     /** 多实例独立合并器竞争同一个键时，只有获得锁并二次检查未命中的实例回源。 */
@@ -67,7 +80,7 @@ class VersionedCacheIntegrationTest extends MariaDbIntegrationTest {
         var loads = new AtomicInteger();
         try (var otherFlight = new SingleFlight<Optional<Value>>(8, Duration.ofSeconds(5));
                 var callers = Executors.newVirtualThreadPerTaskExecutor()) {
-            var other = new VersionedCacheAdapterImpl(otherStore(), lock, otherFlight, Duration.ofSeconds(5));
+            var other = new VersionedCacheAdapterImpl(otherStore(), lock, otherFlight, Duration.ofSeconds(5), metrics);
             java.util.function.Supplier<Optional<Value>> loader = () -> {
                 loads.incrementAndGet();
                 entered.countDown();
@@ -123,7 +136,7 @@ class VersionedCacheIntegrationTest extends MariaDbIntegrationTest {
         var release = new CountDownLatch(1);
         var entered = new CountDownLatch(1);
         try (var flight = new SingleFlight<Optional<Value>>(1, Duration.ofMillis(200))) {
-            var shortWait = new VersionedCacheAdapterImpl(otherStore(), lock, flight, Duration.ofMillis(200));
+            var shortWait = new VersionedCacheAdapterImpl(otherStore(), lock, flight, Duration.ofMillis(200), metrics);
             try {
                 assertThrows(UnavailableException.class, () -> shortWait.get(key, POLICY, () -> {
                     entered.countDown();
@@ -186,7 +199,7 @@ class VersionedCacheIntegrationTest extends MariaDbIntegrationTest {
         String key = key();
         try (var flight = new SingleFlight<Optional<Value>>(1, Duration.ofMillis(200));
                 var lease = lock.tryAcquire("lock:cache-rebuild:" + key.substring(4)).orElseThrow()) {
-            var shortWait = new VersionedCacheAdapterImpl(otherStore(), lock, flight, Duration.ofMillis(200));
+            var shortWait = new VersionedCacheAdapterImpl(otherStore(), lock, flight, Duration.ofMillis(200), metrics);
             assertThrows(UnavailableException.class, () -> shortWait.get(key, POLICY, () -> {
                 fail("不能绕过未获取的锁回源");
                 return Optional.empty();
@@ -198,10 +211,48 @@ class VersionedCacheIntegrationTest extends MariaDbIntegrationTest {
     /** 只清理本测试创建的键，保留共享测试服务。 */
     @AfterEach
     void cleanOwnKeys() {
+        TraceIdContext.clear();
         for (String key : keys) {
             redis.delete(List.of(key, "null:" + key.substring(4), "version:" + key.substring(4),
                     "lock:cache-rebuild:" + key.substring(4)));
         }
+    }
+
+    /**
+     * 指标区分命中、回源空值与失败，且不以随机键或 traceId 造成无界标签。
+     * @param output 当前默认日志格式的实际输出
+     */
+    @Test
+    void measuresActualLoadsAndFailures(CapturedOutput output) {
+        var hits = registry.counter("stratum.cache.access", "result", "hit");
+        var misses = registry.counter("stratum.cache.access", "result", "miss");
+        var loads = registry.counter("stratum.cache.loads");
+        var failures = registry.counter("stratum.cache.requests.failed");
+        var errors = registry.timer("stratum.cache.load.duration", "result", "error");
+        double previousHits = hits.count(), previousMisses = misses.count(), previousLoads = loads.count();
+        double previousFailures = failures.count();
+        long previousErrors = errors.count();
+        String key = key();
+        TraceIdContext.setTraceId("cache-metrics-test");
+        cache.get(key, POLICY, () -> {
+            assertEquals("cache-metrics-test", TraceIdContext.getTraceId().orElseThrow());
+            return Optional.empty();
+        });
+        cache.get(key, POLICY, () -> { fail("应复用空值"); return Optional.empty(); });
+        assertThrows(IllegalStateException.class,
+                () -> cache.get(key(), POLICY, () -> { throw new IllegalStateException("回源失败"); }));
+        assertEquals(previousHits + 1, hits.count());
+        assertEquals(previousMisses + 2, misses.count());
+        assertEquals(previousLoads + 2, loads.count());
+        assertEquals(previousFailures + 1, failures.count());
+        assertEquals(previousErrors + 1, errors.count());
+        assertNotNull(registry.find("stratum.cache.singleflight.merged").functionCounter());
+        assertNotNull(registry.find("stratum.cache.singleflight.inflight").gauge());
+        assertTrue(output.getOut().contains("traceId=cache-metrics-test"));
+        assertTrue(output.getOut().contains("cacheKey=" + key));
+        assertTrue(output.getOut().contains("loadDurationMs="));
+        registry.getMeters().stream().filter(meter -> meter.getId().getName().startsWith("stratum.cache."))
+                .forEach(meter -> assertTrue(meter.getId().getTags().stream().allMatch(tag -> tag.getKey().equals("result"))));
     }
 
     /**

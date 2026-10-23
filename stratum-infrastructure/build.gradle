@@ -13,4 +13,5 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
     implementation 'com.github.ben-manes.caffeine:caffeine'
     implementation 'tools.jackson.core:jackson-databind'
+    implementation 'io.micrometer:micrometer-core'
 }
