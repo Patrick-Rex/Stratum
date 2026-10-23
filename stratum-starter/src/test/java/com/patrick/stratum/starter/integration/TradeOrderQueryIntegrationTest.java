@@ -9,11 +9,14 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
+import java.util.stream.Collectors;
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.domain.inventory.Quantity;
 import com.patrick.stratum.domain.masterdata.MasterData;
 import com.patrick.stratum.domain.masterdata.MasterDataRepository;
 import com.patrick.stratum.domain.trade.OrderLine;
+import com.patrick.stratum.domain.trade.Fulfillment;
+import com.patrick.stratum.domain.trade.FulfillmentRepository;
 import com.patrick.stratum.domain.trade.TradeOrder;
 import com.patrick.stratum.domain.trade.TradeOrderRepository;
 import com.patrick.stratum.domain.trade.UnitPrice;
@@ -23,6 +26,7 @@ import com.patrick.stratum.query.dto.QueryResult;
 import com.patrick.stratum.query.spec.QuerySpec;
 import com.patrick.stratum.query.trade.TradeOrderQuery;
 import com.patrick.stratum.query.trade.TradeOrderDetailQuery;
+import com.patrick.stratum.query.trade.FulfillmentQuery;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,6 +41,7 @@ class TradeOrderQueryIntegrationTest extends MariaDbIntegrationTest {
     private final TradeOrderRepository orders;
     private final UnitOfWork unitOfWork;
     private final JdbcTemplate jdbc;
+    private final FulfillmentRepository postings;
     private final List<String> masterIds = new ArrayList<>();
     private final List<UUID> orderIds = new ArrayList<>();
     private final QueryContext context = QueryContext.anonymous(UUID.randomUUID().toString());
@@ -48,11 +53,13 @@ class TradeOrderQueryIntegrationTest extends MariaDbIntegrationTest {
      * @param orders 订单夹具仓储
      * @param unitOfWork 夹具事务
      * @param jdbc 清理客户端
+     * @param postings 履约夹具仓储
      */
     @Autowired
     TradeOrderQueryIntegrationTest(QueryGateway gateway, MasterDataRepository masters, TradeOrderRepository orders,
-            UnitOfWork unitOfWork, JdbcTemplate jdbc) {
+            UnitOfWork unitOfWork, JdbcTemplate jdbc, FulfillmentRepository postings) {
         this.gateway = gateway; this.masters = masters; this.orders = orders; this.unitOfWork = unitOfWork; this.jdbc = jdbc;
+        this.postings = postings;
     }
 
     /** 类别、交易方、仓库和单号条件保留精确摘要，跨类别ID不能匹配。 */
@@ -180,10 +187,70 @@ class TradeOrderQueryIntegrationTest extends MariaDbIntegrationTest {
         assertEquals(20, gateway.execute(TradeOrderDetailQuery.create(order.getKind(), order.getId()), context).getItems().getFirst().order().version());
     }
 
+    /** 分批履约历史保持当时版本和数量，筛选头记录后仅返回相应批次明细。 */
+    @Test
+    void readsImmutablePartialFulfillmentHistory() {
+        for (var kind : TradeOrder.Kind.values()) {
+            var order = order(kind, master(kind == TradeOrder.Kind.PURCHASE ? MasterData.Kind.SUPPLIER : MasterData.Kind.CUSTOMER),
+                    master(MasterData.Kind.WAREHOUSE), master(MasterData.Kind.MATERIAL), "1");
+            var first = fulfill(order, "0.4"); var second = fulfill(order, "0.6");
+            var history = gateway.execute(FulfillmentQuery.create(kind, order.getId(), 1, 20, List.of(), List.of()), context);
+            assertEquals(2, history.getTotal()); assertEquals(List.of(second.getId(), first.getId()), history.getItems().stream().map(FulfillmentQuery.Row::id).toList());
+            var old = history.getItems().getLast();
+            assertEquals(1, old.orderVersion()); assertEquals(first.getCreatedAt(), old.createdAt()); assertEquals(order.getId(), old.orderId());
+            assertEquals(0, new BigDecimal("0.4").compareTo(old.lines().getFirst().quantity()));
+            assertEquals(order.getLines().getFirst().getId(), old.lines().getFirst().orderLineId());
+            var filters = List.of(eq("id", first.getId()), eq("orderVersion", 1L), eq("createdAt", first.getCreatedAt()));
+            assertEquals(old, gateway.execute(FulfillmentQuery.create(kind, order.getId(), 1, 20, List.of(), filters), context).getItems().getFirst());
+            var range = List.of(new QuerySpec.FilterInput("orderVersion", QuerySpec.Operator.BETWEEN, 1L, 2L),
+                    new QuerySpec.FilterInput("createdAt", QuerySpec.Operator.BETWEEN, first.getCreatedAt(), second.getCreatedAt()));
+            assertEquals(2, gateway.execute(FulfillmentQuery.create(kind, order.getId(), 1, 20, List.of("orderVersion,asc"), range), context).getTotal());
+        }
+    }
+
+    /** 履约按头分页，每批100行仍完整有序，分页边界不会截断明细。 */
+    @Test
+    void paginatesFulfillmentsWithoutTruncatingHundredLines() {
+        UUID material = master(MasterData.Kind.MATERIAL);
+        var lines = IntStream.range(0, TradeOrder.MAX_LINES).mapToObj(index -> OrderLine.create(material, new Quantity(BigDecimal.ONE), new UnitPrice(BigDecimal.ONE))).toList();
+        var order = TradeOrder.create(TradeOrder.Kind.PURCHASE, master(MasterData.Kind.SUPPLIER), master(MasterData.Kind.WAREHOUSE), lines);
+        orderIds.add(order.getId()); unitOfWork.execute(() -> { orders.save(order); return null; });
+        var first = fulfill(order, "0.25"); var second = fulfill(order, "0.75");
+        for (int page = 1; page <= 2; page++) {
+            var result = gateway.execute(FulfillmentQuery.create(order.getKind(), order.getId(), page, 1, List.of("orderVersion,asc"), List.of()), context);
+            assertEquals(2, result.getTotal()); assertEquals(1, result.getItems().size());
+            var row = result.getItems().getFirst(); assertEquals(page == 1 ? first.getId() : second.getId(), row.id()); assertEquals(100, row.lines().size());
+            for (int index = 0; index < lines.size(); index++) {
+                assertEquals(index + 1, row.lines().get(index).lineNumber()); assertEquals(lines.get(index).getId(), row.lines().get(index).orderLineId());
+                assertEquals(material, row.lines().get(index).materialId());
+            }
+            assertThrows(UnsupportedOperationException.class, () -> row.lines().clear());
+        }
+        var empty = gateway.execute(FulfillmentQuery.create(order.getKind(), order.getId(), 3, 1, List.of(), List.of()), context);
+        assertEquals(2, empty.getTotal()); assertTrue(empty.getItems().isEmpty());
+    }
+
+    /** 履约查询拒绝错误输入及写事务，其他订单或类别不能取得已知凭据。 */
+    @Test
+    void protectsFulfillmentHistoryScopeAndInput() {
+        var order = order(TradeOrder.Kind.SALE, master(MasterData.Kind.CUSTOMER), master(MasterData.Kind.WAREHOUSE), master(MasterData.Kind.MATERIAL), "1");
+        var posting = fulfill(order, "1");
+        for (var query : List.of(FulfillmentQuery.create(TradeOrder.Kind.PURCHASE, order.getId(), 1, 20, List.of(), List.of()),
+                FulfillmentQuery.create(TradeOrder.Kind.SALE, UUID.randomUUID(), 1, 20, List.of(), List.of(eq("id", posting.getId()))))) {
+            assertTrue(gateway.execute(query, context).getItems().isEmpty());
+        }
+        assertThrows(IllegalArgumentException.class, () -> FulfillmentQuery.create(order.getKind(), order.getId(), 1, 20, List.of(), List.of(eq("orderVersion", "1"))));
+        assertThrows(IllegalArgumentException.class, () -> FulfillmentQuery.create(order.getKind(), order.getId(), 1, 20, List.of("orderId,asc"), List.of()));
+        var valid = FulfillmentQuery.create(order.getKind(), order.getId(), 1, 20, List.of(), List.of());
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> gateway.execute(valid, context)));
+    }
+
     /** 仅删除自身订单、明细和主数据夹具。 */
     @AfterEach
     void cleanOwnRows() {
         unitOfWork.execute(() -> {
+            for (UUID id : orderIds) jdbc.update("DELETE FROM erp_fulfillment_line WHERE order_id = ?", id.toString());
+            for (UUID id : orderIds) jdbc.update("DELETE FROM erp_fulfillment WHERE order_id = ?", id.toString());
             for (UUID id : orderIds) jdbc.update("DELETE FROM erp_order_line WHERE order_id = ?", id.toString());
             for (UUID id : orderIds) jdbc.update("DELETE FROM erp_trade_order WHERE id = ?", id.toString());
             for (String id : masterIds) jdbc.update("DELETE FROM erp_master_data WHERE id = ?", id);
@@ -203,6 +270,19 @@ class TradeOrderQueryIntegrationTest extends MariaDbIntegrationTest {
     private TradeOrder order(TradeOrder.Kind kind, UUID party, UUID warehouse, UUID material, String price) {
         var order = TradeOrder.create(kind, party, warehouse, List.of(OrderLine.create(material, new Quantity(BigDecimal.ONE), new UnitPrice(new BigDecimal(price)))));
         orderIds.add(order.getId()); unitOfWork.execute(() -> { orders.save(order); return null; }); return order;
+    }
+
+    /**
+     * 为每行记录相同数量的履约夹具，订单和凭据同事务提交，不执行库存用例。
+     * @param order 订单
+     * @param quantity 本次数量文本
+     * @return 已保存凭据
+     */
+    private Fulfillment fulfill(TradeOrder order, String quantity) {
+        var values = order.getLines().stream().collect(Collectors.toMap(OrderLine::getId, ignored -> new Quantity(new BigDecimal(quantity))));
+        return unitOfWork.execute(() -> {
+            order.fulfill(values); orders.save(order); var posting = Fulfillment.create(order, values); postings.append(posting); return posting;
+        });
     }
 
     /**
