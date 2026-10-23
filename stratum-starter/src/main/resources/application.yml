@@ -4,9 +4,27 @@ spring:
   profiles:
     active: local
 
-  # Nacos 配置中心占位：后续接入 spring-cloud-alibaba 时启用。
-  config:
-    import: optional:nacos:${spring.application.name}.yaml
+  datasource:
+    url: ${STRATUM_DB_URL:jdbc:mariadb://127.0.0.1:13307/stratum}
+    username: ${STRATUM_DB_USERNAME:stratum}
+    password: ${STRATUM_DB_PASSWORD}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 1
+      connection-timeout: 5000
+  flyway:
+    locations: classpath:db/migration
+    clean-disabled: true
+  data:
+    redis:
+      host: ${STRATUM_REDIS_HOST:127.0.0.1}
+      port: ${STRATUM_REDIS_PORT:6379}
+      password: ${STRATUM_REDIS_PASSWORD:}
+      timeout: 2s
+
+easy-query:
+  database: mysql
+  name-conversion: underlined
 
 server:
   port: 8080
@@ -18,4 +36,4 @@ management:
         include: health,info
   endpoint:
     health:
-      show-details: always
+      show-details: when_authorized

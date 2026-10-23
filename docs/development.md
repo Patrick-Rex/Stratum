@@ -40,12 +40,12 @@
 | stratum-application | Common 复用示例；Command / CommandHandler / UseCaseResult、UnitOfWork 与 OperationLog 契约及 CommandGateway 统一入口（NODE-B02） |
 | stratum-query | Common 复用示例 |
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
-| stratum-infrastructure | 已引入 Easy-Query 3.3.1（Boot 4 starter / MySQL 方言 / 处理器）、MariaDB JDBC、Flyway、Redis、Caffeine；装配与集成验收待 NODE-B03.2 |
+| stratum-infrastructure | 已引入 Easy-Query 3.3.1（Boot 4 starter / MySQL 方言 / 处理器）、MariaDB JDBC、Flyway、Redis、Caffeine；已配置数据源与 Flyway；真实事务行为验收在 NODE-B03.2b |
 | stratum-gateway / stratum-job | Gradle 模块骨架 |
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
 
-Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，尚待运行装配与真实服务验证；RabbitMQ、Nacos、Quartz、ShedLock、认证、网关路由和观测组件仍为后续目标设计。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
+Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，真实事务行为验证见 NODE-B03.2b；RabbitMQ、Nacos、Quartz、ShedLock、认证、网关路由和观测组件仍为后续目标设计。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
 
 以下目标基线沿用原项目入口的既有约定，尚未接入时不作为当前依赖版本：
 
@@ -82,25 +82,33 @@ Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，尚待�
 
 ## 本地启动与退出
 
-[application.yml](../stratum-starter/src/main/resources/application.yml) 默认使用 local profile 和 8080 端口，并暴露 Actuator 的 health、info。Nacos 配置导入仍为占位，starter 尚未引入对应客户端；进行不依赖 Nacos 的本地骨架检查时，通过命令行临时覆盖导入项：
+当前 Starter 已接入 MariaDB 数据源、Flyway 与 Redis 客户端；运行需要可访问的 MariaDB 数据库与 Redis。Nacos 尚未接入，已移除不可解析的导入占位。
+
+在同一 PowerShell 终端设置自己的连接信息，不将密码提交到仓库。默认数据库地址为 `jdbc:mariadb://127.0.0.1:13307/stratum`，用户为 `stratum`；密码必须由环境变量提供。
 
 ```powershell
-.\gradlew.bat --no-daemon :stratum-starter:bootRun --args="--spring.profiles.active=local --spring.config.import=optional:classpath:/application-local.yml"
+$env:STRATUM_DB_URL = 'jdbc:mariadb://127.0.0.1:13307/stratum'
+$env:STRATUM_DB_USERNAME = 'stratum'
+$env:STRATUM_DB_PASSWORD = Read-Host '本地数据库密码' -MaskInput
+$env:STRATUM_REDIS_HOST = '127.0.0.1'
+$env:STRATUM_REDIS_PORT = '6379'
+# Redis 启用认证时，另设 STRATUM_REDIS_PASSWORD。
+.\gradlew.bat --no-daemon :stratum-starter:bootRun
 ```
 
-上述 classpath 资源允许缺省，仅用于本地覆盖 Nacos 占位，不表示仓库已存在该文件。接入 Nacos 后应按 [基础设施配置](基础设施配置.md) 验证真实配置加载。
+`application.yml` 默认 local profile、8080 端口，Flyway 从 Infrastructure 的 `db/migration` 读取迁移。初始迁移仅登记版本，不创建业务表；后续按节点新增迁移，不依赖 ORM Code First 建表。连接池最多 10 个连接，禁用 Flyway clean。
 
-启动成功后，在另一个终端检查：
+成功启动后在另一终端执行：
 
 ```powershell
 Invoke-RestMethod http://localhost:8080/actuator/health
 ```
 
-当前未接入 OpenAPI / Knife4j、Prometheus 注册表及追踪后端，不将 `/doc.html`、`/v3/api-docs`、`/actuator/prometheus` 列为已可用端点。
+健康状态包含数据库与 Redis。当前尚无 OpenAPI / Knife4j、Prometheus 注册表或追踪后端，不将 `/doc.html`、`/v3/api-docs`、`/actuator/prometheus` 列为可用端点。
 
-当前仓库没有 `docker/compose/` 文件；[容器化与部署](容器化与部署.md) 中的拓扑和命令供对应节点实施后使用，Docker 不是当前骨架启动的必需条件。
+当前没有 `docker/compose/`，本轮不实施部署编排。可以连接现有 Docker 服务，也可创建独立测试容器；不要复用其他项目的业务库或清空共享 Redis。集成测试使用独立数据库及带 `stratum` 前缀的键。
 
-结束运行时在启动终端按 `Ctrl+C`，确认本次启动的应用退出。自动化检查需在清理步骤中停止自己启动的进程或容器；不得停止用户已有服务。示例使用 `--no-daemon` 避免留下持久 Gradle daemon。
+结束时在启动终端按 `Ctrl+C`，确认应用退出并清除当前终端密码变量。自动化验证在 finally 中关闭自己启动的进程或容器，保留用户已有服务。
 
 ## 实现与验证
 

@@ -10,8 +10,8 @@
 
 ```
 阶段：Phase B（写模型骨架）
-当前节点：NODE-B03.2a（待开始）
-上次会话日期：2026-10-23（NODE-B03.1 验收）
+当前节点：NODE-B03.2b（待开始）
+上次会话日期：2026-10-23（NODE-B03.2a 验收）
 项目状态：NODE-B01 已完成，Domain 核心抽象已建立（AggregateRoot、Entity、ValueObject、Repository、DomainEvent），domain 模块直接声明 common 依赖，源码无框架导入；根构建统一配置 Lombok 编译期依赖；Phase A 与 NODE-B02 已完成
 ```
 
@@ -32,12 +32,13 @@
 | NODE-B02.1 | 建立写命令、工作单元与审计契约 | 2026-10-23 | application build 退出码 0；契约无框架导入；本子节点不含行为实现 |
 | NODE-B02.2 | 完成统一命令入口，父节点 NODE-B02 完成 | 2026-10-23 | application test 6项通过、0失败；Lombok 1.18.44 与 JUnit 工具链重新编译成功 |
 | NODE-B03.1 | 接入持久化与缓存依赖并统一 Boot 版本约束 | 2026-10-23 | starter build 与 application test 退出码0；6项测试通过；依赖仅接入技术模块，不向Domain引入框架 |
+| NODE-B03.2a | 完成数据源、Flyway 与 Application 事务装配 | 2026-10-23 | starter bootJar退出码0；独立MariaDB11.8完成1条迁移；连接独立Redis后health为UP；应用进程已停止 |
 
 ---
 
 ## 3. 待执行节点（按顺序）
 
-下一节点为 **NODE-B03.2a**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
+下一节点为 **NODE-B03.2b**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
 
 ---
 
@@ -48,6 +49,8 @@
 ---
 
 ## 5. 已确认决策与沿革
+
+本轮业务目标已由用户确认为标准企业 ERP，首期范围为通用进销存：物料、客户、供应商、采购、销售与库存。后续 NODE-C03 按此拆分业务闭环，不采用笔记示例；未确认的业务规则在实现前澄清。
 
 架构约束与优先级见 [CONSTITUTION](CONSTITUTION.md)，阶段冻结决策见 [SDD 执行总览](SDD执行总览.md) 第 3 节。下表保留既有决策沿革，不作为活动任务；DECISION-A16 的“未引入 Lombok”前提已由 A17 替代，现行使用范围见 A18 与 [开发与迭代](development.md)。
 
@@ -101,7 +104,7 @@ Stratum/
     └── entropy/              # 偏移日志与最近交接
 ```
 
-专题文档入口见 [文档导航](README.md)，源码模块职责见 [项目结构](项目结构.md)。当前没有 `docker/compose/` 或迁移脚本；application 已新增 6 项命令入口测试。
+专题文档入口见 [文档导航](README.md)，源码模块职责见 [项目结构](项目结构.md)。当前没有 `docker/compose/`；Infrastructure 已有 Flyway 初始版本迁移（不创建业务表），application 已有 6 项命令入口测试。
 
 ---
 
