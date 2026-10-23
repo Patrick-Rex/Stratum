@@ -9,5 +9,7 @@ dependencies {
     implementation 'org.slf4j:slf4j-api'
     implementation 'io.micrometer:micrometer-core'
     implementation 'com.easy-query:sql-springboot4-starter'
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui'
     annotationProcessor 'com.easy-query:sql-processor'
 }

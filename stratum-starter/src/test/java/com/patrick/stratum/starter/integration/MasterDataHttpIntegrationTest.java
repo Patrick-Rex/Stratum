@@ -1,6 +1,8 @@
 package com.patrick.stratum.starter.integration;
 
 import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -140,6 +142,70 @@ class MasterDataHttpIntegrationTest extends MariaDbIntegrationTest {
         var deleted = document.path("paths").path("/api/erp/masters/{kind}/{id}").path("delete");
         assertTrue(deleted.path("responses").has("204"));
         assertFalse(deleted.path("responses").path("204").has("content"));
+        var get = document.path("paths").path("/api/erp/masters/{kind}").path("get");
+        var names = new HashSet<String>();
+        for (var parameter : get.path("parameters")) names.add(parameter.path("name").asText());
+        assertTrue(names.containsAll(Set.of("kind", "page", "pageSize", "sort", "id", "code", "name", "codeContains", "nameContains")));
+        assertFalse(names.contains("parameters"));
+        assertTrue(get.path("responses").has("200"));
+    }
+
+    /** 创建后可通过查询入口取得详情，类别隔离和缺失资源行为一致。
+     * @throws Exception HTTP失败
+     */
+    @Test
+    void readsCreatedMastersThroughTheirOwnKind() throws Exception {
+        for (var kind : MasterData.Kind.values()) {
+            String path = "/api/erp/masters/" + kind;
+            var created = send("POST", path, key(), payload(kind, "详情测试"));
+            assertEquals(201, created.statusCode());
+            var expected = body(created).path("data"); String id = expected.path("id").asText(); ids.add(id);
+            var detail = send("GET", path + "/" + id, null, null);
+            assertEquals(200, detail.statusCode()); assertEquals(expected, body(detail).path("data"));
+            var page = body(send("GET", path + "?id=" + id, null, null)).path("data");
+            assertEquals(1, page.path("page").asInt()); assertEquals(20, page.path("pageSize").asInt());
+            assertEquals(1, page.path("total").asInt()); assertEquals(expected, page.path("items").get(0));
+            var other = kind == MasterData.Kind.MATERIAL ? MasterData.Kind.CUSTOMER : MasterData.Kind.MATERIAL;
+            assertError(send("GET", "/api/erp/masters/" + other + "/" + id, null, null), 404, 40400);
+            assertEquals(0, body(send("GET", "/api/erp/masters/" + other + "?id=" + id, null, null)).path("data").path("total").asInt());
+            assertError(send("GET", path + "/" + UUID.randomUUID(), null, null), 404, 40400);
+        }
+    }
+
+    /** 包含参数中的通配符和反斜杠按字面处理，重复sort保持多列稳定分页。
+     * @throws Exception HTTP失败
+     */
+    @Test
+    void preservesLiteralContainsAndRepeatedSortParameters() throws Exception {
+        String path = "/api/erp/masters/MATERIAL"; String name = "HTTP%_!\\" + UUID.randomUUID();
+        var expectedIds = new java.util.ArrayList<String>();
+        for (int index = 0; index < 3; index++) {
+            String payload = json.writeValueAsString(java.util.Map.of("code", UUID.randomUUID().toString(), "name", name, "baseUnit", "个"));
+            var created = send("POST", path, key(), payload); assertEquals(201, created.statusCode(), created.body());
+            String id = body(created).path("data").path("id").asText(); ids.add(id); expectedIds.add(id);
+        }
+        expectedIds.sort(String::compareTo);
+        String condition = "?nameContains=" + URLEncoder.encode(name, StandardCharsets.UTF_8) + "&sort=name,asc&sort=id,asc&pageSize=1&page=";
+        for (int page = 1; page <= 3; page++) {
+            var response = send("GET", path + condition + page, null, null);
+            assertEquals(200, response.statusCode(), response.body());
+            var result = body(response).path("data"); assertEquals(3, result.path("total").asInt());
+            assertEquals(expectedIds.get(page - 1), result.path("items").get(0).path("id").asText());
+        }
+        var empty = send("GET", path + "?name=" + URLEncoder.encode("' OR 1=1 --", StandardCharsets.UTF_8), null, null);
+        assertEquals(0, body(empty).path("data").path("total").asInt());
+    }
+
+    /** 未声明参数、重复值、分页越界和排序注入在数据库查询前返回标准400。
+     * @throws Exception HTTP失败
+     */
+    @Test
+    void rejectsUnknownOrMalformedQueryParameters() throws Exception {
+        for (String query : List.of("unknown=x", "page=0", "pageSize=201", "page=1&page=2", "pageSize=x",
+                "id=1-1-1-1-1", "id=invalid", "sort=name", "sort=version,asc", "sort=id,asc&sort=id,desc",
+                "sort=id;drop,asc", "name=a&name=b", "name=" + "a".repeat(513))) {
+            assertError(send("GET", "/api/erp/masters/MATERIAL?" + query, null, null), 400, 40000);
+        }
     }
 
     /** 只清理本测试的随机键、主数据、事件与缓存。 */
