@@ -2,9 +2,17 @@
 
 ## 交接报告（2026-10-24）
 
-- completedNode: 无新增开发节点；固化用户确认的主数据与分批履约规则，细化C03.2执行计划。
-- changedFiles: `docs/AI可执行开发计划.md`、`docs/CONTEXT.md`、`docs/entropy/SESSION-HANDOFF.md`。
-- validations: 核对确认范围、规范绑定、前置和8文件上限；提交前执行Markdown链接、文本格式及Git差异检查。纯文档维护不运行构建。
-- unresolved: 整个非部署计划尚未完成；部署节点继续暂缓。BIZ-001与BIZ-002已解除。
-- nextNode: NODE-C03.2a，建立主数据领域模型与规则测试。
-- 每子节点验收后审查、提交并推送。当前未启动应用或测试容器，后续集成验证按需重建独立资源；结束时仅清理本次创建的资源。
+- completedNode: NODE-C03.2a（建立四类主数据聚合、固定属性与领域事件）。
+- changedFiles:
+  - `docs/CONTEXT.md`
+  - `docs/entropy/SESSION-HANDOFF.md`
+  - `stratum-domain/src/main/java/com/patrick/stratum/domain/masterdata/MasterData.java`
+  - `stratum-domain/src/main/java/com/patrick/stratum/domain/masterdata/MasterDataChanged.java`
+  - `stratum-domain/src/main/java/com/patrick/stratum/domain/masterdata/MasterDataRepository.java`
+  - `stratum-domain/src/test/java/com/patrick/stratum/domain/masterdata/MasterDataTest.java`
+
+- validations: domain test共12项通过、0失败/跳过；新增6项覆盖四类UUID、固定属性、名称修改、单位/文本边界、版本/类别保护和事件快照；Domain无框架导入。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
+- unresolved: 部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
+- nextNode: NODE-C03.2b。
+- 当前节点验收后审查、提交、推送；完成后继续下一节点，不重复请求授权。
+- CONTEXT 已更新。共享 Docker 容器保持运行，仅清理本轮创建的测试资源；测试 JVM 已退出；独立测试容器 stratum-integration-mariadb / stratum-integration-redis 暂留供连续验证，会话结束前清理。连接状态在本机临时目录 stratum-integration-state.json，不提交凭据。
