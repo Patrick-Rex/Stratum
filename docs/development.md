@@ -38,7 +38,7 @@
 | stratum-domain | Entity、AggregateRoot、ValueObject、Repository、DomainEvent |
 | stratum-interface | ApiResponseFactory |
 | stratum-application | Command / CommandHandler / UseCaseResult、工作单元事务代理、OperationLog 契约、CommandGateway；OutboxEventWriter 在已有工作单元内落盘领域事件 |
-| stratum-query | Common 复用示例 |
+| stratum-query | Common 复用示例；QuerySpec 提供不可变分页、排序与过滤白名单表达 |
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
 | stratum-infrastructure | 已引入 Easy-Query 3.3.1（Boot 4 starter / MySQL 方言 / 处理器）、MariaDB JDBC、Flyway、Redis、Caffeine；已配置数据源与 Flyway；NODE-B03.2b 已验证真实 MariaDB 提交、回滚和嵌套事务 |
 | stratum-gateway / stratum-job | Gradle 模块骨架 |
@@ -149,6 +149,10 @@ Infrastructure 的 `SingleFlight` 合并同键请求，实际加载数量受容�
 Application 的 CacheUpdateCoordinator 必须在已有工作单元中调用。它先写入 `stratum.cache.invalidate` Outbox 意图，再登记提交后版本更新或失效；事务回滚不会修改缓存。补偿载荷仅包含键、最低版本及 TTL 参数，不复制业务数据。所有缓存动作都提前登记意图，覆盖数据库提交后进程中断的窗口；即时更新成功也保留意图，由 Phase E 的幂等消费者处理。
 
 更新失败会降级为带版本屏障的失效；Redis 完全不可用时记录 traceId、缓存键与事件 ID，保留已提交的业务结果与补偿意图。删除场景使用 invalidateAfterCommit，最低版本必须高于被删除对象的旧版本。当前已验证补偿落盘，Relay 和消费执行仍待 Phase E，不能宣称自动补偿已运行。
+
+## 查询条件基架
+
+QuerySpec.create 接收服务端字段白名单，将外部字段名转换成枚举，再由具体 QueryHandler 映射至 ORM 列。分页复用 BasePageRequest（默认 20，最大 200）；最多 3 个排序、20 个条件，文本参数最多 512 字符。支持精确、包含及同类型闭区间，未知字段、非法操作、类型不符或倒置区间均被拒绝。集合与参数类型保持不可变；包含查询的字面通配符转义和 SQL 参数绑定由后续业务查询适配验证，当前尚未提供 QueryGateway 或 ERP 查询接口。
 
 ## 实现与验证
 
