@@ -26,6 +26,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -81,6 +82,30 @@ class TradeOrderFulfillmentIntegrationTest extends MariaDbIntegrationTest {
         assertEquals(TradeOrder.Status.COMPLETED, second.getOrder().getStatus());
         assertEquals(TradeOrder.Status.PARTIAL, post(firstCommand).getOrder().getStatus());
         assertStock(fixture, "1"); assertPostingCount(order, 2, 2); assertCounts(5, 3);
+    }
+
+    /** 流水来源必须完整引用同一履约行，拒绝拼接其他订单、履约或行，也禁止删除被引用来源。 */
+    @Test
+    void databaseProtectsExactFulfillmentSource() {
+        var fixture = fixture();
+        var first = create(TradeOrder.Kind.PURCHASE, fixture, "1");
+        var second = create(TradeOrder.Kind.PURCHASE, fixture, "1");
+        var firstPosting = post(command(first, "1"));
+        var secondPosting = post(command(second, "1"));
+        for (var replacement : List.of(
+                new String[] {"order_id", second.getId().toString()},
+                new String[] {"posting_id", secondPosting.getPostingId().toString()},
+                new String[] {"order_line_id", second.getLines().getFirst().getId().toString()},
+                new String[] {"posting_id", UUID.randomUUID().toString()})) {
+            assertThrows(DataIntegrityViolationException.class, () -> jdbc.update(
+                    "UPDATE erp_stock_movement SET " + replacement[0] + " = ? WHERE posting_id = ?",
+                    replacement[1], firstPosting.getPostingId().toString()));
+        }
+        assertThrows(DataIntegrityViolationException.class, () -> jdbc.update(
+                "DELETE FROM erp_fulfillment_line WHERE posting_id = ?", firstPosting.getPostingId().toString()));
+        assertEquals(first.getId().toString(), jdbc.queryForObject(
+                "SELECT order_id FROM erp_stock_movement WHERE posting_id = ?", String.class, firstPosting.getPostingId().toString()));
+        assertStock(fixture, "2");
     }
 
     /** 真实采购收货后分批销售出库，精确扣减库存并完成订单。 */

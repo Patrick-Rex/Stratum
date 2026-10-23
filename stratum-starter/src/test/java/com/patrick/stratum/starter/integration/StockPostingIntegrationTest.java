@@ -35,6 +35,7 @@ class StockPostingIntegrationTest extends MariaDbIntegrationTest {
     private final MasterDataRepository masters;
     private final UnitOfWork unitOfWork;
     private final JdbcTemplate jdbc;
+    private final InventorySourceFixture sources;
     private final List<String> masterIds = new ArrayList<>();
     private final String trace = UUID.randomUUID().toString();
 
@@ -51,6 +52,7 @@ class StockPostingIntegrationTest extends MariaDbIntegrationTest {
             MasterDataRepository masters, UnitOfWork unitOfWork, JdbcTemplate jdbc) {
         this.service = service; this.balances = balances; this.masters = masters;
         this.unitOfWork = unitOfWork; this.jdbc = jdbc;
+        this.sources = new InventorySourceFixture(jdbc, unitOfWork);
     }
 
     /** 将所有测试事件关联到独立trace，便于验证及清理。 */
@@ -188,6 +190,7 @@ class StockPostingIntegrationTest extends MariaDbIntegrationTest {
                     jdbc.update("DELETE m FROM erp_stock_movement m JOIN erp_stock_balance b ON b.id = m.balance_id WHERE b.material_id = ? OR b.warehouse_id = ?", id, id);
                     jdbc.update("DELETE FROM erp_stock_balance WHERE material_id = ? OR warehouse_id = ?", id, id);
                 }
+                sources.clean();
                 for (String id : masterIds) jdbc.update("DELETE FROM erp_master_data WHERE id = ?", id);
                 return null;
             });
@@ -201,8 +204,9 @@ class StockPostingIntegrationTest extends MariaDbIntegrationTest {
      * @return 内部输入
      */
     private StockPosting input(StockMovement.Direction direction, String value) {
-        return StockPosting.builder().materialId(master(MasterData.Kind.MATERIAL)).warehouseId(master(MasterData.Kind.WAREHOUSE))
+        var input = StockPosting.builder().materialId(master(MasterData.Kind.MATERIAL)).warehouseId(master(MasterData.Kind.WAREHOUSE))
                 .source(source()).direction(direction).quantity(quantity(value)).build();
+        prepare(input); return input;
     }
 
     /**
@@ -214,8 +218,18 @@ class StockPostingIntegrationTest extends MariaDbIntegrationTest {
      * @return 新输入
      */
     private StockPosting with(StockPosting input, StockMovement.Source source, StockMovement.Direction direction, String value) {
-        return StockPosting.builder().materialId(input.getMaterialId()).warehouseId(input.getWarehouseId())
+        var result = StockPosting.builder().materialId(input.getMaterialId()).warehouseId(input.getWarehouseId())
                 .source(source).direction(direction).quantity(quantity(value)).build();
+        prepare(result); return result;
+    }
+
+    /**
+     * 准备有效输入的关系来源，零数量仍交由被测应用拒绝。
+     * @param input 过账输入
+     */
+    private void prepare(StockPosting input) {
+        if (input.getQuantity().value().signum() > 0) sources.prepare(input.getSource(), input.getMaterialId(),
+                input.getWarehouseId(), input.getDirection(), input.getQuantity());
     }
 
     /**

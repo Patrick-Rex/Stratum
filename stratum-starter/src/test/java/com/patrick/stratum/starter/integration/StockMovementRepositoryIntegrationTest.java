@@ -32,6 +32,7 @@ class StockMovementRepositoryIntegrationTest extends MariaDbIntegrationTest {
     private final MasterDataRepository masters;
     private final UnitOfWork unitOfWork;
     private final JdbcTemplate jdbc;
+    private final InventorySourceFixture sources;
     private final List<String> masterIds = new ArrayList<>();
     private final List<String> balanceIds = new ArrayList<>();
 
@@ -48,18 +49,20 @@ class StockMovementRepositoryIntegrationTest extends MariaDbIntegrationTest {
             MasterDataRepository masters, UnitOfWork unitOfWork, JdbcTemplate jdbc) {
         this.movements = movements; this.balances = balances; this.masters = masters;
         this.unitOfWork = unitOfWork; this.jdbc = jdbc;
+        this.sources = new InventorySourceFixture(jdbc, unitOfWork);
     }
 
-    /** 同订单行分批生成不同履约，入库和出库的精确快照均无损落盘。 */
+    /** 同采购订单行分批生成不同履约，精确快照均无损落盘。 */
     @Test
     void storesPartialPostingSnapshotsWithoutLoss() {
         var balance = balance();
         var firstSource = source();
         var first = receipt(balance, firstSource);
+        var secondSource = new StockMovement.Source(firstSource.orderId(), UUID.randomUUID(), firstSource.orderLineId());
+        sources.prepare(secondSource, balance.getMaterialId(), balance.getWarehouseId(), StockMovement.Direction.RECEIPT, quantity("0.125"));
         var second = unitOfWork.execute(() -> {
-            balance.issue(quantity("0.125")); balances.save(balance);
-            var movement = StockMovement.create(balance, new StockMovement.Source(firstSource.orderId(), UUID.randomUUID(),
-                    firstSource.orderLineId()), StockMovement.Direction.ISSUE, quantity("0.125"));
+            balance.receive(quantity("0.125")); balances.save(balance);
+            var movement = StockMovement.create(balance, secondSource, StockMovement.Direction.RECEIPT, quantity("0.125"));
             movements.append(movement); return movement;
         });
         for (var movement : List.of(first, second)) {
@@ -93,6 +96,7 @@ class StockMovementRepositoryIntegrationTest extends MariaDbIntegrationTest {
     void rejectsDuplicateBalanceVersion() {
         var balance = balance(); receipt(balance, source());
         var duplicate = StockMovement.create(balance, source(), StockMovement.Direction.RECEIPT, quantity("1"));
+        sources.prepare(duplicate.getSource(), balance.getMaterialId(), balance.getWarehouseId(), duplicate.getDirection(), duplicate.getQuantity());
         assertConflict(() -> unitOfWork.execute(() -> { movements.append(duplicate); return null; }));
         assertEquals(1, count(balance));
     }
@@ -100,10 +104,12 @@ class StockMovementRepositoryIntegrationTest extends MariaDbIntegrationTest {
     /** 流水必须关联真实余额，存在流水的余额也不能删除。 */
     @Test
     void enforcesBalanceReference() {
-        var missing = StockBalance.restore(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), quantity("1"), 0);
+        var balance = balance();
+        var missing = StockBalance.restore(UUID.randomUUID(), balance.getMaterialId(), balance.getWarehouseId(), quantity("1"), 0);
         var movement = StockMovement.create(missing, source(), StockMovement.Direction.RECEIPT, quantity("1"));
+        sources.prepare(movement.getSource(), missing.getMaterialId(), missing.getWarehouseId(), movement.getDirection(), movement.getQuantity());
         assertConflict(() -> unitOfWork.execute(() -> { movements.append(movement); return null; }));
-        var balance = balance(); receipt(balance, source());
+        receipt(balance, source());
         assertThrows(DataIntegrityViolationException.class,
                 () -> jdbc.update("DELETE FROM erp_stock_balance WHERE id = ?", balance.getId().toString()));
     }
@@ -137,6 +143,7 @@ class StockMovementRepositoryIntegrationTest extends MariaDbIntegrationTest {
         unitOfWork.execute(() -> {
             for (String id : balanceIds) jdbc.update("DELETE FROM erp_stock_movement WHERE balance_id = ?", id);
             for (String id : balanceIds) jdbc.update("DELETE FROM erp_stock_balance WHERE id = ?", id);
+            sources.clean();
             for (String id : masterIds) jdbc.update("DELETE FROM erp_master_data WHERE id = ?", id);
             return null;
         });
@@ -170,6 +177,7 @@ class StockMovementRepositoryIntegrationTest extends MariaDbIntegrationTest {
      * @return 已写入流水
      */
     private StockMovement receipt(StockBalance balance, StockMovement.Source source) {
+        sources.prepare(source, balance.getMaterialId(), balance.getWarehouseId(), StockMovement.Direction.RECEIPT, quantity("1.25"));
         return unitOfWork.execute(() -> {
             balance.receive(quantity("1.25")); balances.save(balance);
             var movement = StockMovement.create(balance, source, StockMovement.Direction.RECEIPT, quantity("1.25"));
@@ -195,7 +203,7 @@ class StockMovementRepositoryIntegrationTest extends MariaDbIntegrationTest {
     }
 
     /**
-     * 生成独立来源标识，实际订单关系由后续订单迁移建立。
+     * 生成独立来源标识，由来源夹具建立真实关联。
      * @return 履约来源
      */
     private StockMovement.Source source() { return new StockMovement.Source(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()); }
