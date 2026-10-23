@@ -23,7 +23,7 @@ description: Stratum 安全审查技能。当处理认证授权、输入校验�
 
 ## Stratum 安全基线
 
-- JWT 使用 `RS256`，Access Token `30` 分钟，Refresh Token `14` 天且必须旋转。
+- JWT 使用 `RS256`，Access Token `15` 分钟（以 [安全认证设计](../../../docs/安全认证设计.md) 为准），Refresh Token `14` 天且必须旋转。
 - 必含 claims 至少包括 `sub、iat、exp、jti、sid、ver`。
 - Refresh 白名单、会话状态、用户版本必须进入 Redis 权威存储。
 - `401` 只表示未认证或令牌无效；`403` 只表示已认证但无权限或数据范围拒绝。

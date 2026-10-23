@@ -3,7 +3,10 @@
 ## 交接报告（2026-10-24）
 
 - completedNode: NODE-C03.7（完成ERP整体验收，Phase C完成）。
+- 本次附加文档维护：修正security-review技能历史有效期并记录DRIFT-002；未推进D01.1。
 - changedFiles:
+  - `.github/skills/security-review/SKILL.md`
+  - `docs/entropy/DRIFT-LOG.md`
   - `README.md`
   - `docs/AI可执行开发计划.md`
   - `docs/CONTEXT.md`
