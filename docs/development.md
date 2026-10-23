@@ -196,3 +196,11 @@ MVC 测试探针控制器标记为 `@TestComponent`，测试配置使用 `@TestC
 [springdoc 3.0.3 官方发布说明](https://github.com/springdoc/springdoc-openapi/releases/tag/v3.0.3)确认该版本使用Boot 4.0.5，许可为Apache-2.0。[Knife4j 4.5.0 发布说明](https://github.com/xiaoymin/knife4j/releases/tag/v4.5.0)与[该版本父POM](https://github.com/xiaoymin/knife4j/blob/v4.5.0/knife4j/pom.xml)可核对发布及Apache-2.0许可；仅使用本地静态展示资源，无订阅或外部调用费用。组件更新节奏独立于Boot，当前按固定版本验证兼容性。
 
 OpenApiConfiguration 为自动包装的业务JSON结果补充ApiResponse模型、X-Trace-Id响应头及通用400/500错误描述，已有ApiResponse不重复包装。文档统一采用命名响应组件，保证Knife4j能够展开嵌套对象；静态资源和二进制返回保持原协议。Controller返回非默认成功状态时应同步声明 `@ResponseStatus` 或对应OpenAPI响应注解，避免动态ResponseEntity状态无法被静态文档推断。测试探针只在显式导入时装配，发布包中不包含这些接口。
+
+## 写请求幂等
+
+IdempotentApplicationService 在已有工作单元内执行写回调，并通过 IdempotencyRepository 把请求SHA-256摘要和业务结果JSON同事务落盘。调用方先做授权与输入规范化；作用域由服务端组合操作、API版本和主体，不能从请求体直接采信。客户端键限1至128个ASCII字母、数字、点、下划线、冒号或连字符，作用域最多200字符，保留大小写；请求和结果JSON分别限制为256 KiB。
+
+同键同摘要重放已保存的业务结果，同键不同摘要返回40900。并发竞争由MariaDB复合主键判定，失败方的业务、Outbox和回执全部回滚；客户端沿用原键重试可重放胜出结果。写回调可能并发进入，因此只允许同事务数据库写入，外部消息仍须Outbox。每次HTTP响应的traceId由响应基架重新生成，不存入回执。请求DTO应稳定序列化，作用域内的结果DTO类型保持固定；当前不自动删除回执，不支持凭空重新使用历史键。
+
+当前已提供持久化与Application入口；ERP命令/HTTP接口接入随C03后续子节点交付，主体认证仍待Phase D。验证包含真实MariaDB并发唯一提交、失败整体回滚、请求冲突与结果重放。
