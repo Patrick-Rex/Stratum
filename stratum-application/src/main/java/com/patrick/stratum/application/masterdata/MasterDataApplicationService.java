@@ -70,6 +70,25 @@ public class MasterDataApplicationService {
     }
 
     /**
+     * 删除未被业务引用的主数据，并登记高于旧版本的缓存失效屏障。
+     * @param command 包含主体、类别和观察版本的删除命令
+     * @return 空业务结果，重复请求按回执重放
+     * @throws StratumException 不存在、过期版本或已有业务引用
+     * @apiNote 示例：通过gateway.execute(DeleteMasterDataCommand.builder()...build())调用。
+     */
+    @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)
+    public Void delete(DeleteMasterDataCommand command) {
+        Objects.requireNonNull(command, "command");
+        var key = key("delete", command.getKind(), command.getSubjectId(), command.getIdempotencyKey());
+        return idempotency.execute(key, command, Void.class, () -> {
+            var aggregate = loadForWrite(command.getId(), command.getKind(), command.getVersion());
+            repository.delete(aggregate);
+            publish(aggregate, MasterDataChanged.Change.DELETED);
+            return null;
+        });
+    }
+
+    /**
      * 在当前写事务中加载聚合，并委托领域对象核对类别和观察版本。
      * @param id 聚合标识
      * @param kind 用例类别
@@ -103,8 +122,12 @@ public class MasterDataApplicationService {
         var event = new MasterDataChanged(aggregate, change);
         events.append(event, "erp." + aggregate.getKind().name().toLowerCase(Locale.ROOT) + "." + change.name().toLowerCase(Locale.ROOT));
         var result = MasterDataResult.from(aggregate);
-        cache.updateAfterCommit(cacheKey(aggregate.getId()),
-                new VersionedCache.Value(aggregate.getVersion(), json.writeValueAsString(result)), CACHE_POLICY);
+        if (change == MasterDataChanged.Change.DELETED) {
+            cache.invalidateAfterCommit(cacheKey(aggregate.getId()), event.getVersion(), CACHE_POLICY);
+        } else {
+            cache.updateAfterCommit(cacheKey(aggregate.getId()),
+                    new VersionedCache.Value(aggregate.getVersion(), json.writeValueAsString(result)), CACHE_POLICY);
+        }
         return result;
     }
 

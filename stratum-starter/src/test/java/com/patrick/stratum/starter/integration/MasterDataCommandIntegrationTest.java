@@ -8,6 +8,7 @@ import java.util.UUID;
 
 import com.patrick.stratum.application.command.CommandGateway;
 import com.patrick.stratum.application.masterdata.CreateMasterDataCommand;
+import com.patrick.stratum.application.masterdata.DeleteMasterDataCommand;
 import com.patrick.stratum.application.masterdata.MasterDataApplicationService;
 import com.patrick.stratum.application.masterdata.RenameMasterDataCommand;
 import com.patrick.stratum.application.transaction.UnitOfWork;
@@ -178,6 +179,62 @@ class MasterDataCommandIntegrationTest extends MariaDbIntegrationTest {
         assertEquals(2, eventCount());
     }
 
+    /** 删除后原键重试仍成功，版本屏障拒绝迟到的旧缓存回填。 */
+    @Test
+    void deletesOnceAndBlocksStaleCacheWrites() {
+        var original = gateway.execute(command(MasterData.Kind.MATERIAL, "create", "物料")).data();
+        ids.add(original.getId());
+        var delete = DeleteMasterDataCommand.builder().subjectId(subject).idempotencyKey("delete")
+                .kind(original.getKind()).id(original.getId()).version(0).build();
+        assertNull(gateway.execute(delete).data());
+        assertNull(gateway.execute(delete).data());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM erp_master_data WHERE id = ?", Integer.class, original.getId()));
+        String key = MasterDataApplicationService.cacheKey(original.getId());
+        assertFalse(cache.putIfNewer(key, new VersionedCache.Value(0, json.writeValueAsString(original)), MasterDataApplicationService.CACHE_POLICY));
+        assertTrue(cache.get(key, MasterDataApplicationService.CACHE_POLICY, Optional::empty).isEmpty());
+        assertEquals(4, eventCount());
+        assertEquals(2, receiptCount());
+        assertEquals(1, jdbc.queryForObject("SELECT JSON_VALUE(payload, '$.version') FROM outbox_event WHERE aggregate_id = ? AND event_type = 'erp.material.deleted'", Integer.class, original.getId()));
+    }
+
+    /** 已有业务引用或过期版本的删除不产生回执，引用解除后同键可正常执行。 */
+    @Test
+    void rejectsReferencedAndStaleDeletion() {
+        var original = gateway.execute(command(MasterData.Kind.WAREHOUSE, "create", "仓库")).data();
+        ids.add(original.getId());
+        jdbc.update("INSERT INTO stratum_it_master_data_reference(id, master_data_id) VALUES (?, ?)", UUID.randomUUID().toString(), original.getId());
+        var delete = DeleteMasterDataCommand.builder().subjectId(subject).idempotencyKey("delete")
+                .kind(original.getKind()).id(original.getId()).version(0).build();
+        assertEquals(CommonErrorCode.CONFLICT, assertThrows(StratumException.class, () -> gateway.execute(delete)).getErrorCode());
+        var stale = DeleteMasterDataCommand.builder().subjectId(subject).idempotencyKey("stale-delete")
+                .kind(original.getKind()).id(original.getId()).version(9).build();
+        assertEquals(CommonErrorCode.CONFLICT, assertThrows(StratumException.class, () -> gateway.execute(stale)).getErrorCode());
+        assertEquals(1, receiptCount());
+        assertEquals(2, eventCount());
+        jdbc.update("DELETE FROM stratum_it_master_data_reference WHERE master_data_id = ?", original.getId());
+        assertNull(gateway.execute(delete).data());
+        assertEquals(2, receiptCount());
+    }
+
+    /** 删除所在外层事务回滚时，主数据和旧缓存继续有效，原键可重试。 */
+    @Test
+    void deletionRollbackPreservesDataAndCache() {
+        var original = gateway.execute(command(MasterData.Kind.CUSTOMER, "create", "客户")).data();
+        ids.add(original.getId());
+        var delete = DeleteMasterDataCommand.builder().subjectId(subject).idempotencyKey("rollback-delete")
+                .kind(original.getKind()).id(original.getId()).version(0).build();
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
+            gateway.execute(delete); throw new IllegalStateException("删除回滚");
+        }));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM erp_master_data WHERE id = ?", Integer.class, original.getId()));
+        var cached = cache.get(MasterDataApplicationService.cacheKey(original.getId()), MasterDataApplicationService.CACHE_POLICY,
+                () -> fail("回滚不能使已提交缓存失效")).orElseThrow();
+        assertEquals(0, cached.version());
+        assertEquals(1, receiptCount());
+        assertEquals(2, eventCount());
+        assertNull(gateway.execute(delete).data());
+    }
+
     /** 清理本测试主数据、回执、事件及关联缓存，不清空共享Redis。 */
     @AfterEach
     void cleanOwnRows() {
@@ -185,7 +242,10 @@ class MasterDataCommandIntegrationTest extends MariaDbIntegrationTest {
             unitOfWork.execute(() -> {
                 jdbc.update("DELETE FROM outbox_event WHERE trace_id = ?", subject);
                 jdbc.update("DELETE FROM idempotency_receipt WHERE scope LIKE ?", "master:%:" + subject);
-                for (String id : ids) jdbc.update("DELETE FROM erp_master_data WHERE id = ?", id);
+                for (String id : ids) {
+                    jdbc.update("DELETE FROM stratum_it_master_data_reference WHERE master_data_id = ?", id);
+                    jdbc.update("DELETE FROM erp_master_data WHERE id = ?", id);
+                }
                 return null;
             });
             for (String id : ids) {
