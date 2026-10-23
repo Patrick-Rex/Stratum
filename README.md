@@ -1,12 +1,12 @@
 # Stratum
 
-Stratum 是采用 Java、Spring Boot 和 DDD 分层的多模块单体应用脚手架，通过 SDD（规范驱动开发）逐步实现查询、事务、消息、认证和运维能力。
+Stratum 是采用 Java、Spring Boot 和 DDD 分层的多模块单体项目，以标准企业 ERP 的通用进销存为首期业务，按 SDD（规范驱动开发）逐步实现。
 
 ## 当前状态
 
-仓库已建立 9 个 Gradle 子模块、Starter 启动骨架、公共响应与异常处理、基础工具及 Domain 核心抽象。按现有验收记录，Phase A 与 NODE-B01 已完成，NODE-B02 已建立统一命令入口并通过行为测试，下一节点为 NODE-B03（持久化骨架）。详见 [当前状态](docs/CONTEXT.md)。
+Phase A/B、查询基架与接口基架已完成验收：包含 Domain/命令与工作单元、MariaDB/Easy-Query、Outbox可靠落盘、版本化缓存与分布式锁、查询路由、HTTP版本与统一响应、参数校验及OpenAPI/Knife4j。当前准备进入 NODE-C03，开发物料、客户供应商、采购销售与库存业务。详见 [当前状态](docs/CONTEXT.md)。
 
-持久化与缓存客户端已接入；事务一致性、缓存治理、消息、认证、网关路由、查询基架和容器化仍需按后续节点验收；设计文档中的能力与验收项不代表当前已交付。
+ERP业务闭环、消息投递与消费、认证与数据权限、网关、后台任务及完整可观测性尚未完成；部署相关节点本轮暂缓。设计文档中的目标不代表当前已交付。
 
 ## 文档入口
 
@@ -30,4 +30,4 @@ Stratum 是采用 Java、Spring Boot 和 DDD 分层的多模块单体应用脚�
 
 当前使用环境变量配置本地依赖，Nacos 尚未接入。启动成功后可检查 `http://localhost:8080/actuator/health`，结束时按 `Ctrl+C` 退出。
 
-当前未提供 Docker Compose 文件、`/doc.html` 或 Prometheus 指标端点。完整的操作说明、验证边界与后续设计见 [开发与迭代](docs/development.md)。
+启动后可访问 `/v3/api-docs` 获取生成文档、`/doc.html` 查看 Knife4j。当前未提供 Docker Compose 文件或 Prometheus 指标端点。完整的操作说明、验证边界与后续设计见 [开发与迭代](docs/development.md)。
