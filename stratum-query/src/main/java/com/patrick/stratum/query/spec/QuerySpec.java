@@ -25,6 +25,9 @@ public final class QuerySpec<F extends Enum<F>> {
     public static final int MAX_SORTS = 3;
     public static final int MAX_FILTERS = 20;
     public static final int MAX_TEXT_LENGTH = 512;
+    public static final int MAX_DECIMAL_DIGITS = 512;
+    private static final Instant MIN_INSTANT = Instant.parse("1000-01-01T00:00:00Z");
+    private static final Instant MAX_INSTANT = Instant.parse("9999-12-31T23:59:59.999999Z");
     private static final Set<Class<?>> VALUE_TYPES = Set.of(String.class, Integer.class, Long.class,
             BigDecimal.class, LocalDate.class, Instant.class, Boolean.class, UUID.class);
     private final BasePageRequest pageRequest;
@@ -110,7 +113,7 @@ public final class QuerySpec<F extends Enum<F>> {
     }
 
     /**
-     * 仅接受精确匹配的不可变标量类型，并限制文本参数长度。
+     * 校验不可变标量和资源边界；数值展开及时间精度在参数进入数据库前检查，不分配展开字符串。
      * @param value 参数值
      * @param type 服务端允许类型
      */
@@ -118,6 +121,17 @@ public final class QuerySpec<F extends Enum<F>> {
         if (value == null || value.getClass() != type
                 || value instanceof String text && text.length() > MAX_TEXT_LENGTH) {
             throw new IllegalArgumentException("查询参数类型错误或长度超过上限");
+        }
+        if (value instanceof BigDecimal decimal) {
+            long integerDigits = Math.max(1L, (long) decimal.precision() - decimal.scale());
+            long fractionDigits = Math.max(0L, (long) decimal.scale());
+            if (integerDigits + fractionDigits > MAX_DECIMAL_DIGITS) throw new IllegalArgumentException("查询数值展开位数超过上限");
+        }
+        if (value instanceof Instant instant && (instant.isBefore(MIN_INSTANT) || instant.isAfter(MAX_INSTANT) || instant.getNano() % 1_000 != 0)) {
+            throw new IllegalArgumentException("查询时间超出数据库范围或微秒精度");
+        }
+        if (value instanceof LocalDate date && (date.getYear() < 1000 || date.getYear() > 9999)) {
+            throw new IllegalArgumentException("查询日期超出数据库范围");
         }
     }
 

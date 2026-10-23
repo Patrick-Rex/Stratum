@@ -1,6 +1,9 @@
 package com.patrick.stratum.query.spec;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -15,14 +18,16 @@ import com.patrick.stratum.query.spec.QuerySpec.Operator;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** 验证查询参数边界和白名单，SQL 参数绑定在后续 ORM 查询节点验证。 */
+/** 验证查询参数边界和白名单，SQL绑定另由真实数据库查询测试验证。 */
 class QuerySpecTest {
     /** 测试服务器拥有的字段映射，不来自请求参数。 */
-    private enum Fields { NAME, AMOUNT, SECRET }
+    private enum Fields { NAME, AMOUNT, SECRET, TIME, DATE }
     private static final Map<String, Field<Fields>> FIELDS = Map.of(
             "name", new Field<>(Fields.NAME, String.class, Set.of(Operator.EQ, Operator.CONTAINS), true),
             "amount", new Field<>(Fields.AMOUNT, BigDecimal.class, Set.of(Operator.EQ, Operator.BETWEEN), true),
-            "secret", new Field<>(Fields.SECRET, String.class, Set.of(), false));
+            "secret", new Field<>(Fields.SECRET, String.class, Set.of(), false),
+            "time", new Field<>(Fields.TIME, Instant.class, Set.of(Operator.EQ, Operator.BETWEEN), true),
+            "date", new Field<>(Fields.DATE, LocalDate.class, Set.of(Operator.EQ, Operator.BETWEEN), true));
 
     /** 默认分页与上限复用 common，排序映射为服务器字段枚举。 */
     @Test
@@ -86,5 +91,41 @@ class QuerySpecTest {
                 List.of(new FilterInput("name", Operator.EQ, "x".repeat(513), null)), FIELDS));
         assertThrows(IllegalArgumentException.class, () -> QuerySpec.create(1, 20, List.of(),
                 java.util.Collections.nCopies(21, new FilterInput("name", Operator.EQ, "x", null)), FIELDS));
+    }
+
+    /** 短指数不能触发无界十进制展开，正负指数、整数溢出边界和区间上界统一提前拒绝。 */
+    @Test
+    void boundsDecimalExpansionWithoutAllocatingPlainText() {
+        for (var valid : List.of(new BigDecimal("1e511"), new BigDecimal("-1e511"), new BigDecimal("1e-511"), new BigDecimal("99999999999999999999999999.999999999999"))) {
+            var spec = QuerySpec.create(1, 20, List.of(), List.of(new FilterInput("amount", Operator.EQ, valid, null)), FIELDS);
+            assertSame(valid, spec.getFilters().getFirst().value());
+        }
+        for (var invalid : List.of(new BigDecimal("1e512"), new BigDecimal("1e-512"), new BigDecimal("-1e10000"),
+                new BigDecimal(BigInteger.ONE, Integer.MIN_VALUE), new BigDecimal(BigInteger.ONE, Integer.MAX_VALUE),
+                new BigDecimal(BigInteger.ZERO, Integer.MAX_VALUE))) {
+            assertThrows(IllegalArgumentException.class, () -> QuerySpec.create(1, 20, List.of(), List.of(new FilterInput("amount", Operator.EQ, invalid, null)), FIELDS));
+            assertThrows(IllegalArgumentException.class, () -> QuerySpec.create(1, 20, List.of(), List.of(new FilterInput("amount", Operator.BETWEEN, BigDecimal.ZERO, invalid)), FIELDS));
+        }
+    }
+
+    /** 时间参数与DATETIME(6)上下界和微秒精度对齐，不把纳秒条件静默截断。 */
+    @Test
+    void boundsInstantRangeAndPrecision() {
+        Instant lower = Instant.parse("1000-01-01T00:00:00Z"); Instant upper = Instant.parse("9999-12-31T23:59:59.999999Z");
+        assertDoesNotThrow(() -> QuerySpec.create(1, 20, List.of(), List.of(new FilterInput("time", Operator.BETWEEN, lower, upper)), FIELDS));
+        for (var invalid : List.of(Instant.MIN, Instant.MAX, lower.minusNanos(1000), upper.plusNanos(1000), Instant.parse("2026-10-24T00:00:00.000000001Z"))) {
+            assertThrows(IllegalArgumentException.class, () -> QuerySpec.create(1, 20, List.of(), List.of(new FilterInput("time", Operator.EQ, invalid, null)), FIELDS));
+            assertThrows(IllegalArgumentException.class, () -> QuerySpec.create(1, 20, List.of(), List.of(new FilterInput("time", Operator.BETWEEN, lower, invalid)), FIELDS));
+        }
+    }
+
+    /** 日期参数采用与数据库一致的公历范围，边界以外值在比较或绑定前拒绝。 */
+    @Test
+    void boundsDateRange() {
+        assertDoesNotThrow(() -> QuerySpec.create(1, 20, List.of(), List.of(new FilterInput("date", Operator.BETWEEN,
+                LocalDate.of(1000, 1, 1), LocalDate.of(9999, 12, 31))), FIELDS));
+        for (var invalid : List.of(LocalDate.MIN, LocalDate.MAX, LocalDate.of(999, 12, 31), LocalDate.of(10000, 1, 1))) {
+            assertThrows(IllegalArgumentException.class, () -> QuerySpec.create(1, 20, List.of(), List.of(new FilterInput("date", Operator.EQ, invalid, null)), FIELDS));
+        }
     }
 }
