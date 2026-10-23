@@ -126,6 +126,8 @@ public class OpenApiConfiguration {
             }
         });
         addErrorResponse(operation, "400", "请求参数、协议或版本错误（40000/40001）", CommonErrorCode.BAD_REQUEST);
+        addErrorResponse(operation, "404", "资源不存在或类别不匹配（40400）", CommonErrorCode.NOT_FOUND);
+        addErrorResponse(operation, "409", "版本、库存、引用或幂等冲突（40900）", CommonErrorCode.CONFLICT);
         addErrorResponse(operation, "500", "服务内部错误（50000），不暴露内部异常", CommonErrorCode.INTERNAL_ERROR);
         return operation;
     }

@@ -9,6 +9,7 @@ import java.util.regex.Pattern;
 import java.util.List;
 
 import com.patrick.stratum.interfaceadapter.fixture.DocumentationProbeController;
+import com.patrick.stratum.common.error.CommonErrorCode;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -138,15 +139,16 @@ class ApiDocumentationIntegrationTest extends MariaDbIntegrationTest {
                 }
             }
             assertTrue(versionFound);
-            for (String status : List.of("400", "500")) {
+            for (var code : List.of(CommonErrorCode.BAD_REQUEST, CommonErrorCode.NOT_FOUND, CommonErrorCode.CONFLICT, CommonErrorCode.INTERNAL_ERROR)) {
+                String status = Integer.toString(code.getCode() / 100);
                 var error = operation.path("responses").path(status);
                 assertTrue(error.path("headers").has("X-Trace-Id"));
                 JsonNode reference = error.path("content").path("application/json").path("schema");
                 assertTrue(reference.has("$ref"));
                 var properties = resolveSchema(document, reference).path("properties");
                 assertTrue(properties.has("details"));
-                assertEquals(status.equals("400") ? 40000 : 50000, properties.path("code").path("example").asInt());
-                assertEquals(status.equals("400") ? "请求参数或协议不合法" : "服务内部错误",
+                assertEquals(code.getCode(), properties.path("code").path("example").asInt());
+                assertEquals(code.getDefaultMessage(),
                         properties.path("message").path("example").asString());
             }
             var invalid = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/documentation-probes/object"))
