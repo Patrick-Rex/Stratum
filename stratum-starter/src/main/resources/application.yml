@@ -26,6 +26,15 @@ easy-query:
   database: mysql
   name-conversion: underlined
 
+stratum:
+  auth:
+    jwt:
+      enabled: ${STRATUM_AUTH_JWT_ENABLED:false}
+      public-key: ${STRATUM_AUTH_PUBLIC_KEY:}
+      private-key: ${STRATUM_AUTH_PRIVATE_KEY:}
+      issuer: ${STRATUM_AUTH_ISSUER:}
+      audience: ${STRATUM_AUTH_AUDIENCE:}
+
 server:
   port: 8080
 

@@ -331,3 +331,9 @@ Infrastructure已接入Boot 4.0.5 BOM管理的Spring Security JOSE 7.0.4（传�
 RsaTokenAdapterImpl使用调用方提供的2048至8192位RSA密钥，只签发/接受RS256；Access固定15分钟、Refresh固定14天，校验iss/aud、用途、必要claims、UUID标识、非负整数版本及精确有效期。令牌输入最大16KiB，错误统一UNAUTHORIZED且不保留解码异常原因或原文。7项真实RSA单元测试已通过，包括不同签名/算法、到期瞬间、用途混用、缺失/畸形字段和输入边界。
 
 此阶段尚未装配密钥配置、Redis会话、HTTP登录或安全过滤链；密码学校验成功不能替代会话有效性、RBAC或数据权限检查。接口暂仍使用Phase C本地主体，后续D01.5替换。
+
+## 外部JWT密钥装配（NODE-D01.2）
+
+本地可用 `STRATUM_AUTH_JWT_ENABLED=true` 显式装配TokenCodec，并提供 `STRATUM_AUTH_PUBLIC_KEY`（X.509 PUBLIC KEY PEM）、`STRATUM_AUTH_PRIVATE_KEY`（PKCS#8 PRIVATE KEY PEM）、`STRATUM_AUTH_ISSUER` 和 `STRATUM_AUTH_AUDIENCE`。PEM使用真实换行，单块不超过16KiB；密钥2048至8192位，启动时以实际签名/验证检查配对。启用后缺失、非法、弱密钥或配对失败将阻止装配，错误和配置对象toString均隐藏敏感内容，不生成默认私钥。
+
+当前组件默认未启用；这个开关仅装配密码学端口，不提供HTTP认证或授权，D01.5仍待接入过滤链。5项真实Spring上下文装配测试与7项RSA回归通过。测试密钥动态生成并只保留在测试进程内。
