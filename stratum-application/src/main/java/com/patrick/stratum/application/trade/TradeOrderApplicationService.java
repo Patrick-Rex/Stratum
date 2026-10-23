@@ -103,7 +103,7 @@ public class TradeOrderApplicationService {
             for (var line : command.getLines()) {
                 var id = Objects.requireNonNull(line.getOrderLineId(), "orderLineId");
                 if (quantities.putIfAbsent(id, new Quantity(line.getQuantity()).requirePositive()) != null) {
-                    throw new IllegalArgumentException("同一批次不能重复指定订单行");
+                    throw new StratumException(CommonErrorCode.BAD_REQUEST);
                 }
             }
             order.fulfill(quantities);

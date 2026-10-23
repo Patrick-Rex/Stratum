@@ -230,7 +230,8 @@ class TradeOrderFulfillmentIntegrationTest extends MariaDbIntegrationTest {
         var unknown = FulfillOrderCommand.Line.builder().orderLineId(UUID.randomUUID()).quantity(BigDecimal.ONE).build();
         assertConflict(() -> post(command(order, List.of(unknown), order.getKind())));
         var line = command(order, "0.25").getLines().getFirst();
-        assertThrows(IllegalArgumentException.class, () -> post(command(order, List.of(line, line), order.getKind())));
+        assertEquals(CommonErrorCode.BAD_REQUEST, assertThrows(StratumException.class,
+                () -> post(command(order, List.of(line, line), order.getKind()))).getErrorCode());
         assertEquals(CommonErrorCode.NOT_FOUND, assertThrows(StratumException.class,
                 () -> post(command(order, List.of(line), TradeOrder.Kind.SALE))).getErrorCode());
         post(command(order, "0.25"));

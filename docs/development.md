@@ -292,4 +292,10 @@ C03.6c提供GET /api/erp/stock-balances和/stock-movements，统一经过QueryGa
 
 C03.6d提供POST /api/erp/orders/{kind}，kind为PURCHASE或SALE；请求含partyId、warehouseId及1至100条lines，每行含materialId、quantity、unitPrice。输入数量须为正且在26位整数/12位小数内，单价非负且在13位整数/6位小数内，额外最大值约束保护极端指数。领域聚合保持自动单号、固定明细和汇总后HALF_UP到分的规则；超出总金额存储边界返回400。
 
-写请求要求Idempotency-Key，服务端绑定local-erp，返回201、订单Location和快照；重复请求保留原订单及行标识，同键异参返回409，主数据不存在或类别不符返回404。应用层仅将纯领域构造中的明确输入校验转换400，主数据查询、仓储及Outbox故障不在捕获范围。已用真实HTTP验证两条1×0.005汇总为0.01、幂等与类别隔离、嵌套空行/超量/精度/极端指数及OpenAPI；履约和订单读取HTTP仍待后续节点。
+写请求要求Idempotency-Key，服务端绑定local-erp，返回201、订单Location和快照；重复请求保留原订单及行标识，同键异参返回409，主数据不存在或类别不符返回404。应用层仅将纯领域构造中的明确输入校验转换400，主数据查询、仓储及Outbox故障不在捕获范围。已用真实HTTP验证两条1×0.005汇总为0.01、幂等与类别隔离、嵌套空行/超量/精度/极端指数及OpenAPI；履约HTTP已于C03.6e接通，订单读取HTTP仍待后续节点。
+
+## 分批履约HTTP接口
+
+C03.6e提供POST /api/erp/orders/{kind}/{id}/fulfillments；请求含显式version和1至100条lines，每行仅含orderLineId及正quantity，沿用12位小数/26位整数边界。返回201及postingId/order快照，Location为该订单履约历史的id过滤地址，读取端点由C03.6f交付。服务器固定主体、必填幂等头、原请求重放与同键异参规则与创建一致。
+
+重复行属于400输入错误，未知行/超剩余量/过期版本/库存不足为409，缺失订单或类别不符为404。旧幂等请求重放当时PARTIAL快照，不被后续COMPLETED状态覆盖。真实HTTP已验证采购和销售各两批完整推进且只各产生两批凭据/流水；库存不足不保存履约/回执，不推进订单，补货后同键可重试。输入校验及OpenAPI已同步；未加入审批、修改、取消、退货或财务记账。

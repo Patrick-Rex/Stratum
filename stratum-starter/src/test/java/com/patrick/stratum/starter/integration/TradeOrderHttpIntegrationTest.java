@@ -128,7 +128,8 @@ class TradeOrderHttpIntegrationTest extends MariaDbIntegrationTest {
     @Test
     void documentsOrderCreation() throws Exception {
         var response = send("GET", "/v3/api-docs", null, null); assertEquals(200, response.statusCode());
-        var operation = json.readTree(response.body()).path("paths").path("/api/erp/orders/{kind}").path("post");
+        var paths = json.readTree(response.body()).path("paths");
+        var operation = paths.path("/api/erp/orders/{kind}").path("post");
         assertTrue(operation.path("responses").has("201"));
         assertTrue(operation.path("requestBody").path("required").asBoolean());
         boolean found = false;
@@ -136,6 +137,73 @@ class TradeOrderHttpIntegrationTest extends MariaDbIntegrationTest {
             if (parameter.path("name").asText().equals("Idempotency-Key")) { found = true; assertTrue(parameter.path("required").asBoolean()); }
         }
         assertTrue(found);
+        var fulfillment = paths.path("/api/erp/orders/{kind}/{id}/fulfillments").path("post");
+        assertTrue(fulfillment.path("responses").has("201"));
+        assertTrue(fulfillment.path("requestBody").path("required").asBoolean());
+    }
+
+    /** 采购和销售分批推进状态，旧请求重放原快照，余额和历史批次只产生一次。
+     * @throws Exception HTTP失败
+     */
+    @Test
+    void fulfillsBothKindsInPartsAndReplaysHistoricalSnapshot() throws Exception {
+        var fixture = fixture();
+        for (var kind : TradeOrder.Kind.values()) {
+            var order = create(fixture, kind, "1"); String path = fulfillmentPath(order); String key = key();
+            String request = fulfillmentPayload(order, "0.4");
+            var first = send("POST", path, key, request); assertEquals(201, first.statusCode(), first.body());
+            var firstData = body(first).path("data"); assertEquals("PARTIAL", firstData.path("order").path("status").asText());
+            assertEquals(path + "?id=" + firstData.path("postingId").asText(), first.headers().firstValue("Location").orElseThrow());
+            var second = send("POST", path, key(), fulfillmentPayload(firstData.path("order"), "0.6"));
+            assertEquals(201, second.statusCode(), second.body());
+            assertEquals("COMPLETED", body(second).path("data").path("order").path("status").asText());
+            var replay = send("POST", path, key, request); assertEquals(201, replay.statusCode()); assertEquals(firstData, body(replay).path("data"));
+            assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM erp_fulfillment WHERE order_id = ?", Integer.class, order.path("id").asText()));
+            assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM erp_stock_movement WHERE order_id = ?", Integer.class, order.path("id").asText()));
+        }
+        var stock = body(send("GET", "/api/erp/stock-balances?materialId=" + fixture.material(), null, null)).path("data");
+        assertEquals(1, stock.path("total").asInt()); assertEquals(0, BigDecimal.ZERO.compareTo(new BigDecimal(stock.path("items").get(0).path("quantity").asText())));
+        assertEquals(10, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_event WHERE trace_id = ?", Integer.class, trace));
+    }
+
+    /** 库存不足返回409并回滚订单、凭据、库存、事件和回执，收货后原键可成功重试。
+     * @throws Exception HTTP失败
+     */
+    @Test
+    void rollsBackInsufficientStockAndAllowsRetry() throws Exception {
+        var fixture = fixture(); var sale = create(fixture, TradeOrder.Kind.SALE, "1");
+        String request = fulfillmentPayload(sale, "1"); String requestKey = key();
+        assertError(send("POST", fulfillmentPath(sale), requestKey, request), 409, 40900);
+        assertEquals(0, jdbc.queryForObject("SELECT version FROM erp_trade_order WHERE id = ?", Long.class, sale.path("id").asText()));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM erp_fulfillment WHERE order_id = ?", Integer.class, sale.path("id").asText()));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM idempotency_receipt WHERE request_key = ?", Integer.class, requestKey));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_event WHERE trace_id = ?", Integer.class, trace));
+        var purchase = create(fixture, TradeOrder.Kind.PURCHASE, "1");
+        assertEquals(201, send("POST", fulfillmentPath(purchase), key(), fulfillmentPayload(purchase, "1")).statusCode());
+        var result = send("POST", fulfillmentPath(sale), requestKey, request);
+        assertEquals(201, result.statusCode(), result.body());
+        assertEquals("COMPLETED", body(result).path("data").path("order").path("status").asText());
+    }
+
+    /** 履约输入与业务冲突有明确区分，非法请求不会推进版本。
+     * @throws Exception HTTP失败
+     */
+    @Test
+    void rejectsInvalidFulfillmentWithoutAdvancingOrder() throws Exception {
+        var order = create(fixture(), TradeOrder.Kind.PURCHASE, "1"); String path = fulfillmentPath(order);
+        String valid = fulfillmentPayload(order, "0.25"); String lineId = order.path("lines").get(0).path("id").asText();
+        assertError(send("POST", path, null, valid), 400, 40000);
+        for (String invalid : List.of("{}", valid.replace("\"version\":0,", ""), valid.replace("\"version\":0", "\"version\":-1"),
+                valid.replace("0.25", "0"), valid.replace("0.25", "1e2147483647"), valid.replaceFirst("\\[.*]", "[null]"),
+                valid.replace("]", "," + json.writeValueAsString(json.readTree(valid).path("lines").get(0)) + "]"))) {
+            assertError(send("POST", path, key(), invalid), 400, 40000);
+        }
+        assertError(send("POST", path, key(), valid.replace(lineId, UUID.randomUUID().toString())), 409, 40900);
+        assertError(send("POST", path, key(), valid.replace("0.25", "1.01")), 409, 40900);
+        assertError(send("POST", path.replace("PURCHASE", "SALE"), key(), valid), 404, 40400);
+        assertEquals(0, jdbc.queryForObject("SELECT version FROM erp_trade_order WHERE id = ?", Long.class, order.path("id").asText()));
+        assertEquals(201, send("POST", path, key(), valid).statusCode());
+        assertError(send("POST", path, key(), valid), 409, 40900);
     }
 
     /** 删除本测试订单、幂等键和主数据，不清空数据库。 */
@@ -144,8 +212,12 @@ class TradeOrderHttpIntegrationTest extends MariaDbIntegrationTest {
         unitOfWork.execute(() -> {
             jdbc.update("DELETE FROM outbox_event WHERE trace_id = ?", trace);
             for (String key : keys) jdbc.update("DELETE FROM idempotency_receipt WHERE request_key = ? AND scope LIKE 'trade:%:local-erp'", key);
+            for (String id : orderIds) jdbc.update("DELETE FROM erp_stock_movement WHERE order_id = ?", id);
+            for (String id : orderIds) jdbc.update("DELETE FROM erp_fulfillment_line WHERE order_id = ?", id);
+            for (String id : orderIds) jdbc.update("DELETE FROM erp_fulfillment WHERE order_id = ?", id);
             for (String id : orderIds) jdbc.update("DELETE FROM erp_order_line WHERE order_id = ?", id);
             for (String id : orderIds) jdbc.update("DELETE FROM erp_trade_order WHERE id = ?", id);
+            for (String id : masterIds) jdbc.update("DELETE FROM erp_stock_balance WHERE material_id = ? OR warehouse_id = ?", id, id);
             for (String id : masterIds) jdbc.update("DELETE FROM erp_master_data WHERE id = ?", id);
             return null;
         });
@@ -167,6 +239,40 @@ class TradeOrderHttpIntegrationTest extends MariaDbIntegrationTest {
     private String master(MasterData.Kind kind) {
         var value = MasterData.create(kind, UUID.randomUUID().toString(), "订单HTTP测试", kind == MasterData.Kind.MATERIAL ? "个" : null);
         masterIds.add(value.getId()); unitOfWork.execute(() -> { masters.save(value); return null; }); return value.getId();
+    }
+
+    /**
+     * 创建并登记一行订单，供后续履约。
+     * @param fixture 业务维度
+     * @param kind 类别
+     * @param quantity 订购数量
+     * @return 已创建订单JSON
+     * @throws Exception HTTP失败
+     */
+    private JsonNode create(Fixture fixture, TradeOrder.Kind kind, String quantity) throws Exception {
+        var response = send("POST", "/api/erp/orders/" + kind, key(), payload(fixture, kind, quantity, "1", 1));
+        assertEquals(201, response.statusCode(), response.body()); var order = body(response).path("data");
+        orderIds.add(order.path("id").asText()); return order;
+    }
+
+    /**
+     * 从订单快照定位履约资源。
+     * @param order 订单JSON
+     * @return 相对路径
+     */
+    private String fulfillmentPath(JsonNode order) {
+        return "/api/erp/orders/" + order.path("kind").asText() + "/" + order.path("id").asText() + "/fulfillments";
+    }
+
+    /**
+     * 构造首行履约的版本化请求。
+     * @param order 当时订单快照
+     * @param quantity 当次数量JSON数字
+     * @return 请求JSON
+     */
+    private String fulfillmentPayload(JsonNode order, String quantity) {
+        return "{\"version\":" + order.path("version").asLong() + ",\"lines\":[{\"orderLineId\":\""
+                + order.path("lines").get(0).path("id").asText() + "\",\"quantity\":" + quantity + "}]}";
     }
 
     /**
