@@ -45,7 +45,8 @@ class StockBalanceTest {
         var balance = StockBalance.open(UUID.randomUUID(), UUID.randomUUID());
         balance.receive(quantity("99999999999999999999999999.999999999999"));
         var before = balance.getQuantity();
-        assertThrows(IllegalArgumentException.class, () -> balance.receive(quantity("0.000000000001")));
+        assertEquals(CommonErrorCode.CONFLICT, assertThrows(StratumException.class,
+                () -> balance.receive(quantity("0.000000000001"))).getErrorCode());
         assertEquals(before, balance.getQuantity());
     }
 

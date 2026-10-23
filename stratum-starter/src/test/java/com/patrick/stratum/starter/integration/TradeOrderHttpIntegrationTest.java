@@ -23,6 +23,7 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.annotation.DirtiesContext;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.json.JsonMapper;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -34,7 +35,7 @@ class TradeOrderHttpIntegrationTest extends MariaDbIntegrationTest {
     private final JdbcTemplate jdbc;
     private final MasterDataRepository masters;
     private final UnitOfWork unitOfWork;
-    private final JsonMapper json = JsonMapper.builder().build();
+    private final JsonMapper json = JsonMapper.builder().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
     private final String trace = UUID.randomUUID().toString();
     private final List<String> masterIds = new ArrayList<>();
     private final Set<String> orderIds = new HashSet<>();
@@ -282,6 +283,29 @@ class TradeOrderHttpIntegrationTest extends MariaDbIntegrationTest {
             }
         }
         assertEquals(Set.of("path:id", "query:postingId"), identifiers);
+    }
+
+    /** 累加余额超出存储上限是409冲突，整批履约及回执回滚而原余额保持不变。
+     * @throws Exception HTTP失败
+     */
+    @Test
+    void rejectsStockCapacityOverflowWithoutPartialPosting() throws Exception {
+        var fixture = fixture(); String maximum = "99999999999999999999999999.999999999999";
+        var first = send("POST", "/api/erp/orders/PURCHASE", key(), payload(fixture, TradeOrder.Kind.PURCHASE, maximum, "0", 1));
+        assertEquals(201, first.statusCode(), first.body()); var order = body(first).path("data"); orderIds.add(order.path("id").asText());
+        var receipt = send("POST", fulfillmentPath(order), key(), fulfillmentPayload(order, maximum));
+        assertEquals(201, receipt.statusCode(), receipt.body());
+        var second = create(fixture, TradeOrder.Kind.PURCHASE, "0.000000000001");
+        String failedKey = key();
+        assertError(send("POST", fulfillmentPath(second), failedKey, fulfillmentPayload(second, "0.000000000001")), 409, 40900);
+        assertEquals(0, jdbc.queryForObject("SELECT version FROM erp_trade_order WHERE id = ?", Long.class, second.path("id").asText()));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM erp_fulfillment WHERE order_id = ?", Integer.class, second.path("id").asText()));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM erp_stock_movement WHERE order_id = ?", Integer.class, second.path("id").asText()));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM idempotency_receipt WHERE request_key = ?", Integer.class, failedKey));
+        assertEquals(4, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_event WHERE trace_id = ?", Integer.class, trace));
+        var result = body(send("GET", "/api/erp/stock-balances?materialId=" + fixture.material(), null, null)).path("data").path("items").get(0);
+        assertEquals(0, new BigDecimal(maximum).compareTo(new BigDecimal(result.path("quantity").asText())));
+        assertEquals(0, result.path("version").asLong());
     }
 
     /** 删除本测试订单、幂等键和主数据，不清空数据库。 */

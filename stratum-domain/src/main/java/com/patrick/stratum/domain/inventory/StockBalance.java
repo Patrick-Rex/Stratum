@@ -58,10 +58,15 @@ public final class StockBalance extends AggregateRoot<UUID> {
     /**
      * 增加库存，拒绝零数量或超出存储范围的结果。
      * @param received 正入库数量
-     * @throws IllegalArgumentException 数量非法或溢出
+     * @throws IllegalArgumentException 入库数量为零
+     * @throws StratumException 累加余额超出存储范围
      * @apiNote 示例：balance.receive(quantity)。
      */
-    public void receive(Quantity received) { quantity = quantity.add(received.requirePositive()); }
+    public void receive(Quantity received) {
+        received.requirePositive();
+        try { quantity = quantity.add(received); }
+        catch (IllegalArgumentException overflow) { throw new StratumException(CommonErrorCode.CONFLICT, "库存余额超过存储范围"); }
+    }
 
     /**
      * 扣减库存，检查失败时保留原余额。
