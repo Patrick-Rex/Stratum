@@ -323,3 +323,11 @@ OpenAPI公共业务响应已增加40400和40900的标准错误模型、示例及
 ## ERP阶段整体验收（NODE-C03.7）
 
 2026-10-24 执行 `./gradlew.bat --no-daemon test :stratum-starter:integrationTest --rerun-tasks`，93项单元测试与175项真实MariaDB/Redis集成测试全部重新运行，零失败、错误或跳过。覆盖主数据、采购销售、分批履约、库存、幂等、Outbox落盘、缓存和HTTP文档；并检查Domain无框架导入、Application不依赖Infrastructure实现、Query无写操作及Infrastructure无HTTP端点。Phase C验收完成，认证及后续基础设施仍待实现。测试JVM已退出，本轮独立容器继续供下一节点使用。
+
+## Token密码学基础（NODE-D01.1）
+
+Infrastructure已接入Boot 4.0.5 BOM管理的Spring Security JOSE 7.0.4（传递Nimbus JOSE JWT 10.4），Domain只声明无框架TokenCodec端口。两库均为Apache 2.0开源许可，不引入商业服务或按量费用；版本与实现依据可查[Spring Security官方仓库](https://github.com/spring-projects/spring-security)、[JWT参考](https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/jwt.html)和[Nimbus官方说明](https://connect2id.com/products/nimbus-jose-jwt)。
+
+RsaTokenAdapterImpl使用调用方提供的2048至8192位RSA密钥，只签发/接受RS256；Access固定15分钟、Refresh固定14天，校验iss/aud、用途、必要claims、UUID标识、非负整数版本及精确有效期。令牌输入最大16KiB，错误统一UNAUTHORIZED且不保留解码异常原因或原文。7项真实RSA单元测试已通过，包括不同签名/算法、到期瞬间、用途混用、缺失/畸形字段和输入边界。
+
+此阶段尚未装配密钥配置、Redis会话、HTTP登录或安全过滤链；密码学校验成功不能替代会话有效性、RBAC或数据权限检查。接口暂仍使用Phase C本地主体，后续D01.5替换。

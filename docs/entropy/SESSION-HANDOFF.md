@@ -2,19 +2,18 @@
 
 ## 交接报告（2026-10-24）
 
-- completedNode: NODE-C03.7（完成ERP整体验收，Phase C完成）。
-- 本次附加文档维护：修正security-review技能历史有效期并记录DRIFT-002；未推进D01.1。
+- completedNode: NODE-D01.1（建立RS256 Token密码学基础）。
 - changedFiles:
-  - `.github/skills/security-review/SKILL.md`
-  - `docs/entropy/DRIFT-LOG.md`
-  - `README.md`
-  - `docs/AI可执行开发计划.md`
   - `docs/CONTEXT.md`
   - `docs/development.md`
   - `docs/entropy/SESSION-HANDOFF.md`
+  - `stratum-domain/src/main/java/com/patrick/stratum/domain/auth/TokenCodec.java`
+  - `stratum-infrastructure/build.gradle`
+  - `stratum-infrastructure/src/main/java/com/patrick/stratum/infrastructure/auth/RsaTokenAdapterImpl.java`
+  - `stratum-infrastructure/src/test/java/com/patrick/stratum/infrastructure/auth/RsaTokenAdapterImplTest.java`
 
-- validations: 全量重新运行93项单元和175项真实MariaDB/Redis集成测试，零失败/错误/跳过；模块依赖与读写边界检查通过。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
+- validations: 7项真实RSA单元测试通过，覆盖用途/有效期/版本精度、缺失与畸形声明、签名算法及长度边界；配置和HTTP认证尚未接入。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
 - unresolved: 部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
-- nextNode: NODE-D01.1。
+- nextNode: NODE-D01.2。
 - 当前节点验收后审查、提交、推送；完成后继续下一节点，不重复请求授权。
 - CONTEXT 已更新。共享 Docker 容器保持运行，仅清理本轮创建的测试资源；测试 JVM 已退出；独立测试容器 stratum-integration-mariadb / stratum-integration-redis 暂留供连续验证，会话结束前清理。连接状态在本机临时目录 stratum-integration-state.json，不提交凭据。
