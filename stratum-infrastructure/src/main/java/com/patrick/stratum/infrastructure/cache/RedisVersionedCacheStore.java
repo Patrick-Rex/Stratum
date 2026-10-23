@@ -33,6 +33,7 @@ public class RedisVersionedCacheStore {
             """, List.class);
     private static final DefaultRedisScript<Long> WRITE = new DefaultRedisScript<>("""
             local current = redis.call('get', KEYS[3])
+            if ARGV[6] == '1' and (current or '') ~= ARGV[7] then return 0 end
             if current and string.sub(current, 1, 19) > ARGV[1] then return 0 end
             redis.call('set', KEYS[3], ARGV[2], 'PX', ARGV[5])
             redis.call('set', KEYS[1], ARGV[3], 'PX', ARGV[4])
@@ -102,12 +103,39 @@ public class RedisVersionedCacheStore {
      * @apiNote 示例：store.putIfNewer(key, new Value(1, "{}"), policy)。
      */
     public boolean putIfNewer(String key, Value value, Policy policy) {
+        return write(key, value, policy, null);
+    }
+
+    /**
+     * 回源结果仅在加载期间没有发生更新或失效时回填。
+     * @param key 业务缓存键
+     * @param value 回源版本和值
+     * @param policy TTL 策略
+     * @param expectedStamp 回源前观察到的标记
+     * @return 是否接受此结果
+     * @apiNote 示例：store.putIfUnchanged(key, value, policy, lookup.stamp())。
+     */
+    public boolean putIfUnchanged(String key, Value value, Policy policy, String expectedStamp) {
+        java.util.Objects.requireNonNull(expectedStamp, "expectedStamp");
+        return write(key, value, policy, expectedStamp);
+    }
+
+    /**
+     * 共用原子写入；普通提交只比较版本，回源同时比较观察标记。
+     * @param key 缓存键
+     * @param value 版本值
+     * @param policy TTL 策略
+     * @param expectedStamp 观察标记，null 表示无需匹配
+     * @return 是否写入
+     */
+    private boolean write(String key, Value value, Policy policy, String expectedStamp) {
         var keys = keys(key);
         String version = sortableVersion(value.version());
         Duration ttl = policy.nextTtl(false, ThreadLocalRandom.current());
         String body = json.writeValueAsString(new StoredValue(value.version(), value.payload()));
         Long result = redis.execute(WRITE, keys, version, stamp(version), body,
-                Long.toString(ttl.toMillis()), Long.toString(guardTtl(policy).toMillis()));
+                Long.toString(ttl.toMillis()), Long.toString(guardTtl(policy).toMillis()),
+                expectedStamp == null ? "0" : "1", expectedStamp == null ? "" : expectedStamp);
         local.invalidate(key);
         return Long.valueOf(1).equals(result);
     }
@@ -153,10 +181,7 @@ public class RedisVersionedCacheStore {
      * @throws IllegalArgumentException 键格式非法时抛出
      */
     private static List<String> keys(String key) {
-        if (key == null || key.length() > 256
-                || !key.matches("biz:[a-z0-9_-]+:[a-z0-9_-]+:[A-Za-z0-9_.-]+")) {
-            throw new IllegalArgumentException("业务缓存键必须符合 biz:业务域:资源:id 格式且不超过 256 字符");
-        }
+        VersionedCache.validateKey(key);
         String suffix = key.substring(4);
         return List.of(key, "null:" + suffix, "version:" + suffix);
     }

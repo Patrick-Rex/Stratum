@@ -11,6 +11,21 @@ public interface VersionedCache {
     Duration NULL_TTL = Duration.ofSeconds(60);
 
     /**
+     * 校验共用缓存键，预留重建锁前缀增加的 15 个字符。
+     * @param key biz:业务域:资源:id 形式的键，最长 241 字符
+     * @return 原键，便于调用处使用
+     * @throws IllegalArgumentException 键格式或长度无效时抛出
+     * @apiNote 示例：VersionedCache.validateKey("biz:erp:material:id")。
+     */
+    static String validateKey(String key) {
+        if (key == null || key.length() > 241
+                || !key.matches("biz:[a-z0-9_-]+:[a-z0-9_-]+:[A-Za-z0-9_.-]+")) {
+            throw new IllegalArgumentException("业务缓存键必须符合 biz:业务域:资源:id 格式且不超过 241 字符");
+        }
+        return key;
+    }
+
+    /**
      * 读取缓存，未命中时合并回源；空结果同样缓存，超时不能伪装成不存在。
      * @param key biz:业务域:资源:id 形式的键
      * @param policy 按资源或热点级别选择的缓存策略
