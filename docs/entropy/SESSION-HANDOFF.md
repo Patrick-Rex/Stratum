@@ -2,19 +2,17 @@
 
 ## 交接报告（2026-10-24）
 
-- completedNode: NODE-C03.2c1（接通四类主数据创建命令、幂等及提交后缓存）。
+- completedNode: NODE-C03.2c2（接通主数据改名、版本保护与缓存更新）。
 - changedFiles:
-  - `docs/AI可执行开发计划.md`
   - `docs/CONTEXT.md`
   - `docs/entropy/SESSION-HANDOFF.md`
-  - `stratum-application/src/main/java/com/patrick/stratum/application/masterdata/CreateMasterDataCommand.java`
-  - `stratum-application/src/main/java/com/patrick/stratum/application/masterdata/CreateMasterDataHandler.java`
   - `stratum-application/src/main/java/com/patrick/stratum/application/masterdata/MasterDataApplicationService.java`
-  - `stratum-application/src/main/java/com/patrick/stratum/application/masterdata/MasterDataResult.java`
+  - `stratum-application/src/main/java/com/patrick/stratum/application/masterdata/RenameMasterDataCommand.java`
+  - `stratum-application/src/main/java/com/patrick/stratum/application/masterdata/RenameMasterDataHandler.java`
   - `stratum-starter/src/test/java/com/patrick/stratum/starter/integration/MasterDataCommandIntegrationTest.java`
 
-- validations: 4项真实MariaDB/Redis命令集成测试通过、0失败/跳过；覆盖四类创建与缓存、同键重放/异参冲突、唯一编码失败及外层事务整体回滚。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
+- validations: 7项真实MariaDB/Redis命令集成测试通过、0失败/跳过；新增改名重放、固定属性保留、过期版本/跨类别/不存在拒绝与更新回滚缓存保持原版本。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
 - unresolved: 部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
-- nextNode: NODE-C03.2c2。
+- nextNode: NODE-C03.2c3。
 - 当前节点验收后审查、提交、推送；完成后继续下一节点，不重复请求授权。
 - CONTEXT 已更新。共享 Docker 容器保持运行，仅清理本轮创建的测试资源；测试 JVM 已退出；独立测试容器 stratum-integration-mariadb / stratum-integration-redis 暂留供连续验证，会话结束前清理。连接状态在本机临时目录 stratum-integration-state.json，不提交凭据。

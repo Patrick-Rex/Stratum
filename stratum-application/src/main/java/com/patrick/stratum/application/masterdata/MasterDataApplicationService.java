@@ -8,6 +8,8 @@ import com.patrick.stratum.application.cache.CacheUpdateCoordinator;
 import com.patrick.stratum.application.event.OutboxEventWriter;
 import com.patrick.stratum.application.service.IdempotentApplicationService;
 import com.patrick.stratum.common.base.cache.VersionedCache;
+import com.patrick.stratum.common.error.CommonErrorCode;
+import com.patrick.stratum.common.error.StratumException;
 import com.patrick.stratum.common.helper.ValidationHelper;
 import com.patrick.stratum.domain.idempotency.IdempotencyReceipt;
 import com.patrick.stratum.domain.masterdata.MasterData;
@@ -46,6 +48,41 @@ public class MasterDataApplicationService {
             repository.save(aggregate);
             return publish(aggregate, MasterDataChanged.Change.CREATED);
         });
+    }
+
+    /**
+     * 按观察版本修改名称，同键重放不重复更新聚合或发布事件。
+     * @param command 主体由服务器提供的改名命令
+     * @return 更新或重放的结果快照
+     * @throws StratumException 不存在、类别不匹配或版本冲突
+     * @apiNote 示例：通过gateway.execute(RenameMasterDataCommand.builder()...build())调用。
+     */
+    @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)
+    public MasterDataResult rename(RenameMasterDataCommand command) {
+        Objects.requireNonNull(command, "command");
+        var key = key("rename", command.getKind(), command.getSubjectId(), command.getIdempotencyKey());
+        return idempotency.execute(key, command, MasterDataResult.class, () -> {
+            var aggregate = loadForWrite(command.getId(), command.getKind(), command.getVersion());
+            aggregate.rename(command.getName());
+            repository.save(aggregate);
+            return publish(aggregate, MasterDataChanged.Change.RENAMED);
+        });
+    }
+
+    /**
+     * 在当前写事务中加载聚合，并委托领域对象核对类别和观察版本。
+     * @param id 聚合标识
+     * @param kind 用例类别
+     * @param version 期望版本
+     * @return 可执行领域行为的聚合
+     * @throws StratumException 目标不存在或版本已过期
+     */
+    private MasterData loadForWrite(String id, MasterData.Kind kind, long version) {
+        var aggregate = repository.findById(ValidationHelper.requireNonBlank(id, "id"))
+                .orElseThrow(() -> new StratumException(CommonErrorCode.NOT_FOUND));
+        aggregate.requireKind(kind);
+        aggregate.requireVersion(version);
+        return aggregate;
     }
 
     /**

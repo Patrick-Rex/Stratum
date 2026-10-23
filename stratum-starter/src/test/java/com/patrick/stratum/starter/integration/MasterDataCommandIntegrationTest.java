@@ -9,6 +9,7 @@ import java.util.UUID;
 import com.patrick.stratum.application.command.CommandGateway;
 import com.patrick.stratum.application.masterdata.CreateMasterDataCommand;
 import com.patrick.stratum.application.masterdata.MasterDataApplicationService;
+import com.patrick.stratum.application.masterdata.RenameMasterDataCommand;
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.common.base.cache.VersionedCache;
 import com.patrick.stratum.common.error.CommonErrorCode;
@@ -116,6 +117,65 @@ class MasterDataCommandIntegrationTest extends MariaDbIntegrationTest {
         assertEquals(0, receiptCount());
         assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM erp_master_data WHERE id = ?", Integer.class, ids.getFirst()));
         assertTrue(cache.get(MasterDataApplicationService.cacheKey(ids.getFirst()), MasterDataApplicationService.CACHE_POLICY, Optional::empty).isEmpty());
+    }
+
+    /** 改名更新版本与缓存，原键重试只重放已提交结果。 */
+    @Test
+    void renamesAndReplaysWithoutChangingFixedFields() {
+        var original = gateway.execute(command(MasterData.Kind.MATERIAL, "create", "原名称")).data();
+        ids.add(original.getId());
+        var rename = RenameMasterDataCommand.builder().subjectId(subject).idempotencyKey("rename")
+                .kind(original.getKind()).id(original.getId()).version(0).name("新名称").build();
+        var updated = gateway.execute(rename).data();
+        var repeated = gateway.execute(rename).data();
+        assertEquals("新名称", updated.getName());
+        assertEquals(original.getCode(), updated.getCode());
+        assertEquals(original.getBaseUnit(), updated.getBaseUnit());
+        assertEquals(1, updated.getVersion());
+        assertEquals(updated.getVersion(), repeated.getVersion());
+        var cached = cache.get(MasterDataApplicationService.cacheKey(original.getId()), MasterDataApplicationService.CACHE_POLICY,
+                () -> fail("改名后应有已提交版本缓存")).orElseThrow();
+        assertEquals(1, cached.version());
+        assertEquals("新名称", json.readTree(cached.payload()).path("name").asString());
+        assertEquals(4, eventCount());
+        assertEquals(2, receiptCount());
+    }
+
+    /** 新请求使用过期版本、跨类别ID或不存在ID时不会产生成功回执。 */
+    @Test
+    void rejectsStaleOrWrongKindRename() {
+        var original = gateway.execute(command(MasterData.Kind.WAREHOUSE, "create", "仓库")).data();
+        ids.add(original.getId());
+        var stale = RenameMasterDataCommand.builder().subjectId(subject).idempotencyKey("stale")
+                .kind(original.getKind()).id(original.getId()).version(9).name("新名称").build();
+        assertEquals(CommonErrorCode.CONFLICT, assertThrows(StratumException.class, () -> gateway.execute(stale)).getErrorCode());
+        var wrongKind = RenameMasterDataCommand.builder().subjectId(subject).idempotencyKey("kind")
+                .kind(MasterData.Kind.CUSTOMER).id(original.getId()).version(0).name("新名称").build();
+        assertEquals(CommonErrorCode.NOT_FOUND, assertThrows(StratumException.class, () -> gateway.execute(wrongKind)).getErrorCode());
+        var missing = RenameMasterDataCommand.builder().subjectId(subject).idempotencyKey("missing")
+                .kind(MasterData.Kind.WAREHOUSE).id(UUID.randomUUID().toString()).version(0).name("新名称").build();
+        assertEquals(CommonErrorCode.NOT_FOUND, assertThrows(StratumException.class, () -> gateway.execute(missing)).getErrorCode());
+        assertEquals(1, receiptCount());
+        assertEquals(2, eventCount());
+    }
+
+    /** 改名外层事务失败时数据库与缓存继续保留原版本。 */
+    @Test
+    void renameRollbackPreservesCommittedCache() {
+        var original = gateway.execute(command(MasterData.Kind.MATERIAL, "create", "原名称")).data();
+        ids.add(original.getId());
+        var rename = RenameMasterDataCommand.builder().subjectId(subject).idempotencyKey("rollback-rename")
+                .kind(original.getKind()).id(original.getId()).version(0).name("未提交名称").build();
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
+            gateway.execute(rename); throw new IllegalStateException("改名回滚");
+        }));
+        assertEquals("原名称", jdbc.queryForObject("SELECT name FROM erp_master_data WHERE id = ?", String.class, original.getId()));
+        var cached = cache.get(MasterDataApplicationService.cacheKey(original.getId()), MasterDataApplicationService.CACHE_POLICY,
+                () -> fail("回滚不能清除旧的已提交缓存")).orElseThrow();
+        assertEquals(0, cached.version());
+        assertEquals("原名称", json.readTree(cached.payload()).path("name").asString());
+        assertEquals(1, receiptCount());
+        assertEquals(2, eventCount());
     }
 
     /** 清理本测试主数据、回执、事件及关联缓存，不清空共享Redis。 */
