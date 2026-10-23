@@ -8,6 +8,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.context.TestPropertySource;
@@ -15,24 +18,34 @@ import org.springframework.test.context.TestPropertySource;
 import com.patrick.stratum.common.base.lock.DistributedLock;
 import com.patrick.stratum.infrastructure.lock.RedisDistributedLockAdapterImpl;
 import com.patrick.stratum.infrastructure.lock.RedisLockProperties;
+import com.patrick.stratum.infrastructure.lock.LockMetrics;
+import com.patrick.stratum.common.trace.TraceIdContext;
+import io.micrometer.core.instrument.MeterRegistry;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /** 在真实 Redis 验证租约唯一性、到期接管、token 安全释放及有界等待。 */
 @TestPropertySource(properties = {"stratum.lock.acquire-wait-timeout=200ms", "stratum.lock.poll-interval=10ms"})
+@ExtendWith(OutputCaptureExtension.class)
 class RedisLockIntegrationTest extends MariaDbIntegrationTest {
     private final DistributedLock lock;
     private final StringRedisTemplate redis;
+    private final LockMetrics metrics;
+    private final MeterRegistry registry;
 
     /**
      * 注入应用实际分布式锁与断言客户端。
      * @param lock 锁适配器
      * @param redis Redis 客户端
+     * @param metrics 锁观测组件
+     * @param registry 指标注册表
      */
     @Autowired
-    RedisLockIntegrationTest(DistributedLock lock, StringRedisTemplate redis) {
+    RedisLockIntegrationTest(DistributedLock lock, StringRedisTemplate redis, LockMetrics metrics, MeterRegistry registry) {
         this.lock = lock;
         this.redis = redis;
+        this.metrics = metrics;
+        this.registry = registry;
     }
 
     /** 默认租期为 30 秒，其他持有者无法获得同一键，重复释放不会误成功。 */
@@ -106,13 +119,13 @@ class RedisLockIntegrationTest extends MariaDbIntegrationTest {
         var permitRedis = new CountDownLatch(1);
         var released = new CountDownLatch(1);
         var properties = new RedisLockProperties(Duration.ofSeconds(30), Duration.ofMillis(200), Duration.ofMillis(10), 2);
-        try (var delayed = new RedisDistributedLockAdapterImpl(redis, properties) {
+        try (var delayed = new RedisDistributedLockAdapterImpl(redis, properties, metrics) {
             /** {@inheritDoc} */
             @Override
-            public Optional<DistributedLock.Lease> tryAcquire(String lockKey) {
+            protected Optional<DistributedLock.Lease> tryAcquireLease(String lockKey, String traceId) {
                 started.countDown();
                 assertDoesNotThrow(() -> assertTrue(permitRedis.await(3, TimeUnit.SECONDS)));
-                return super.tryAcquire(lockKey).map(lease -> () -> {
+                return super.tryAcquireLease(lockKey, traceId).map(lease -> () -> {
                     try { return lease.release(); } finally { released.countDown(); }
                 });
             }
@@ -127,6 +140,37 @@ class RedisLockIntegrationTest extends MariaDbIntegrationTest {
             permitRedis.countDown();
             redis.delete(key);
         }
+    }
+
+    /**
+     * 指标仅计一次外部等待请求，释放保留原 trace，重复释放不重复计量持有时长。
+     * @param output 默认控制台日志
+     */
+    @Test
+    void recordsBoundedMetricsAndOriginalTrace(CapturedOutput output) {
+        String key = key();
+        var acquired = registry.counter("stratum.lock.acquisitions", "mode", "try", "result", "acquired");
+        var unavailable = registry.counter("stratum.lock.acquisitions", "mode", "wait", "result", "unavailable");
+        var hold = registry.timer("stratum.lock.hold");
+        double beforeAcquired = acquired.count(), beforeUnavailable = unavailable.count();
+        long beforeHold = hold.count();
+        TraceIdContext.setTraceId("lock-metrics-test");
+        try (var lease = lock.tryAcquire(key).orElseThrow()) {
+            assertTrue(lock.acquire(key).isEmpty());
+            TraceIdContext.clear();
+            assertTrue(lease.release());
+            assertFalse(lease.release());
+            assertEquals(beforeAcquired + 1, acquired.count());
+            assertEquals(beforeUnavailable + 1, unavailable.count());
+            assertEquals(beforeHold + 1, hold.count());
+            assertTrue(output.getOut().contains("lockKey=" + key));
+            assertTrue(output.getOut().contains("acquireResult=unavailable"));
+            assertTrue(output.getOut().contains("holdMs="));
+            assertTrue(output.getOut().contains("traceId=lock-metrics-test"));
+            registry.getMeters().stream().filter(meter -> meter.getId().getName().startsWith("stratum.lock."))
+                    .forEach(meter -> assertTrue(meter.getId().getTags().stream()
+                            .allMatch(tag -> tag.getKey().equals("mode") || tag.getKey().equals("result"))));
+        } finally { TraceIdContext.clear(); redis.delete(key); }
     }
 
     /**

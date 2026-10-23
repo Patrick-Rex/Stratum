@@ -7,6 +7,9 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -18,6 +21,7 @@ import com.patrick.stratum.common.base.cache.CacheInvalidation;
 import com.patrick.stratum.common.base.cache.VersionedCache;
 import com.patrick.stratum.common.base.cache.VersionedCache.Policy;
 import com.patrick.stratum.common.base.cache.VersionedCache.Value;
+import com.patrick.stratum.common.trace.TraceIdContext;
 
 import tools.jackson.databind.json.JsonMapper;
 
@@ -25,6 +29,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 /** 真实 MariaDB 事务配合可控缓存故障，验证提交时机及补偿记录的耐久性。 */
+@ExtendWith(OutputCaptureExtension.class)
 class CacheUpdateIntegrationTest extends MariaDbIntegrationTest {
     private static final Policy POLICY = new Policy(Duration.ofMinutes(5), Duration.ofSeconds(30));
     private static final Value VALUE = new Value(2, "业务数据不进入补偿消息");
@@ -111,17 +116,24 @@ class CacheUpdateIntegrationTest extends MariaDbIntegrationTest {
         assertEquals(1, eventCount(events.getFirst()));
     }
 
-    /** Redis 更新与失效都失败也不会丢失补偿，已提交业务不能向调用方假报回滚。 */
+    /**
+     * Redis 更新与失效都失败也不会丢失补偿，已提交业务不能向调用方假报回滚。
+     * @param output 当前默认格式的日志输出
+     */
     @Test
-    void completeCacheOutageKeepsDurableIntent() {
+    void completeCacheOutageKeepsDurableIntent(CapturedOutput output) {
         String id = id();
         String key = key(id);
         when(cache.putIfNewer(key, VALUE, POLICY)).thenThrow(new IllegalStateException("不可用"));
         doThrow(new IllegalStateException("仍不可用")).when(cache).invalidate(key, 2, POLICY);
+        TraceIdContext.setTraceId("cache-compensation-test");
         assertDoesNotThrow(() -> work.execute(() -> { insert(id); return register(key); }));
         verify(cache).invalidate(key, 2, POLICY);
         assertEquals(1, rowCount(id));
         assertEquals(1, eventCount(events.getFirst()));
+        assertTrue(output.getOut().contains("cacheKey=" + key));
+        assertTrue(output.getOut().contains("eventId=" + events.getFirst()));
+        assertTrue(output.getOut().contains("traceId=cache-compensation-test"));
     }
 
     /** 删除或未携带完整值的更新通过提交后失效入口执行。 */
@@ -155,6 +167,7 @@ class CacheUpdateIntegrationTest extends MariaDbIntegrationTest {
     /** 只清理当前测试成功登记的事件和随机业务行。 */
     @AfterEach
     void cleanOwnRows() {
+        TraceIdContext.clear();
         work.execute(() -> {
             for (String event : events) { jdbc.update("DELETE FROM outbox_event WHERE event_id = ?", event); }
             for (String id : ids) { jdbc.update("DELETE FROM stratum_it_transaction_probe WHERE id = ?", id); }

@@ -100,13 +100,15 @@ public class CacheUpdateCoordinator {
         catch (RuntimeException failure) {
             log.atWarn().addKeyValue("traceId", traceId).addKeyValue("cacheKey", invalidation.key())
                     .addKeyValue("eventId", eventId).addKeyValue("errorType", failure.getClass().getSimpleName())
-                    .log("提交后缓存操作失败，尝试失效，补偿意图已持久化");
+                    .log("提交后缓存操作失败，补偿意图已持久化 cacheKey={} eventId={} traceId={}",
+                            invalidation.key(), eventId, traceId);
             try { cache.invalidate(invalidation.key(), invalidation.minimumVersion(), invalidation.policy()); }
             catch (RuntimeException invalidationFailure) {
                 log.atError().addKeyValue("traceId", traceId).addKeyValue("cacheKey", invalidation.key())
                         .addKeyValue("eventId", eventId)
                         .addKeyValue("errorType", invalidationFailure.getClass().getSimpleName())
-                        .log("缓存失效失败，等待 Outbox 补偿");
+                        .log("缓存失效失败，等待 Outbox 补偿 cacheKey={} eventId={} traceId={}",
+                                invalidation.key(), eventId, traceId);
             }
         }
     }
