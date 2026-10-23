@@ -243,3 +243,8 @@ Easy-Query的[官方条件文档](https://www.easy-query.com/easy-query-doc/abil
 ## ERP库存余额读取
 
 NODE-C03.5b提供StockBalanceQuery及erp.stock.balance.list处理器。id、materialId、warehouseId使用UUID精确条件，quantity支持BigDecimal精确匹配及闭区间；四字段可排序，同值补ID，分页沿用默认20、最大200。结果返回精确数量与余额版本，缺失余额返回空列表，不凭空创建零余额。QueryGateway拒绝活动写事务；当前仅内部读取，HTTP与数据权限按后续节点交付。
+
+
+## ERP库存流水读取
+
+NODE-C03.5c提供StockMovementQuery及erp.stock.movement.list处理器。id、balanceId、orderId、postingId、orderLineId支持UUID精确筛选；direction只接受RECEIPT/ISSUE；quantity和occurredAt分别接受BigDecimal及Instant的精确或闭区间条件。排序仅开放id、quantity、occurredAt，默认时间倒序，并补ID升序，结果保持分页上限。数据库DATETIME按UTC映射，返回当时余额、余额版本及履约来源，不用当前余额替换历史值。尚无HTTP业务接口和权限控制。

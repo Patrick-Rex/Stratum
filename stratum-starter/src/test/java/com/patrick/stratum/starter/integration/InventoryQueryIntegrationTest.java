@@ -1,6 +1,7 @@
 package com.patrick.stratum.starter.integration;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -8,12 +9,15 @@ import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.domain.inventory.Quantity;
 import com.patrick.stratum.domain.inventory.StockBalance;
 import com.patrick.stratum.domain.inventory.StockBalanceRepository;
+import com.patrick.stratum.domain.inventory.StockMovement;
+import com.patrick.stratum.domain.inventory.StockMovementRepository;
 import com.patrick.stratum.domain.masterdata.MasterData;
 import com.patrick.stratum.domain.masterdata.MasterDataRepository;
 import com.patrick.stratum.query.QueryContext;
 import com.patrick.stratum.query.QueryGateway;
 import com.patrick.stratum.query.dto.QueryResult;
 import com.patrick.stratum.query.inventory.StockBalanceQuery;
+import com.patrick.stratum.query.inventory.StockMovementQuery;
 import com.patrick.stratum.query.spec.QuerySpec;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -29,6 +33,8 @@ class InventoryQueryIntegrationTest extends MariaDbIntegrationTest {
     private final MasterDataRepository masters;
     private final UnitOfWork unitOfWork;
     private final JdbcTemplate jdbc;
+    private final StockMovementRepository movements;
+    private final InventorySourceFixture sources;
     private final List<String> masterIds = new ArrayList<>();
     private final List<UUID> balanceIds = new ArrayList<>();
     private final QueryContext context = QueryContext.anonymous(UUID.randomUUID().toString());
@@ -40,11 +46,13 @@ class InventoryQueryIntegrationTest extends MariaDbIntegrationTest {
      * @param masters 主数据夹具仓储
      * @param unitOfWork 夹具事务
      * @param jdbc 清理客户端
+     * @param movements 流水夹具仓储
      */
     @Autowired
     InventoryQueryIntegrationTest(QueryGateway gateway, StockBalanceRepository balances, MasterDataRepository masters,
-            UnitOfWork unitOfWork, JdbcTemplate jdbc) {
+            UnitOfWork unitOfWork, JdbcTemplate jdbc, StockMovementRepository movements) {
         this.gateway = gateway; this.balances = balances; this.masters = masters; this.unitOfWork = unitOfWork; this.jdbc = jdbc;
+        this.movements = movements; this.sources = new InventorySourceFixture(jdbc, unitOfWork);
     }
 
     /** 同物料不同仓库隔离，12位小数完整返回，ID详情和缺失维度都经统一入口。 */
@@ -98,11 +106,64 @@ class InventoryQueryIntegrationTest extends MariaDbIntegrationTest {
         assertTrue(read(List.of(eq("warehouseId", warehouse))).getItems().isEmpty());
     }
 
+    /** 流水按真实余额和来源筛选，出入库历史数量、版本及UTC微秒均无损。 */
+    @Test
+    void readsExactMovementSourceAndHistoricalSnapshot() {
+        var balance = balance(master(MasterData.Kind.MATERIAL), master(MasterData.Kind.WAREHOUSE), "10");
+        var receipt = movement(balance, StockMovement.Direction.RECEIPT, "0.123456789012", Instant.parse("2026-10-24T00:00:01.123456Z"));
+        var issue = movement(balance, StockMovement.Direction.ISSUE, "0.1", Instant.parse("2026-10-24T00:00:02Z"));
+        for (var source : List.of(eq("id", receipt.getId()), eq("orderId", receipt.getSource().orderId()),
+                eq("postingId", receipt.getSource().postingId()), eq("orderLineId", receipt.getSource().orderLineId()))) {
+            var result = readMovements(List.of(eq("balanceId", balance.getId()), source));
+            assertEquals(1, result.getTotal()); var row = result.getItems().getFirst();
+            assertEquals(receipt.getId(), row.id()); assertEquals(receipt.getQuantity().value(), row.quantity());
+            assertEquals(receipt.getBalanceAfter().value(), row.balanceAfter()); assertEquals(receipt.getBalanceVersion(), row.balanceVersion());
+            assertEquals(receipt.getOccurredAt(), row.occurredAt());
+        }
+        assertEquals(issue.getId(), readMovements(List.of(eq("balanceId", balance.getId()), eq("direction", "ISSUE"))).getItems().getFirst().id());
+        assertEquals(List.of(issue.getId(), receipt.getId()), readMovements(List.of(eq("balanceId", balance.getId()))).getItems().stream().map(StockMovementQuery.Row::id).toList());
+        assertTrue(readMovements(List.of(eq("postingId", UUID.randomUUID()))).getItems().isEmpty());
+    }
+
+    /** 时间区间和数量区间均包含边界，同一时间的跨页顺序由ID稳定补齐。 */
+    @Test
+    void filtersMovementTimeAndQuantityRangesWithStablePaging() {
+        var balance = balance(master(MasterData.Kind.MATERIAL), master(MasterData.Kind.WAREHOUSE), "10");
+        Instant firstTime = Instant.parse("2026-10-24T00:00:01Z"); Instant lastTime = Instant.parse("2026-10-24T00:00:02Z");
+        var first = movement(balance, StockMovement.Direction.RECEIPT, "0.1", firstTime);
+        var second = movement(balance, StockMovement.Direction.RECEIPT, "0.1", firstTime);
+        var last = movement(balance, StockMovement.Direction.RECEIPT, "0.2", lastTime);
+        var filters = List.of(eq("balanceId", balance.getId()),
+                new QuerySpec.FilterInput("occurredAt", QuerySpec.Operator.BETWEEN, firstTime, lastTime),
+                new QuerySpec.FilterInput("quantity", QuerySpec.Operator.BETWEEN, new BigDecimal("0.1"), new BigDecimal("0.2")));
+        var ids = new ArrayList<String>();
+        for (int page = 1; page <= 3; page++) {
+            var result = gateway.execute(StockMovementQuery.create(page, 1, List.of("occurredAt,asc"), filters), context);
+            assertEquals(3, result.getTotal()); ids.add(result.getItems().getFirst().id().toString());
+        }
+        var expected = new ArrayList<>(List.of(first.getId().toString(), second.getId().toString()).stream().sorted().toList());
+        expected.add(last.getId().toString()); assertEquals(expected, ids);
+        assertEquals(2, readMovements(List.of(eq("balanceId", balance.getId()), eq("occurredAt", firstTime), eq("quantity", new BigDecimal("0.1")))).getTotal());
+    }
+
+    /** 非法方向、来源类型、时间倒置及不可排序字段被拒绝，流水读取也不能加入写事务。 */
+    @Test
+    void rejectsInvalidMovementQueriesAndWriteTransaction() {
+        for (var input : List.of(eq("direction", "UNKNOWN"), eq("postingId", "' OR 1=1"),
+                new QuerySpec.FilterInput("occurredAt", QuerySpec.Operator.BETWEEN, Instant.parse("2026-10-24T00:00:02Z"), Instant.parse("2026-10-24T00:00:01Z")))) {
+            assertThrows(IllegalArgumentException.class, () -> readMovements(List.of(input)));
+        }
+        assertThrows(IllegalArgumentException.class, () -> StockMovementQuery.create(1, 20, List.of("direction,asc"), List.of()));
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> readMovements(List.of())));
+    }
+
     /** 仅清理本测试余额和主数据。 */
     @AfterEach
     void cleanOwnRows() {
         unitOfWork.execute(() -> {
+            for (UUID id : balanceIds) jdbc.update("DELETE FROM erp_stock_movement WHERE balance_id = ?", id.toString());
             for (UUID id : balanceIds) jdbc.update("DELETE FROM erp_stock_balance WHERE id = ?", id.toString());
+            sources.clean();
             for (String id : masterIds) jdbc.update("DELETE FROM erp_master_data WHERE id = ?", id);
             return null;
         });
@@ -137,6 +198,36 @@ class InventoryQueryIntegrationTest extends MariaDbIntegrationTest {
      */
     private QueryResult<StockBalanceQuery.Row> read(List<QuerySpec.FilterInput> filters) {
         return gateway.execute(StockBalanceQuery.create(1, 20, List.of(), filters), context);
+    }
+
+    /**
+     * 经统一入口读取默认最新优先的流水分页。
+     * @param filters 条件
+     * @return 流水结果
+     */
+    private QueryResult<StockMovementQuery.Row> readMovements(List<QuerySpec.FilterInput> filters) {
+        return gateway.execute(StockMovementQuery.create(1, 20, List.of(), filters), context);
+    }
+
+    /**
+     * 创建带真实来源的指定时间流水夹具，余额及流水同事务写入。
+     * @param balance 已保存余额
+     * @param direction 方向
+     * @param quantity 数量文本
+     * @param occurredAt 确定的UTC时间
+     * @return 流水快照
+     */
+    private StockMovement movement(StockBalance balance, StockMovement.Direction direction, String quantity, Instant occurredAt) {
+        var source = new StockMovement.Source(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+        var amount = new Quantity(new BigDecimal(quantity));
+        sources.prepare(source, balance.getMaterialId(), balance.getWarehouseId(), direction, amount);
+        return unitOfWork.execute(() -> {
+            if (direction == StockMovement.Direction.RECEIPT) balance.receive(amount); else balance.issue(amount);
+            balances.save(balance);
+            var movement = StockMovement.restore(UUID.randomUUID(), balance.getId(), source, direction, amount,
+                    balance.getQuantity(), balance.getVersion(), occurredAt);
+            movements.append(movement); return movement;
+        });
     }
 
     /**
