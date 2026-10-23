@@ -1,0 +1,42 @@
+CREATE TABLE erp_trade_order (
+    id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+    kind VARCHAR(8) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    order_number VARCHAR(39) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    party_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    party_kind VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    warehouse_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    warehouse_kind VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'WAREHOUSE',
+    total_amount DECIMAL(38,2) NOT NULL,
+    status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    created_at DATETIME(6) NOT NULL,
+    version BIGINT NOT NULL DEFAULT 0,
+    CONSTRAINT uk_trade_order_number UNIQUE (order_number),
+    CONSTRAINT uk_trade_order_id_kind UNIQUE (id, kind),
+    CONSTRAINT fk_trade_order_party FOREIGN KEY (party_id, party_kind) REFERENCES erp_master_data (id, kind),
+    CONSTRAINT fk_trade_order_warehouse FOREIGN KEY (warehouse_id, warehouse_kind) REFERENCES erp_master_data (id, kind),
+    CONSTRAINT ck_trade_order_kind CHECK ((kind = 'PURCHASE' AND party_kind = 'SUPPLIER') OR (kind = 'SALE' AND party_kind = 'CUSTOMER')),
+    CONSTRAINT ck_trade_order_warehouse CHECK (warehouse_kind = 'WAREHOUSE'),
+    CONSTRAINT ck_trade_order_amount CHECK (total_amount >= 0),
+    CONSTRAINT ck_trade_order_status CHECK (status IN ('PENDING', 'PARTIAL', 'COMPLETED')),
+    CONSTRAINT ck_trade_order_version CHECK (version >= 0),
+    INDEX ix_trade_order_created (created_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE erp_order_line (
+    id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+    order_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    line_number INT NOT NULL,
+    material_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    material_kind VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'MATERIAL',
+    ordered DECIMAL(38,12) NOT NULL,
+    unit_price DECIMAL(19,6) NOT NULL,
+    fulfilled DECIMAL(38,12) NOT NULL DEFAULT 0,
+    CONSTRAINT uk_order_line_position UNIQUE (order_id, line_number),
+    CONSTRAINT uk_order_line_id_order UNIQUE (id, order_id),
+    CONSTRAINT fk_order_line_order FOREIGN KEY (order_id) REFERENCES erp_trade_order (id),
+    CONSTRAINT fk_order_line_material FOREIGN KEY (material_id, material_kind) REFERENCES erp_master_data (id, kind),
+    CONSTRAINT ck_order_line_position CHECK (line_number BETWEEN 1 AND 100),
+    CONSTRAINT ck_order_line_material CHECK (material_kind = 'MATERIAL'),
+    CONSTRAINT ck_order_line_quantity CHECK (ordered > 0 AND fulfilled >= 0 AND fulfilled <= ordered),
+    CONSTRAINT ck_order_line_price CHECK (unit_price >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
