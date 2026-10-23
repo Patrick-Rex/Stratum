@@ -4,6 +4,7 @@ import java.util.Map;
 
 import com.patrick.stratum.interfaceadapter.response.ApiResponseAdvice;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.TestComponent;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -33,6 +34,7 @@ class ExternalResponseTest {
     }
 
     /** 模拟第三方独立协议控制器。 */
+    @TestComponent
     @RestController
     static class ExternalController {
         /** @return 独立协议内容 */

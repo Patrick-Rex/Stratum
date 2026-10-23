@@ -12,6 +12,7 @@ import com.patrick.stratum.interfaceadapter.web.RequestTraceFilter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.TestComponent;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.web.servlet.MockMvc;
@@ -139,6 +140,7 @@ class ApiResponseAdviceTest {
     }
 
     /** 提供不同消息转换器及状态的测试端点。 */
+    @TestComponent
     @RestController
     static class ProbeController {
         /** @return 对象载荷 */

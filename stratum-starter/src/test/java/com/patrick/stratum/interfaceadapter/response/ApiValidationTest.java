@@ -15,6 +15,7 @@ import jakarta.validation.constraints.Size;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.TestComponent;
 import org.springframework.context.support.ResourceBundleMessageSource;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -205,6 +206,7 @@ class ApiValidationTest {
     record ProbeRequest(@NotBlank String name, @Size(min = 12) String password) {}
 
     /** 只存在测试类路径的校验及错误分支端点。 */
+    @TestComponent
     @RestController
     static class ProbeController {
         /**

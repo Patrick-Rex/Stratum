@@ -638,7 +638,9 @@ Outbox Relay、MQ 发布和消费幂等仍在 Phase E 实现，B04 只保证事�
 | NODE-C02.2 | Spring MVC 版本头策略与专用版本错误码 | 缺省版本1、支持版本、未知/格式错误版本返回400 | NODE-C02.1 |
 | NODE-C02.3a | ResponseBodyAdvice 统一业务 JSON 响应 | 对象/字符串/空值/已有包装、状态码、下载及外部控制器隔离 | NODE-C02.2 |
 | NODE-C02.3b | Jakarta Validation 与 HTTP 异常映射 | 非法参数/JSON、业务异常、协议状态及内部错误脱敏 | NODE-C02.3a |
-| NODE-C02.4 | 兼容 Boot 4 的 OpenAPI 生成与 Knife4j 展示 | 文档JSON、页面及静态资源访问，文档响应不被业务包装 | NODE-C02.3b |
+| NODE-C02.4a1 | 将MVC测试探针限定为显式测试装配 | MVC回归及完整应用事务集成测试，避免测试配置污染组件扫描 | NODE-C02.3b |
+| NODE-C02.4a2 | 接入兼容 Boot 4 的 OpenAPI 与 Knife4j 静态展示依赖 | 完整应用HTTP启动、文档JSON、UI发现配置及页面静态资源访问 | NODE-C02.4a1 |
+| NODE-C02.4b | 对齐生成文档与统一业务响应、版本和错误契约 | 测试业务接口的文档/运行响应一致，Knife4j展示生成文档，完成C02验收 | NODE-C02.4a2 |
 
 每个子节点包含实现、行为验证及状态更新，总计不超过8个文件；必要时先继续细分。C02.1 提供请求关联标识，W3C/OTel 链路、请求日志和动态开关在 F01 完成，不将关联标识当作完整追踪实现。业务 Controller 随 C03 交付，C02 通过测试 Controller 验证基架。
 

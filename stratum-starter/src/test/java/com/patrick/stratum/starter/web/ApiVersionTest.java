@@ -7,8 +7,9 @@ import com.patrick.stratum.interfaceadapter.web.RequestTraceFilter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.TestComponent;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.support.ResourceBundleMessageSource;
 import org.springframework.mock.web.MockServletContext;
@@ -37,7 +38,7 @@ class ApiVersionTest {
     void setUp() {
         context = new AnnotationConfigWebApplicationContext();
         context.setServletContext(new MockServletContext());
-        context.register(TestConfiguration.class);
+        context.register(MvcTestConfiguration.class);
         context.refresh();
         mvc = MockMvcBuilders.webAppContextSetup(context).addFilters(new RequestTraceFilter()).build();
     }
@@ -120,10 +121,10 @@ class ApiVersionTest {
     }
 
     /** 仅装配测试所需MVC、消息与异常处理组件。 */
-    @Configuration(proxyBeanMethods = false)
+    @TestConfiguration(proxyBeanMethods = false)
     @EnableWebMvc
     @Import({ApiVersionConfiguration.class, GlobalExceptionHandler.class, ProbeController.class})
-    static class TestConfiguration {
+    static class MvcTestConfiguration {
         /**
          * 加载生产消息资源并禁用系统区域回退。
          * @return 消息解析器
@@ -139,6 +140,7 @@ class ApiVersionTest {
     }
 
     /** 仅测试类路径可见的版本路由探针。 */
+    @TestComponent
     @RestController
     static class ProbeController {
         /**
