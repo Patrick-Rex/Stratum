@@ -5,5 +5,7 @@ dependencies {
     api project(':stratum-common')
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui'
+    runtimeOnly 'com.github.xiaoymin:knife4j-openapi3-ui'
     testImplementation 'org.springframework:spring-test'
 }

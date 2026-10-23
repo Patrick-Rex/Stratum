@@ -8,6 +8,8 @@ ext {
     lombokVersion = '1.18.44'
     springBootVersion = '4.0.5'
     easyQueryVersion = '3.3.1'
+    springdocVersion = '3.0.3'
+    knife4jUiVersion = '4.5.0'
 }
 
 allprojects {
@@ -41,6 +43,8 @@ subprojects {
         testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
         constraints {
+            implementation "org.springdoc:springdoc-openapi-starter-webmvc-ui:${springdocVersion}"
+            implementation "com.github.xiaoymin:knife4j-openapi3-ui:${knife4jUiVersion}"
             implementation "com.easy-query:sql-springboot4-starter:${easyQueryVersion}"
             implementation "com.easy-query:sql-mysql:${easyQueryVersion}"
             annotationProcessor "com.easy-query:sql-processor:${easyQueryVersion}"

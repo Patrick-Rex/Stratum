@@ -37,3 +37,16 @@ management:
   endpoint:
     health:
       show-details: when_authorized
+
+springdoc:
+  api-docs:
+    version: OPENAPI_3_0
+  packages-to-scan:
+    - com.patrick.stratum.interfaceadapter
+    - com.patrick.stratum.query
+  override-with-generic-response: false
+  swagger-ui:
+    disable-swagger-default-url: true
+    urls:
+      - name: Stratum
+        url: /v3/api-docs
