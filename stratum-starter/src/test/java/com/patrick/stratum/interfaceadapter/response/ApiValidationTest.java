@@ -144,7 +144,7 @@ class ApiValidationTest {
      */
     @Test
     void hidesInternalFailuresAndDistinguishesReturnValidation() throws Exception {
-        for (String path : List.of("/validation/internal", "/validation/return")) {
+        for (String path : List.of("/validation/internal", "/validation/return", "/validation/argument")) {
             var result = perform(get(path));
             assertError(result, 500, 50000);
             assertEquals(0, body(result).path("details").size());
@@ -152,12 +152,12 @@ class ApiValidationTest {
         }
     }
 
-    /** 参数异常和HTTP异常的reason不直接回传客户端。
+    /** 显式HTTP异常的reason不直接回传客户端。
      * @throws Exception MVC请求失败
      */
     @Test
     void hidesUntrustedExceptionMessages() throws Exception {
-        for (String path : List.of("/validation/argument", "/validation/protocol")) {
+        for (String path : List.of("/validation/protocol")) {
             var result = perform(get(path).header("Accept-Language", "en-US"));
             assertError(result, 400, 40000);
             assertEquals("Request parameters or protocol are invalid", body(result).path("message").asString());
@@ -244,7 +244,7 @@ class ApiValidationTest {
         @Min(1)
         int invalidReturn() { return 0; }
 
-        /** @return 不会正常返回，模拟含原始输入的参数异常 */
+        /** @return 不会正常返回，模拟内部实现的参数异常 */
         @GetMapping("/validation/argument")
         Object argument() { throw new IllegalArgumentException("secret123"); }
 

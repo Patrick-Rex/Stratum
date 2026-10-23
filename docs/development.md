@@ -183,7 +183,7 @@ ApiResponseAdvice 仅应用于 interfaceadapter 与 query 包下的控制器，�
 
 Interface 已引入 Boot validation starter，版本由根工程 Boot 4.0.5 BOM 管理，实际使用 Hibernate Validator 9.0.1.Final。控制器请求体使用 Jakarta Validation + @Valid，直接参数约束使用 Spring MVC 方法校验。字段校验明细最多20条，仅含安全字段名和固定提示，不回显拒绝值；非法JSON、缺失或类型错误参数返回40000；返回值校验失败仍为50000。业务异常保留显式错误码和安全明细，调用方不得在业务明细中放敏感数据。
 
-GlobalExceptionHandler 保留 Spring ErrorResponse 的 HTTP 状态和协议头（如405的Allow），同时提供统一JSON错误结构；404映射40400，405/415等协议错误映射40000。未知内部异常返回50000，普通IllegalArgumentException不再向客户端暴露异常消息；错误消息继续按Accept-Language选择，details始终为数组。
+GlobalExceptionHandler 保留 Spring ErrorResponse 的 HTTP 状态和协议头（如405的Allow），同时提供统一JSON错误结构；404映射40400，405/415等协议错误映射40000。未知内部异常返回50000，普通IllegalArgumentException按内部错误返回50000，不向客户端暴露异常消息；已知输入构造失败必须在边界显式转换40000；错误消息继续按Accept-Language选择，details始终为数组。
 
 [Hibernate Validator 官方说明](https://hibernate.org/validator/)确认其采用 Apache-2.0 许可；9.0系列目前为有限维护，当前沿用项目BOM的兼容版本，后续随Boot基线维护评估升级。该校验器在应用内执行，无商业授权或外部调用费用，不引入Hibernate ORM。
 
@@ -269,3 +269,9 @@ C03.5g1为QuerySpec补齐数值及时间边界：BigDecimal展开后的整数与
 FulfillmentQuery通过erp.fulfillment.list读取指定类别和订单的历史批次；按批次分页，默认订单版本倒序并补ID稳定排序，每批最多100行。支持履约ID、当时订单版本及UTC时间过滤。仅批量加载当前页明细，保留不可变数量和原订单行号；头和履约行不可修改，关联读取只使用订单行的固定列。缺失、跨类别或未履约订单返回空历史，HTTP层负责区分资源不存在。
 
 C03.5g2通过真实采购收货与分批销售命令，验证主数据、订单摘要/详情、库存余额/流水及履约历史的一致结果；幂等重放返回当时快照而当前查询保留最新进度。外层失败后订单进度、库存、流水及履约均不暴露回滚数据，QueryGateway仍拒绝活动事务。此验收不代表业务HTTP、认证或消息投递已完成。
+
+## 主数据HTTP写接口
+
+C03.6a提供/api/erp/masters/{kind}的POST，以及其/{id}的PATCH和DELETE，kind为MATERIAL、CUSTOMER、SUPPLIER、WAREHOUSE。POST请求含code/name及物料baseUnit，响应201和Location；PATCH仅含name/version；DELETE通过version参数指定观察版本并返回204空响应。所有写请求要求Idempotency-Key，固定主体local-erp由服务器注入，Phase D接入认证前仅用于本地验证。
+
+请求DTO限制文本、控制字符和版本；类别与基本单位关系仍由领域对象决定，应用层只捕获该输入构造的校验失败并转换40000，不包裹仓储或事件写入错误。控制器显式声明路径/参数名称，不依赖编译器参数名信息。重复创建/改名返回原快照，删除可重放；过期版本、重复编码、同键异参和已引用删除返回409，跨类别或不存在返回404。主数据GET、库存及订单HTTP仍待后续节点。

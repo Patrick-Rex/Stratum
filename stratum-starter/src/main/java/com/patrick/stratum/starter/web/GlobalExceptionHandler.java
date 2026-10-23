@@ -120,7 +120,7 @@ public class GlobalExceptionHandler {
             };
             return new MappedError(code, List.of());
         }
-        if (exception instanceof IllegalArgumentException || exception instanceof TypeMismatchException
+        if (exception instanceof TypeMismatchException
                 || exception instanceof HttpMessageNotReadableException) {
             return new MappedError(CommonErrorCode.BAD_REQUEST, List.of());
         }

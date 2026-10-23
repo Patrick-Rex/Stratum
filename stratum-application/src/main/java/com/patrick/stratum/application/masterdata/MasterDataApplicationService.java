@@ -44,7 +44,12 @@ public class MasterDataApplicationService {
         Objects.requireNonNull(command, "command");
         var key = key("create", command.getKind(), command.getSubjectId(), command.getIdempotencyKey());
         return idempotency.execute(key, command, MasterDataResult.class, () -> {
-            var aggregate = MasterData.create(command.getKind(), command.getCode(), command.getName(), command.getBaseUnit());
+            MasterData aggregate;
+            try {
+                aggregate = MasterData.create(command.getKind(), command.getCode(), command.getName(), command.getBaseUnit());
+            } catch (IllegalArgumentException invalidInput) {
+                throw new StratumException(CommonErrorCode.BAD_REQUEST);
+            }
             repository.save(aggregate);
             return publish(aggregate, MasterDataChanged.Change.CREATED);
         });
