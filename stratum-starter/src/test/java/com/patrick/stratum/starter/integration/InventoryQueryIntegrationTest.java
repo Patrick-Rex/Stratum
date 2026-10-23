@@ -1,6 +1,11 @@
 package com.patrick.stratum.starter.integration;
 
 import java.math.BigDecimal;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -22,12 +27,21 @@ import com.patrick.stratum.query.spec.QuerySpec;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /** 真实数据库验证库存读取的维度隔离、精确范围、排序及事务边界。 */
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "server.address=127.0.0.1")
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class InventoryQueryIntegrationTest extends MariaDbIntegrationTest {
+    @LocalServerPort private int port;
+    private final JsonMapper json = JsonMapper.builder().build();
     private final QueryGateway gateway;
     private final StockBalanceRepository balances;
     private final MasterDataRepository masters;
@@ -155,6 +169,87 @@ class InventoryQueryIntegrationTest extends MariaDbIntegrationTest {
         }
         assertThrows(IllegalArgumentException.class, () -> StockMovementQuery.create(1, 20, List.of("direction,asc"), List.of()));
         assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> readMovements(List.of())));
+    }
+
+    /** HTTP保留精确数量、来源和UTC微秒，并支持闭区间及重复排序。
+     * @throws Exception HTTP失败
+     */
+    @Test
+    void readsInventoryOverHttpWithExactSourceAndRanges() throws Exception {
+        UUID material = master(MasterData.Kind.MATERIAL); UUID warehouse = master(MasterData.Kind.WAREHOUSE);
+        var balance = balance(material, warehouse, "0.125");
+        var receipt = movement(balance, StockMovement.Direction.RECEIPT, "0.123456789012", Instant.parse("2026-10-24T00:00:01.123456Z"));
+        var balances = http("/api/erp/stock-balances?materialId=" + material + "&warehouseId=" + warehouse
+                + "&quantityFrom=0.2&quantityTo=0.3&sort=quantity,asc&sort=id,asc", 200).path("data");
+        assertEquals(1, balances.path("total").asInt());
+        assertEquals(0, balance.getQuantity().value().compareTo(new BigDecimal(balances.path("items").get(0).path("quantity").asText())));
+        String source = "&orderId=" + receipt.getSource().orderId() + "&postingId=" + receipt.getSource().postingId()
+                + "&orderLineId=" + receipt.getSource().orderLineId();
+        var result = http("/api/erp/stock-movements?balanceId=" + balance.getId() + source
+                + "&direction=RECEIPT&quantityFrom=0.123456789012&quantityTo=0.123456789012"
+                + "&occurredAtFrom=2026-10-24T00:00:01.123456Z&occurredAtTo=2026-10-24T00:00:01.123456Z", 200).path("data");
+        assertEquals(1, result.path("total").asInt()); var row = result.path("items").get(0);
+        assertEquals(receipt.getId().toString(), row.path("id").asText());
+        assertEquals(receipt.getOccurredAt().toString(), row.path("occurredAt").asText());
+        assertEquals(receipt.getSource().postingId().toString(), row.path("postingId").asText());
+        assertEquals(0, receipt.getQuantity().value().compareTo(new BigDecimal(row.path("quantity").asText())));
+        assertEquals(0, http("/api/erp/stock-movements?postingId=" + UUID.randomUUID(), 200).path("data").path("total").asInt());
+        assertEquals(1, http("/api/erp/stock-movements?id=" + receipt.getId()
+                + "&quantity=0.123456789012&occurredAt=2026-10-24T00:00:01.123456Z", 200).path("data").path("total").asInt());
+    }
+
+    /** 时间、数量及区间两端在HTTP边界受限，未知/单边/反向条件不能进入JDBC。
+     * @throws Exception HTTP失败
+     */
+    @Test
+    void rejectsHttpScalarAndRangeViolations() throws Exception {
+        for (String query : List.of("quantity=NaN", "quantity=1e2147483647", "quantity=1e-2147483647", "quantityFrom=0",
+                "quantityTo=1", "quantityFrom=2&quantityTo=1", "quantityFrom=0&quantityTo=1e512",
+                "occurredAt=not-a-time", "occurredAt=2026-10-24T00:00:00.123456789Z", "occurredAt=0999-12-31T23:59:59Z",
+                "occurredAtFrom=2026-10-24T00:00:00Z&occurredAtTo=2026-10-24T00:00:00.000000001Z",
+                "occurredAtFrom=2026-10-24T00:00:01Z&occurredAtTo=2026-10-24T00:00:00Z",
+                "direction=INVALID", "sort=postingId,asc", "postingId=invalid", "unknown=x")) {
+            assertEquals(40000, http("/api/erp/stock-movements?" + query, 400).path("code").asInt());
+        }
+        assertEquals(40000, http("/api/erp/stock-balances?quantity=1e512", 400).path("code").asInt());
+    }
+
+    /** OpenAPI列出两类端点的公共参数及各自维度，隐藏原始参数容器。
+     * @throws Exception HTTP失败
+     */
+    @Test
+    void documentsInventoryQueryParameters() throws Exception {
+        var document = http("/v3/api-docs", 200);
+        for (String path : List.of("/api/erp/stock-balances", "/api/erp/stock-movements")) {
+            var operation = document.path("paths").path(path).path("get");
+            assertTrue(operation.path("responses").has("200"));
+            var names = new java.util.HashSet<String>();
+            for (var parameter : operation.path("parameters")) names.add(parameter.path("name").asText());
+            assertTrue(names.containsAll(List.of("page", "pageSize", "sort", "id", "quantity", "quantityFrom", "quantityTo")));
+            assertFalse(names.contains("parameters"));
+            if (path.endsWith("balances")) assertTrue(names.containsAll(List.of("materialId", "warehouseId")));
+            else assertTrue(names.containsAll(List.of("postingId", "orderId", "orderLineId", "occurredAt", "occurredAtFrom", "occurredAtTo", "direction")));
+        }
+    }
+
+    /**
+     * 使用当前测试关联标识发送GET，关闭客户端并核对HTTP状态。
+     * @param path 路径及查询参数
+     * @param status 预期状态
+     * @return JSON响应
+     * @throws Exception HTTP失败
+     */
+    private JsonNode http(String path, int status) throws Exception {
+        var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path)).timeout(Duration.ofSeconds(15))
+                .header("X-Trace-Id", context.traceId()).GET().build();
+        try (var client = HttpClient.newHttpClient()) {
+            var response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            assertEquals(status, response.statusCode(), response.body());
+            assertEquals(context.traceId(), response.headers().firstValue("X-Trace-Id").orElseThrow());
+            var body = json.readTree(response.body());
+            if (path.startsWith("/api/")) assertEquals(context.traceId(), body.path("traceId").asText());
+            return body;
+        }
     }
 
     /** 仅清理本测试余额和主数据。 */

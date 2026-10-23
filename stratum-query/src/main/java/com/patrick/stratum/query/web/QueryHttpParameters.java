@@ -1,5 +1,8 @@
 package com.patrick.stratum.query.web;
 
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -41,7 +44,7 @@ public final class QueryHttpParameters {
     /**
      * 声明精确匹配字段，转换只发生在服务器指定类型上。
      * @param field 字段及HTTP参数名
-     * @param type String或UUID
+     * @param type String、UUID、BigDecimal或Instant
      * @return 当前构造器
      * @apiNote 示例：parameters.exact("code", String.class)。
      */
@@ -62,6 +65,22 @@ public final class QueryHttpParameters {
         String parameter = field + "Contains"; allowed.add(parameter);
         String value = parameters.getFirst(parameter);
         if (value != null) filters.add(new QuerySpec.FilterInput(field, QuerySpec.Operator.CONTAINS, value, null));
+        return this;
+    }
+
+    /**
+     * 声明闭区间，From和To必须同时提供，顺序及存储边界由QuerySpec检查。
+     * @param field 字段名
+     * @param type 服务端标量类型
+     * @return 当前构造器
+     * @apiNote 示例：parameters.range("quantity", BigDecimal.class)接收quantityFrom/quantityTo。
+     */
+    public QueryHttpParameters range(String field, Class<?> type) {
+        String from = field + "From"; String to = field + "To";
+        allowed.add(from); allowed.add(to);
+        String lower = parameters.getFirst(from); String upper = parameters.getFirst(to);
+        if ((lower == null) != (upper == null)) throw new IllegalArgumentException("闭区间需要完整上下界");
+        if (lower != null) filters.add(new QuerySpec.FilterInput(field, QuerySpec.Operator.BETWEEN, scalar(lower, type), scalar(upper, type)));
         return this;
     }
 
@@ -112,6 +131,11 @@ public final class QueryHttpParameters {
             UUID id = UUID.fromString(value);
             if (!id.toString().equalsIgnoreCase(value)) throw new IllegalArgumentException("UUID格式非法");
             return id;
+        }
+        if (type == BigDecimal.class) return new BigDecimal(value);
+        if (type == Instant.class) {
+            try { return Instant.parse(value); }
+            catch (DateTimeParseException invalidTime) { throw new IllegalArgumentException("时间格式非法", invalidTime); }
         }
         throw new IllegalStateException("未配置查询参数转换器");
     }
