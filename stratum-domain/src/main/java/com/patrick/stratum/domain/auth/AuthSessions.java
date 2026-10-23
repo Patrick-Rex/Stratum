@@ -25,4 +25,13 @@ public interface AuthSessions {
      * @apiNote 示例：{@code sessions.requireActive(codec.verify(token, TokenCodec.Purpose.ACCESS))}。
      */
     void requireActive(TokenCodec.Claims access);
+
+    /**
+     * 原子消费旧Refresh并登记同一会话的新Refresh；调用者只能在成功后返回新令牌。
+     * @param previous 已通过密码学校验的旧Refresh声明
+     * @param replacement 服务器新签发的同用户、会话及版本的Refresh声明
+     * @throws com.patrick.stratum.common.error.StratumException 旧令牌失效或绑定不符返回401，新标识碰撞返回409
+     * @apiNote 示例：{@code sessions.rotate(oldClaims, newClaims)}；网络结果不确定时禁止返回未确认的新令牌。
+     */
+    void rotate(TokenCodec.Claims previous, TokenCodec.Claims replacement);
 }

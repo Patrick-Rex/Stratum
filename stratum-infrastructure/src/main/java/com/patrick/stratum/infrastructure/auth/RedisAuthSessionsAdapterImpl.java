@@ -46,6 +46,19 @@ public class RedisAuthSessionsAdapterImpl implements AuthSessions {
             if redis.call('GET', KEYS[2]) ~= ARGV[2] then return 0 end
             return 1
             """, Long.class);
+    private static final DefaultRedisScript<Long> ROTATE = new DefaultRedisScript<>("""
+            local now = tonumber(redis.call('TIME')[1])
+            local expires = tonumber(ARGV[4])
+            if expires <= now or expires > now + 1209600 or tonumber(ARGV[5]) <= now then return 0 end
+            if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+            if redis.call('GET', KEYS[2]) ~= ARGV[2] then return 0 end
+            if redis.call('GET', KEYS[3]) ~= ARGV[3] then return 0 end
+            if redis.call('EXISTS', KEYS[4]) ~= 0 then return -1 end
+            redis.call('SET', KEYS[4], ARGV[3], 'EXAT', ARGV[4])
+            redis.call('EXPIREAT', KEYS[2], ARGV[4])
+            redis.call('DEL', KEYS[3])
+            return 1
+            """, Long.class);
     private final StringRedisTemplate redis;
 
     /** {@inheritDoc} */
@@ -88,6 +101,30 @@ public class RedisAuthSessionsAdapterImpl implements AuthSessions {
         try {
             Long result = redis.execute(ACTIVE, List.of(userKey(access.subject()), sessionKey(access)),
                     Long.toString(access.version()), state(access), Long.toString(access.expiresAt().getEpochSecond()));
+            if (!Long.valueOf(1).equals(result)) { throw new StratumException(CommonErrorCode.UNAUTHORIZED); }
+        } catch (DataAccessException failure) {
+            throw new StratumException(CommonErrorCode.INTERNAL_ERROR);
+        }
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void rotate(Claims previous, Claims replacement) {
+        validate(previous, Purpose.REFRESH);
+        validate(replacement, Purpose.REFRESH);
+        if (!previous.subject().equals(replacement.subject())
+                || !previous.sessionId().equals(replacement.sessionId())
+                || previous.version() != replacement.version()
+                || previous.tokenId().equals(replacement.tokenId())
+                || replacement.issuedAt().isBefore(previous.issuedAt())) {
+            throw new StratumException(CommonErrorCode.UNAUTHORIZED);
+        }
+        try {
+            Long result = redis.execute(ROTATE,
+                    List.of(userKey(previous.subject()), sessionKey(previous), refreshKey(previous), refreshKey(replacement)),
+                    Long.toString(previous.version()), state(previous), refreshState(previous),
+                    Long.toString(replacement.expiresAt().getEpochSecond()), Long.toString(previous.expiresAt().getEpochSecond()));
+            if (Long.valueOf(-1).equals(result)) { throw new StratumException(CommonErrorCode.CONFLICT); }
             if (!Long.valueOf(1).equals(result)) { throw new StratumException(CommonErrorCode.UNAUTHORIZED); }
         } catch (DataAccessException failure) {
             throw new StratumException(CommonErrorCode.INTERNAL_ERROR);

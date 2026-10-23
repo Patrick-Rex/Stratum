@@ -3,6 +3,10 @@ package com.patrick.stratum.starter.integration;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.time.Clock;
+import java.security.KeyPairGenerator;
+import java.security.interfaces.RSAPrivateKey;
+import java.security.interfaces.RSAPublicKey;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -19,6 +23,7 @@ import com.patrick.stratum.domain.auth.AuthSessions;
 import com.patrick.stratum.domain.auth.TokenCodec.Claims;
 import com.patrick.stratum.domain.auth.TokenCodec.Purpose;
 import com.patrick.stratum.infrastructure.auth.RedisAuthSessionsAdapterImpl;
+import com.patrick.stratum.infrastructure.auth.RsaTokenAdapterImpl;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -177,12 +182,170 @@ class AuthSessionsIntegrationTest extends MariaDbIntegrationTest {
         }
         var unavailable = new RedisAuthSessionsAdapterImpl(new FailingRedisTemplate());
         for (Runnable action : List.<Runnable>of(() -> unavailable.userVersion(refresh.subject()),
-                () -> unavailable.create(refresh), () -> unavailable.requireActive(access(refresh)))) {
+                () -> unavailable.create(refresh), () -> unavailable.requireActive(access(refresh)),
+                () -> unavailable.rotate(refresh, replacement(refresh)))) {
             var failure = assertThrows(StratumException.class, action::run);
             assertEquals(CommonErrorCode.INTERNAL_ERROR, failure.getErrorCode());
             assertNull(failure.getCause());
             assertTrue(failure.getDetails().isEmpty());
         }
+    }
+
+    /** 旋转删除旧白名单、延长会话至新Refresh到期，旧Access仍受同一会话保护。 */
+    @Test
+    void rotatesOnceAndRenewsSessionExpiry() {
+        var original = refresh();
+        var old = new Claims(original.subject(), original.tokenId(), original.sessionId(), 0,
+                original.issuedAt().minusSeconds(60), original.expiresAt().minusSeconds(60), Purpose.REFRESH);
+        sessions.userVersion(old.subject());
+        sessions.create(old);
+        var next = replacement(old);
+        sessions.rotate(old, next);
+        assertFalse(redis.hasKey(refreshKey(old)));
+        assertTrue(redis.hasKey(refreshKey(next)));
+        assertTrue(redis.getExpire(sessionKey(old)) > 1_209_590);
+        assertTrue(redis.getExpire(refreshKey(next)) > 1_209_590);
+        sessions.requireActive(access(old));
+        unauthorized(() -> sessions.rotate(old, replacement(old)));
+        var third = replacement(next);
+        sessions.rotate(next, third);
+        assertFalse(redis.hasKey(refreshKey(next)));
+        assertTrue(redis.hasKey(refreshKey(third)));
+    }
+
+    /**
+     * 并发消费同一Refresh最多签出一个有效后继，其他新jti均不进入白名单。
+     * @throws Exception 并发操作失败
+     */
+    @Test
+    void concurrentRotationCreatesExactlyOneSuccessor() throws Exception {
+        var original = refresh();
+        sessions.userVersion(original.subject());
+        sessions.create(original);
+        List<Claims> successors = new ArrayList<>();
+        for (int index = 0; index < 8; index++) { successors.add(replacement(original)); }
+        var start = new CountDownLatch(1);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            List<Future<Boolean>> results = new ArrayList<>();
+            for (var successor : successors) {
+                results.add(executor.submit(() -> {
+                    assertTrue(start.await(5, TimeUnit.SECONDS));
+                    try { sessions.rotate(original, successor); return true; }
+                    catch (StratumException failure) {
+                        assertEquals(CommonErrorCode.UNAUTHORIZED, failure.getErrorCode());
+                        return false;
+                    }
+                }));
+            }
+            start.countDown();
+            int successes = 0;
+            for (var result : results) { if (result.get(5, TimeUnit.SECONDS)) { successes++; } }
+            assertEquals(1, successes);
+            assertEquals(1, successors.stream().filter(next -> Boolean.TRUE.equals(redis.hasKey(refreshKey(next)))).count());
+            assertFalse(redis.hasKey(refreshKey(original)));
+        } finally { start.countDown(); }
+    }
+
+    /** 后继用途、用户、会话、版本或jti绑定错误不能消费原Refresh。 */
+    @Test
+    void rejectsInvalidSuccessorWithoutConsumingOriginal() {
+        var original = refresh();
+        var foreign = refresh();
+        var next = replacement(original);
+        sessions.userVersion(original.subject());
+        sessions.create(original);
+        for (Claims invalid : List.of(original, access(original), foreign,
+                new Claims(original.subject(), next.tokenId(), foreign.sessionId(), 0,
+                        next.issuedAt(), next.expiresAt(), Purpose.REFRESH),
+                new Claims(original.subject(), next.tokenId(), original.sessionId(), 1,
+                        next.issuedAt(), next.expiresAt(), Purpose.REFRESH),
+                new Claims(original.subject(), next.tokenId(), original.sessionId(), 0,
+                        original.issuedAt().minusSeconds(1), original.expiresAt().minusSeconds(1), Purpose.REFRESH))) {
+            unauthorized(() -> sessions.rotate(original, invalid));
+            assertTrue(redis.hasKey(refreshKey(original)));
+        }
+        assertFalse(redis.hasKey(refreshKey(next)));
+        sessions.rotate(original, next);
+    }
+
+    /** 权威会话、旧白名单或版本失效时不可旋转；仅校验JWT签名不足以放行。 */
+    @Test
+    void rejectsLostAuthorityAndExpiredRefresh() {
+        var original = refresh();
+        var next = replacement(original);
+        sessions.userVersion(original.subject());
+        sessions.create(original);
+        String session = redis.opsForValue().get(sessionKey(original));
+        String whitelist = redis.opsForValue().get(refreshKey(original));
+        redis.opsForValue().set(userKey(original), "1");
+        unauthorized(() -> sessions.rotate(original, next));
+        redis.opsForValue().set(userKey(original), "0");
+        redis.opsForValue().set(sessionKey(original), "another-user|0");
+        unauthorized(() -> sessions.rotate(original, next));
+        redis.opsForValue().set(sessionKey(original), session, Duration.ofDays(14));
+        redis.opsForValue().set(refreshKey(original), "another-user|0|another-session");
+        unauthorized(() -> sessions.rotate(original, next));
+        redis.opsForValue().set(refreshKey(original), whitelist, Duration.ofDays(14));
+        redis.expire(refreshKey(original), Duration.ZERO);
+        unauthorized(() -> sessions.rotate(original, next));
+        assertFalse(redis.hasKey(refreshKey(next)));
+    }
+
+    /** 后继jti碰撞返回冲突且不消费旧白名单或改变会话到期时间。 */
+    @Test
+    void successorCollisionPreservesOldState() {
+        var original = refresh();
+        var next = replacement(original);
+        sessions.userVersion(original.subject());
+        sessions.create(original);
+        String before = redis.opsForValue().get(refreshKey(original));
+        redis.opsForValue().set(refreshKey(next), "existing");
+        var failure = assertThrows(StratumException.class, () -> sessions.rotate(original, next));
+        assertEquals(CommonErrorCode.CONFLICT, failure.getErrorCode());
+        assertEquals(before, redis.opsForValue().get(refreshKey(original)));
+        assertEquals("existing", redis.opsForValue().get(refreshKey(next)));
+        sessions.requireActive(access(original));
+    }
+
+    /**
+     * 真实RSA与Redis组合：签名仍合法的旧Refresh在旋转后不能复用，版本变化拒绝Access。
+     * @throws Exception JCA密钥生成失败
+     */
+    @Test
+    void combinesRealSignedTokensWithAuthoritativeRotation() throws Exception {
+        var generator = KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        var pair = generator.generateKeyPair();
+        var codec = new RsaTokenAdapterImpl((RSAPublicKey) pair.getPublic(), (RSAPrivateKey) pair.getPrivate(),
+                "stratum-integration", "stratum-api", Clock.systemUTC());
+        var fixture = refresh();
+        long version = sessions.userVersion(fixture.subject());
+        String oldToken = codec.issue(fixture.subject(), fixture.sessionId(), version, Purpose.REFRESH);
+        var previous = codec.verify(oldToken, Purpose.REFRESH);
+        keys.add(refreshKey(previous));
+        sessions.create(previous);
+        var next = codec.verify(codec.issue(previous.subject(), previous.sessionId(), version, Purpose.REFRESH), Purpose.REFRESH);
+        keys.add(refreshKey(next));
+        sessions.rotate(previous, next);
+        var stillSigned = codec.verify(oldToken, Purpose.REFRESH);
+        unauthorized(() -> sessions.rotate(stillSigned, replacement(previous)));
+        var access = codec.verify(codec.issue(previous.subject(), previous.sessionId(), version, Purpose.ACCESS), Purpose.ACCESS);
+        sessions.requireActive(access);
+        redis.opsForValue().set(userKey(previous), "1");
+        unauthorized(() -> sessions.requireActive(access));
+    }
+
+    /**
+     * 创建同会话后继并登记它的白名单键。
+     * @param previous 当前Refresh
+     * @return 新Refresh声明
+     */
+    private Claims replacement(Claims previous) {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        var next = new Claims(previous.subject(), UUID.randomUUID(), previous.sessionId(), previous.version(),
+                now, now.plus(Purpose.REFRESH.lifetime()), Purpose.REFRESH);
+        keys.add(refreshKey(next));
+        return next;
     }
 
     /**

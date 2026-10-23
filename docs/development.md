@@ -343,3 +343,9 @@ RsaTokenAdapterImpl使用调用方提供的2048至8192位RSA密钥，只签发/�
 AuthSessions通过RedisAuthSessionsAdapterImpl管理 `auth:user:{userId}:ver`、`auth:sess:{sid}`、`auth:rt:{jti}`。用户版本首次在身份验证成功后初始化为0且不设TTL；建会话脚本先核对版本和标识唯一性，再原子写入会话及Refresh白名单，TTL跟随Refresh的14天到期时间。Access在密码学校验后还须逐请求检查会话所有者和用户版本，不缓存成功结果；版本用字符串比较，避免Lua双精度丢失long精度。
 
 7项真实Redis集成测试通过，覆盖并发、TTL、版本精度、身份/用途、标识碰撞不产生部分状态；故障注入验证Redis不可用时拒绝请求且隐藏原因。脚本按既定单节点/Sentinel目标设计，不宣称支持Redis Cluster。当前未接入HTTP认证、Refresh旋转或撤销操作入口；测试中直接改变权威版本仅用于验证校验行为。
+
+## Refresh原子旋转（NODE-D01.3b）
+
+AuthSessions.rotate在一个Redis脚本中核对用户版本、会话所有者与旧Refresh白名单，登记同用户/会话/版本的新jti、更新会话到期时间并删除旧白名单。新Refresh仍为签发起14天，会话跟随当前Refresh到期；旧Access继续受会话和用户版本校验约束。旧Refresh只能成功消费一次，后继冲突或校验失败不消费旧令牌；调用方只能在确认脚本成功后返回新令牌。网络结果不确定时拒绝放行，不把重试当作再次签发成功。
+
+本节点重新执行12项认证单元测试、13项Redis会话集成测试和2项ERP HTTP闭环回归，全部通过。覆盖并发唯一后继、旧Refresh重放、用途/身份/版本绑定、过期及状态损坏、后继冲突和真实RSA/Redis组合。HTTP登录/认证、撤销操作入口与RBAC仍未交付。账号来源待确认，当前已停止本轮独立MariaDB/Redis容器与测试进程；用户原有Docker服务保持运行。下次本地验证可启动保留的两个独立容器，连接配置仍仅保存在本机临时目录。
