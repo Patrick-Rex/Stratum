@@ -597,6 +597,15 @@ NODE-B02 仅建立可注入的工作单元契约与调用边界；真实数据�
 | NODE-B03.3a | 可运行 Easy-Query 仓储模板（测试夹具），不预建业务表 | 真实数据库 CRUD、分页与乐观锁竞争测试 | NODE-B03.2b |
 | NODE-B03.3b | Redis/Caffeine 客户端配置与连通性验证 | 真实 Redis 带 TTL 读写、Caffeine 有界缓存测试 | NODE-B03.3a |
 
+### NODE-B04 子节点
+
+| 子节点 | 范围 | 验证 | 前置 |
+|--------|------|------|------|
+| NODE-B04.1 | Outbox 消息契约、状态及 Flyway 表；事件写入端口与基础映射 | 编译、迁移与模型约束验证 | NODE-B03 |
+| NODE-B04.2 | Outbox 持久化适配与 Application 事件落盘入口 | 真实数据库验证业务写入与 Outbox 同提交/同回滚、重复事件拒绝、事务外拒写 | NODE-B04.1 |
+
+Outbox Relay、MQ 发布和消费幂等仍在 Phase E 实现，B04 只保证事务内可靠落盘。
+
 ## 5. AI 执行提示词模板
 
 执行任一节点时，输入最少包含：

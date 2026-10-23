@@ -78,7 +78,7 @@ Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完�
 .\gradlew.bat --no-daemon :stratum-domain:dependencies --configuration runtimeClasspath
 ```
 
-集成测试通过独立任务显式运行，不在普通 `test` 中隐式连接外部服务。先在本机 MariaDB 建立专用 `stratum_it` 数据库并授予测试账号权限，再设置 `STRATUM_IT_DB_URL`（`jdbc:mariadb://127.0.0.1:端口/stratum_it`）、`STRATUM_IT_DB_USERNAME`、`STRATUM_IT_DB_PASSWORD`，执行：
+集成测试通过独立任务显式运行，不在普通 `test` 中隐式连接外部服务。先在本机 MariaDB 建立专用 `stratum_it` 数据库并授予测试账号权限，再设置 `STRATUM_IT_DB_URL`（`jdbc:mariadb://127.0.0.1:端口/stratum_it`）、`STRATUM_IT_DB_USERNAME`、`STRATUM_IT_DB_PASSWORD`，同时用 `STRATUM_IT_REDIS_PORT` 指定本机测试 Redis（认证时另设 `STRATUM_IT_REDIS_PASSWORD`），执行：
 
 ```powershell
 .\gradlew.bat --no-daemon :stratum-starter:integrationTest
@@ -112,7 +112,7 @@ $env:STRATUM_REDIS_PORT = '6379'
 Invoke-RestMethod http://localhost:8080/actuator/health
 ```
 
-健康状态包含数据库与 Redis。当前尚无 OpenAPI / Knife4j、Prometheus 注册表或追踪后端，不将 `/doc.html`、`/v3/api-docs`、`/actuator/prometheus` 列为可用端点。
+健康状态包含数据库与 Redis。本地 Caffeine 客户端默认最多 10000 条、写入后 30 秒失效，可用 `stratum.cache.local.maximum-size` 和 `stratum.cache.local.ttl` 调整；Cache Aside、空值保护、single-flight、分布式锁及补偿属于 NODE-B05，不以客户端连通性代替验收。当前尚无 OpenAPI / Knife4j、Prometheus 注册表或追踪后端，不将 `/doc.html`、`/v3/api-docs`、`/actuator/prometheus` 列为可用端点。
 
 当前没有 `docker/compose/`，本轮不实施部署编排。可以连接现有 Docker 服务，也可创建独立测试容器；不要复用其他项目的业务库或清空共享 Redis。集成测试使用独立数据库及带 `stratum` 前缀的键。
 

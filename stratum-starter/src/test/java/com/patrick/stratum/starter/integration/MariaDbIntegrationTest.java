@@ -25,6 +25,9 @@ abstract class MariaDbIntegrationTest {
         registry.add("spring.datasource.username", () -> requiredEnvironment("STRATUM_IT_DB_USERNAME"));
         registry.add("spring.datasource.password", () -> requiredEnvironment("STRATUM_IT_DB_PASSWORD"));
         registry.add("spring.flyway.locations", () -> "classpath:db/migration,classpath:db/testmigration");
+        registry.add("spring.data.redis.host", () -> "127.0.0.1");
+        registry.add("spring.data.redis.port", () -> requiredEnvironment("STRATUM_IT_REDIS_PORT"));
+        registry.add("spring.data.redis.password", () -> System.getenv().getOrDefault("STRATUM_IT_REDIS_PASSWORD", ""));
     }
 
     /**
