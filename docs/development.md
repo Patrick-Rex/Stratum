@@ -252,4 +252,9 @@ NODE-C03.5c提供StockMovementQuery及erp.stock.movement.list处理器。id、ba
 
 ## ERP订单摘要读取
 
-NODE-C03.5d提供TradeOrderQuery及erp.order.list。采购/销售类别为必填；id、orderNumber、partyId、warehouseId、status支持精确条件，金额与创建时间支持精确及闭区间。排序开放id、orderNumber、totalAmount、createdAt，默认创建时间倒序并补ID。摘要直接返回已保存金额、状态、版本及UTC时间，列表不读取订单行；完整明细在C03.5e交付。HTTP与鉴权尚未接入。
+NODE-C03.5d提供TradeOrderQuery及erp.order.list。采购/销售类别为必填；id、orderNumber、partyId、warehouseId、status支持精确条件，金额与创建时间支持精确及闭区间。排序开放id、orderNumber、totalAmount、createdAt，默认创建时间倒序并补ID。摘要直接返回已保存金额、状态、版本及UTC时间，列表不读取订单行；完整明细已由C03.5e交付。HTTP与鉴权尚未接入。
+
+
+## ERP订单详情读取
+
+NODE-C03.5e提供TradeOrderDetailQuery及erp.order.detail，类别与UUID固定，结果为零或一个包含摘要和明细的不可变对象。采用Easy-Query单语句关联订单与行，避免分开查询在并发履约时混合头版本与行数量；按原始行号返回，最多100行。查询没有写事务，缺失或跨类别返回空结果，HTTP层随后适配404。已验证100行明细、集合不可变及并发更新下的状态/版本/数量一致性；该详情不从写聚合仓储读取。

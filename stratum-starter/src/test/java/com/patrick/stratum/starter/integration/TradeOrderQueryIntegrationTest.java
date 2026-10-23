@@ -5,6 +5,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.IntStream;
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.domain.inventory.Quantity;
 import com.patrick.stratum.domain.masterdata.MasterData;
@@ -18,6 +22,7 @@ import com.patrick.stratum.query.QueryGateway;
 import com.patrick.stratum.query.dto.QueryResult;
 import com.patrick.stratum.query.spec.QuerySpec;
 import com.patrick.stratum.query.trade.TradeOrderQuery;
+import com.patrick.stratum.query.trade.TradeOrderDetailQuery;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -112,6 +117,67 @@ class TradeOrderQueryIntegrationTest extends MariaDbIntegrationTest {
         assertThrows(IllegalArgumentException.class, () -> TradeOrderQuery.create(TradeOrder.Kind.PURCHASE, 1, 20, List.of("status,asc"), List.of()));
         assertTrue(read(TradeOrder.Kind.PURCHASE, List.of(eq("orderNumber", "' OR 1=1 --"))).getItems().isEmpty());
         assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> read(TradeOrder.Kind.PURCHASE, List.of())));
+    }
+
+    /** 详情按原始行号返回最多100行，保留固定单价、数量和已提交履约进度。 */
+    @Test
+    void loadsMaximumDetailLinesInOriginalOrder() {
+        UUID party = master(MasterData.Kind.SUPPLIER); UUID warehouse = master(MasterData.Kind.WAREHOUSE); UUID material = master(MasterData.Kind.MATERIAL);
+        var lines = IntStream.rangeClosed(1, TradeOrder.MAX_LINES).mapToObj(index -> OrderLine.create(material,
+                new Quantity(BigDecimal.ONE), new UnitPrice(BigDecimal.valueOf(index, 2)))).toList();
+        var order = TradeOrder.create(TradeOrder.Kind.PURCHASE, party, warehouse, lines);
+        orderIds.add(order.getId());
+        unitOfWork.execute(() -> {
+            orders.save(order); order.fulfill(Map.of(lines.getFirst().getId(), new Quantity(new BigDecimal("0.125")))); orders.save(order); return null;
+        });
+        var detail = gateway.execute(TradeOrderDetailQuery.create(order.getKind(), order.getId()), context).getItems().getFirst();
+        assertEquals(100, detail.lines().size()); assertEquals(TradeOrder.Status.PARTIAL, detail.order().status());
+        assertEquals(order.getTotalAmount(), detail.order().totalAmount()); assertEquals(1, detail.order().version());
+        for (int index = 0; index < lines.size(); index++) {
+            var expected = order.getLines().get(index); var actual = detail.lines().get(index);
+            assertEquals(index + 1, actual.lineNumber()); assertEquals(expected.getId(), actual.id());
+            assertEquals(expected.getMaterialId(), actual.materialId()); assertEquals(expected.getOrdered().value(), actual.quantity());
+            assertEquals(expected.getUnitPrice().value(), actual.unitPrice()); assertEquals(expected.getFulfilled().value(), actual.fulfilled());
+        }
+        assertThrows(UnsupportedOperationException.class, () -> detail.lines().clear());
+    }
+
+    /** 缺失和跨类别详情返回空结果，详情读取也拒绝加入写工作单元。 */
+    @Test
+    void protectsDetailKindAndTransactionBoundary() {
+        var order = order(TradeOrder.Kind.SALE, master(MasterData.Kind.CUSTOMER), master(MasterData.Kind.WAREHOUSE), master(MasterData.Kind.MATERIAL), "1");
+        for (var query : List.of(TradeOrderDetailQuery.create(TradeOrder.Kind.PURCHASE, order.getId()), TradeOrderDetailQuery.create(TradeOrder.Kind.SALE, UUID.randomUUID()))) {
+            var result = gateway.execute(query, context); assertEquals(0, result.getTotal()); assertTrue(result.getItems().isEmpty());
+        }
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> gateway.execute(TradeOrderDetailQuery.create(order.getKind(), order.getId()), context)));
+    }
+
+    /**
+     * 并发提交履约进度时，每次详情头版本与行数量属于同一语句快照。
+     * @throws Exception 并发任务超时或失败
+     */
+    @Test
+    void readsConsistentDetailDuringConcurrentProgress() throws Exception {
+        var order = order(TradeOrder.Kind.PURCHASE, master(MasterData.Kind.SUPPLIER), master(MasterData.Kind.WAREHOUSE), master(MasterData.Kind.MATERIAL), "1");
+        var ready = new CountDownLatch(2);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var writer = executor.submit(() -> {
+                ready.countDown(); assertDoesNotThrow(() -> assertTrue(ready.await(5, TimeUnit.SECONDS)));
+                for (int index = 0; index < 20; index++) unitOfWork.execute(() -> {
+                    order.fulfill(Map.of(order.getLines().getFirst().getId(), new Quantity(new BigDecimal("0.01")))); orders.save(order); return null;
+                });
+            });
+            var reader = executor.submit(() -> {
+                ready.countDown(); assertDoesNotThrow(() -> assertTrue(ready.await(5, TimeUnit.SECONDS)));
+                for (int index = 0; index < 30; index++) {
+                    var detail = gateway.execute(TradeOrderDetailQuery.create(order.getKind(), order.getId()), context).getItems().getFirst();
+                    assertEquals(0, BigDecimal.valueOf(detail.order().version(), 2).compareTo(detail.lines().getFirst().fulfilled()));
+                    assertEquals(detail.order().version() == 0 ? TradeOrder.Status.PENDING : TradeOrder.Status.PARTIAL, detail.order().status());
+                }
+            });
+            writer.get(20, TimeUnit.SECONDS); reader.get(20, TimeUnit.SECONDS);
+        }
+        assertEquals(20, gateway.execute(TradeOrderDetailQuery.create(order.getKind(), order.getId()), context).getItems().getFirst().order().version());
     }
 
     /** 仅删除自身订单、明细和主数据夹具。 */
