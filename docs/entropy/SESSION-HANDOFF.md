@@ -2,17 +2,17 @@
 
 ## 交接报告（2026-10-24）
 
-- completedNode: NODE-C03.3c（实现库存余额持久化与主数据类别引用保护）。
+- completedNode: NODE-C03.3d（实现库存流水追加与履约行唯一约束）。
 - changedFiles:
   - `docs/CONTEXT.md`
   - `docs/entropy/SESSION-HANDOFF.md`
-  - `stratum-infrastructure/src/main/java/com/patrick/stratum/infrastructure/persistence/inventory/StockBalanceRecord.java`
-  - `stratum-infrastructure/src/main/java/com/patrick/stratum/infrastructure/persistence/inventory/StockBalanceRepositoryImpl.java`
-  - `stratum-infrastructure/src/main/resources/db/migration/V202610240003__create_erp_stock_balance.sql`
-  - `stratum-starter/src/test/java/com/patrick/stratum/starter/integration/StockBalanceRepositoryIntegrationTest.java`
+  - `stratum-infrastructure/src/main/java/com/patrick/stratum/infrastructure/persistence/inventory/StockMovementRecord.java`
+  - `stratum-infrastructure/src/main/java/com/patrick/stratum/infrastructure/persistence/inventory/StockMovementRepositoryImpl.java`
+  - `stratum-infrastructure/src/main/resources/db/migration/V202610240004__create_erp_stock_movement.sql`
+  - `stratum-starter/src/test/java/com/patrick/stratum/starter/integration/StockMovementRepositoryIntegrationTest.java`
 
-- validations: 6项真实MariaDB测试通过、0失败/跳过；覆盖DECIMAL精度、维度唯一、类别外键与拒删、固定维度、事务回滚和并发唯一版本提交。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
+- validations: 6项真实MariaDB测试通过、0失败/跳过；覆盖精确数量与UTC时间、分批来源、重复履约/版本、余额引用、数据库校验及流水余额同回滚。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
 - unresolved: 部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
-- nextNode: NODE-C03.3d。
+- nextNode: NODE-C03.3e。
 - 当前节点验收后审查、提交、推送；完成后继续下一节点，不重复请求授权。
 - CONTEXT 已更新。共享 Docker 容器保持运行，仅清理本轮创建的测试资源；测试 JVM 已退出；独立测试容器 stratum-integration-mariadb / stratum-integration-redis 暂留供连续验证，会话结束前清理。连接状态在本机临时目录 stratum-integration-state.json，不提交凭据。
