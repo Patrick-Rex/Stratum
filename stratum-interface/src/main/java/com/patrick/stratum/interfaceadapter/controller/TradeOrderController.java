@@ -102,7 +102,7 @@ public class TradeOrderController {
      */
     @PostMapping("/{id}/fulfillments")
     @Operation(summary = "分批收货或出库", description = "采购增加库存，销售扣减库存；不允许负库存或超订单数量。同键重放原批次及当时订单快照，观察版本过期返回409。")
-    @ApiResponse(responseCode = "201", description = "履约或原请求重放成功，Location按id过滤本批履约历史")
+    @ApiResponse(responseCode = "201", description = "履约或原请求重放成功，Location按postingId过滤本批履约历史")
     public ResponseEntity<FulfillmentResult> fulfill(@PathVariable("kind") TradeOrder.Kind kind, @PathVariable("id") UUID id,
             @RequestHeader("Idempotency-Key") @Pattern(regexp = IDEMPOTENCY_PATTERN) String key,
             @Valid @RequestBody FulfillRequest request) {
@@ -110,6 +110,6 @@ public class TradeOrderController {
                 .orderLineId(line.orderLineId()).quantity(line.quantity()).build()).toList();
         var result = commands.execute(FulfillOrderCommand.builder().subjectId(LOCAL_SUBJECT).idempotencyKey(key).kind(kind)
                 .orderId(id).version(request.version()).lines(lines).build()).data();
-        return ResponseEntity.created(URI.create("/api/erp/orders/" + kind + "/" + id + "/fulfillments?id=" + result.getPostingId())).body(result);
+        return ResponseEntity.created(URI.create("/api/erp/orders/" + kind + "/" + id + "/fulfillments?postingId=" + result.getPostingId())).body(result);
     }
 }

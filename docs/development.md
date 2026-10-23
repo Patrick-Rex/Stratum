@@ -152,7 +152,7 @@ Application 的 CacheUpdateCoordinator 必须在已有工作单元中调用。�
 
 ## 查询条件基架
 
-QuerySpec.create 接收服务端字段白名单，将外部字段名转换成枚举，再由具体 QueryHandler 映射至 ORM 列。分页复用 BasePageRequest（默认 20，最大 200）；最多 3 个排序、20 个条件，文本参数最多 512 字符。支持精确、包含及同类型闭区间，未知字段、非法操作、类型不符或倒置区间均被拒绝。集合与参数类型保持不可变；包含查询的字面通配符转义和 SQL 参数绑定已由主数据真实库测试验证，Query / QueryHandler 已定义类型契约，QueryResult 复用 common 的 page、pageSize、total、items 并拒绝超量或不一致的结果；QueryContext 显式携带不可变身份与权限快照，必须由服务器构造，不能从 HTTP 请求体采信。QueryGateway 已按请求精确类型统一路由，启动时拒绝重复类型与 queryCode；执行时核对结果分页、显式传递并恢复 traceId，拒绝隐式加入活动事务。`stratum.query.duration` 按注册的 queryCode 与 success/error 记录耗时；`observability.query.slow-threshold-ms` 默认 300，慢查询及失败输出警告。当前已提供主数据HTTP查询，库存HTTP查询也已接通，订单HTTP查询仍待后续节点，身份认证与数据权限仍待 Phase D。
+QuerySpec.create 接收服务端字段白名单，将外部字段名转换成枚举，再由具体 QueryHandler 映射至 ORM 列。分页复用 BasePageRequest（默认 20，最大 200）；最多 3 个排序、20 个条件，文本参数最多 512 字符。支持精确、包含及同类型闭区间，未知字段、非法操作、类型不符或倒置区间均被拒绝。集合与参数类型保持不可变；包含查询的字面通配符转义和 SQL 参数绑定已由主数据真实库测试验证，Query / QueryHandler 已定义类型契约，QueryResult 复用 common 的 page、pageSize、total、items 并拒绝超量或不一致的结果；QueryContext 显式携带不可变身份与权限快照，必须由服务器构造，不能从 HTTP 请求体采信。QueryGateway 已按请求精确类型统一路由，启动时拒绝重复类型与 queryCode；执行时核对结果分页、显式传递并恢复 traceId，拒绝隐式加入活动事务。`stratum.query.duration` 按注册的 queryCode 与 success/error 记录耗时；`observability.query.slow-threshold-ms` 默认 300，慢查询及失败输出警告。当前已提供主数据HTTP查询，库存HTTP查询也已接通，订单HTTP查询已于C03.6f接通，身份认证与数据权限仍待 Phase D。
 
 ## 实现与验证
 
@@ -203,7 +203,7 @@ IdempotentApplicationService 在已有工作单元内执行写回调，并通过
 
 同键同摘要重放已保存的业务结果，同键不同摘要返回40900。并发竞争由MariaDB复合主键判定，失败方的业务、Outbox和回执全部回滚；客户端沿用原键重试可重放胜出结果。写回调可能并发进入，因此只允许同事务数据库写入，外部消息仍须Outbox。每次HTTP响应的traceId由响应基架重新生成，不存入回执。请求DTO应稳定序列化，作用域内的结果DTO类型保持固定；当前不自动删除回执，不支持凭空重新使用历史键。
 
-当前已提供持久化与Application入口，并已接入主数据创建/改名/删除命令；采购销售创建/履约命令也已接入，HTTP接口随C03后续子节点交付，主体认证仍待Phase D。验证包含真实MariaDB并发唯一提交、失败整体回滚、请求冲突与结果重放。
+当前已提供持久化与Application入口，并已接入主数据创建/改名/删除命令；采购销售创建/履约命令也已接入，主数据与采购销售HTTP写接口已接通，主体认证仍待Phase D。验证包含真实MariaDB并发唯一提交、失败整体回滚、请求冲突与结果重放。
 
 ## ERP主数据写能力
 
@@ -213,7 +213,7 @@ MariaDB的 erp_master_data 保存UUID、类别、编码、名称、单位和版�
 
 创建、改名和删除均保存幂等回执，作用域绑定操作、v1、类别和服务器主体。改名/删除命令要求期望版本；不存在或跨类别ID返回40400，过期版本返回40900。主体字段是服务器内部输入，不代表已接入身份认证。业务与领域事件、缓存失效补偿意图同事务提交；主数据详情缓存键为 `biz:erp:master-data:{id}`，TTL为5分钟并加减30秒抖动。删除使用高于旧版本的屏障，防止旧缓存回填。
 
-C03.2完成写能力；C03.5a已增加内部主数据查询，尚未暴露HTTP业务接口。采购销售已按确认范围实现分批履约，累计数量不得超过订单量；不包含审批、退货或反向冲销。
+C03.2完成写能力；C03.5a已增加内部主数据查询，C03.6a/b已接通HTTP读写接口。采购销售已按确认范围实现分批履约，累计数量不得超过订单量；不包含审批、退货或反向冲销。
 
 ## ERP库存内部能力
 
@@ -230,7 +230,7 @@ NODE-C03.4已交付TradeOrder、OrderLine、Fulfillment及创建/履约命令。
 
 分批履约要求当前订单版本，按剩余量推进PENDING、PARTIAL、COMPLETED；采购增加库存，销售扣减且不得负库存。同次履约按物料及行ID排序过账，支持同物料多行；订单、履约凭据、余额、来源流水、Outbox与幂等回执处于同一工作单元。失败全部回滚，原幂等键可重试；重复请求返回当时的订单结果快照。库存流水复合外键校验完整的履约来源，不存在的来源及跨单据组合不能写入。
 
-创建事件为erp.purchase.created / erp.sale.created，履约事件为erp.purchase.fulfilled / erp.sale.fulfilled；库存事件继续独立落盘。事件可靠落盘不代表已发送MQ。当前仅提供内部命令入口，内部查询已接通，业务HTTP和权限控制仍待C03.6及Phase D；无审批、退货、反向冲销或财务记账。
+创建事件为erp.purchase.created / erp.sale.created，履约事件为erp.purchase.fulfilled / erp.sale.fulfilled；库存事件继续独立落盘。事件可靠落盘不代表已发送MQ。内部命令、查询及业务HTTP已接通，权限控制仍待Phase D；无审批、退货、反向冲销或财务记账。
 
 
 ## ERP主数据读取
@@ -257,7 +257,7 @@ NODE-C03.5d提供TradeOrderQuery及erp.order.list。采购/销售类别为必填
 
 ## ERP订单详情读取
 
-NODE-C03.5e提供TradeOrderDetailQuery及erp.order.detail，类别与UUID固定，结果为零或一个包含摘要和明细的不可变对象。采用Easy-Query单语句关联订单与行，避免分开查询在并发履约时混合头版本与行数量；按原始行号返回，最多100行。查询没有写事务，缺失或跨类别返回空结果，HTTP层随后适配404。已验证100行明细、集合不可变及并发更新下的状态/版本/数量一致性；该详情不从写聚合仓储读取。
+NODE-C03.5e提供TradeOrderDetailQuery及erp.order.detail，类别与UUID固定，结果为零或一个包含摘要和明细的不可变对象。采用Easy-Query单语句关联订单与行，避免分开查询在并发履约时混合头版本与行数量；按原始行号返回，最多100行。查询没有写事务，缺失或跨类别返回空结果，HTTP层已适配404。已验证100行明细、集合不可变及并发更新下的状态/版本/数量一致性；该详情不从写聚合仓储读取。
 
 
 ## 查询标量边界
@@ -274,7 +274,7 @@ C03.5g2通过真实采购收货与分批销售命令，验证主数据、订单�
 
 C03.6a提供/api/erp/masters/{kind}的POST，以及其/{id}的PATCH和DELETE，kind为MATERIAL、CUSTOMER、SUPPLIER、WAREHOUSE。POST请求含code/name及物料baseUnit，响应201和Location；PATCH仅含name/version；DELETE通过version参数指定观察版本并返回204空响应。所有写请求要求Idempotency-Key，固定主体local-erp由服务器注入，Phase D接入认证前仅用于本地验证。
 
-请求DTO限制文本、控制字符和版本；类别与基本单位关系仍由领域对象决定，应用层只捕获该输入构造的校验失败并转换40000，不包裹仓储或事件写入错误。控制器显式声明路径/参数名称，不依赖编译器参数名信息。重复创建/改名返回原快照，删除可重放；过期版本、重复编码、同键异参和已引用删除返回409，跨类别或不存在返回404。主数据GET已于C03.6b接通，库存HTTP查询已于C03.6c接通，订单HTTP仍待后续节点。
+请求DTO限制文本、控制字符和版本；类别与基本单位关系仍由领域对象决定，应用层只捕获该输入构造的校验失败并转换40000，不包裹仓储或事件写入错误。控制器显式声明路径/参数名称，不依赖编译器参数名信息。重复创建/改名返回原快照，删除可重放；过期版本、重复编码、同键异参和已引用删除返回409，跨类别或不存在返回404。主数据GET已于C03.6b接通，库存HTTP查询已于C03.6c接通，订单HTTP已于C03.6d/e/f接通。
 
 ## 主数据HTTP查询
 
@@ -292,10 +292,18 @@ C03.6c提供GET /api/erp/stock-balances和/stock-movements，统一经过QueryGa
 
 C03.6d提供POST /api/erp/orders/{kind}，kind为PURCHASE或SALE；请求含partyId、warehouseId及1至100条lines，每行含materialId、quantity、unitPrice。输入数量须为正且在26位整数/12位小数内，单价非负且在13位整数/6位小数内，额外最大值约束保护极端指数。领域聚合保持自动单号、固定明细和汇总后HALF_UP到分的规则；超出总金额存储边界返回400。
 
-写请求要求Idempotency-Key，服务端绑定local-erp，返回201、订单Location和快照；重复请求保留原订单及行标识，同键异参返回409，主数据不存在或类别不符返回404。应用层仅将纯领域构造中的明确输入校验转换400，主数据查询、仓储及Outbox故障不在捕获范围。已用真实HTTP验证两条1×0.005汇总为0.01、幂等与类别隔离、嵌套空行/超量/精度/极端指数及OpenAPI；履约HTTP已于C03.6e接通，订单读取HTTP仍待后续节点。
+写请求要求Idempotency-Key，服务端绑定local-erp，返回201、订单Location和快照；重复请求保留原订单及行标识，同键异参返回409，主数据不存在或类别不符返回404。应用层仅将纯领域构造中的明确输入校验转换400，主数据查询、仓储及Outbox故障不在捕获范围。已用真实HTTP验证两条1×0.005汇总为0.01、幂等与类别隔离、嵌套空行/超量/精度/极端指数及OpenAPI；履约HTTP已于C03.6e接通，订单读取HTTP已于C03.6f接通。
 
 ## 分批履约HTTP接口
 
-C03.6e提供POST /api/erp/orders/{kind}/{id}/fulfillments；请求含显式version和1至100条lines，每行仅含orderLineId及正quantity，沿用12位小数/26位整数边界。返回201及postingId/order快照，Location为该订单履约历史的id过滤地址，读取端点由C03.6f交付。服务器固定主体、必填幂等头、原请求重放与同键异参规则与创建一致。
+C03.6e提供POST /api/erp/orders/{kind}/{id}/fulfillments；请求含显式version和1至100条lines，每行仅含orderLineId及正quantity，沿用12位小数/26位整数边界。返回201及postingId/order快照，Location为该订单履约历史的postingId过滤地址，读取端点已由C03.6f交付。服务器固定主体、必填幂等头、原请求重放与同键异参规则与创建一致。
 
 重复行属于400输入错误，未知行/超剩余量/过期版本/库存不足为409，缺失订单或类别不符为404。旧幂等请求重放当时PARTIAL快照，不被后续COMPLETED状态覆盖。真实HTTP已验证采购和销售各两批完整推进且只各产生两批凭据/流水；库存不足不保存履约/回执，不推进订单，补货后同键可重试。输入校验及OpenAPI已同步；未加入审批、修改、取消、退货或财务记账。
+
+## 订单与履约历史HTTP查询
+
+C03.6f提供GET /api/erp/orders/{kind}的摘要分页，以及/{id}详情和/{id}/fulfillments历史分页。摘要接受id/orderNumber/partyId/warehouseId/status精确条件，以及totalAmount、createdAt的精确或From/To闭区间；默认创建时间倒序，允许ID/单号/金额/时间排序。详情返回order摘要与原行号顺序的lines，最多100条，单语句保证头和行快照一致。
+
+历史确认父订单存在后，通过postingId、orderVersion及createdAt过滤；版本/时间支持成对From/To，默认当时订单版本倒序，允许ID/版本/时间排序。postingId映射内部QuerySpec的id字段，明确区分路径订单id并避免当前Springdoc对同名路径/查询参数的文档覆盖；履约POST的Location也使用postingId，已通过真实GET验证可访问。缺失或类别不符返回404，存在但无履约返回空分页，历史数量不跟随后续订单进度改变。
+
+读端点仅调用QueryGateway。非法状态、Long溢出、非法金额/时间、倒置或不完整区间返回400，内部读取故障保留500；身份与数据权限仍待Phase D，未将本地验证视作鉴权完成。

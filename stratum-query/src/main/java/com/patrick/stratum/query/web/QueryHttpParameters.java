@@ -44,13 +44,25 @@ public final class QueryHttpParameters {
     /**
      * 声明精确匹配字段，转换只发生在服务器指定类型上。
      * @param field 字段及HTTP参数名
-     * @param type String、UUID、BigDecimal或Instant
+     * @param type String、UUID、BigDecimal、Instant或Long
      * @return 当前构造器
      * @apiNote 示例：parameters.exact("code", String.class)。
      */
     public QueryHttpParameters exact(String field, Class<?> type) {
-        allowed.add(field);
-        String value = parameters.getFirst(field);
+        return exact(field, field, type);
+    }
+
+    /**
+     * 将明确的HTTP参数名映射到内部查询字段，避免路径与查询同名歧义。
+     * @param parameter HTTP参数名
+     * @param field QuerySpec字段
+     * @param type 服务端标量类型
+     * @return 当前构造器
+     * @apiNote 示例：parameters.exact("postingId", "id", UUID.class)。
+     */
+    public QueryHttpParameters exact(String parameter, String field, Class<?> type) {
+        allowed.add(parameter);
+        String value = parameters.getFirst(parameter);
         if (value != null) filters.add(new QuerySpec.FilterInput(field, QuerySpec.Operator.EQ, scalar(value, type), null));
         return this;
     }
@@ -133,6 +145,7 @@ public final class QueryHttpParameters {
             return id;
         }
         if (type == BigDecimal.class) return new BigDecimal(value);
+        if (type == Long.class) return Long.valueOf(value);
         if (type == Instant.class) {
             try { return Instant.parse(value); }
             catch (DateTimeParseException invalidTime) { throw new IllegalArgumentException("时间格式非法", invalidTime); }

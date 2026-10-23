@@ -153,7 +153,7 @@ class TradeOrderHttpIntegrationTest extends MariaDbIntegrationTest {
             String request = fulfillmentPayload(order, "0.4");
             var first = send("POST", path, key, request); assertEquals(201, first.statusCode(), first.body());
             var firstData = body(first).path("data"); assertEquals("PARTIAL", firstData.path("order").path("status").asText());
-            assertEquals(path + "?id=" + firstData.path("postingId").asText(), first.headers().firstValue("Location").orElseThrow());
+            assertEquals(path + "?postingId=" + firstData.path("postingId").asText(), first.headers().firstValue("Location").orElseThrow());
             var second = send("POST", path, key(), fulfillmentPayload(firstData.path("order"), "0.6"));
             assertEquals(201, second.statusCode(), second.body());
             assertEquals("COMPLETED", body(second).path("data").path("order").path("status").asText());
@@ -204,6 +204,84 @@ class TradeOrderHttpIntegrationTest extends MariaDbIntegrationTest {
         assertEquals(0, jdbc.queryForObject("SELECT version FROM erp_trade_order WHERE id = ?", Long.class, order.path("id").asText()));
         assertEquals(201, send("POST", path, key(), valid).statusCode());
         assertError(send("POST", path, key(), valid), 409, 40900);
+    }
+
+    /** 订单列表不加载明细，详情反映当前进度，履约Location读取固定历史快照。
+     * @throws Exception HTTP失败
+     */
+    @Test
+    void readsOrderDetailsAndFulfillmentLocations() throws Exception {
+        var fixture = fixture(); var order = create(fixture, TradeOrder.Kind.PURCHASE, "1");
+        String detailPath = "/api/erp/orders/PURCHASE/" + order.path("id").asText();
+        var initial = send("GET", detailPath, null, null); assertEquals(200, initial.statusCode());
+        assertEquals(0, body(initial).path("data").path("order").path("version").asLong());
+        assertEquals(0, body(send("GET", fulfillmentPath(order), null, null)).path("data").path("total").asInt());
+        var first = send("POST", fulfillmentPath(order), key(), fulfillmentPayload(order, "0.4"));
+        assertEquals(201, first.statusCode(), first.body());
+        var partial = body(first).path("data").path("order");
+        assertEquals(201, send("POST", fulfillmentPath(order), key(), fulfillmentPayload(partial, "0.6")).statusCode());
+        var current = body(send("GET", detailPath, null, null)).path("data");
+        assertEquals("COMPLETED", current.path("order").path("status").asText());
+        assertEquals(2, current.path("order").path("version").asLong());
+        assertEquals(0, BigDecimal.ONE.compareTo(new BigDecimal(current.path("lines").get(0).path("fulfilled").asText())));
+        assertEquals(order.path("lines").get(0).path("id").asText(), current.path("lines").get(0).path("id").asText());
+        String createdAt = current.path("order").path("createdAt").asText();
+        var listed = send("GET", "/api/erp/orders/PURCHASE?id=" + order.path("id").asText()
+                + "&partyId=" + fixture.supplier() + "&warehouseId=" + fixture.warehouse() + "&status=COMPLETED"
+                + "&totalAmountFrom=1&totalAmountTo=1&createdAtFrom=" + createdAt + "&createdAtTo=" + createdAt
+                + "&sort=totalAmount,asc&sort=id,asc", null, null);
+        assertEquals(200, listed.statusCode(), listed.body());
+        assertEquals(1, body(listed).path("data").path("total").asInt());
+        assertEquals(current.path("order"), body(listed).path("data").path("items").get(0));
+        assertFalse(body(listed).path("data").path("items").get(0).has("lines"));
+        var historical = send("GET", first.headers().firstValue("Location").orElseThrow(), null, null);
+        assertEquals(200, historical.statusCode(), historical.body());
+        var history = body(historical).path("data"); assertEquals(1, history.path("total").asInt());
+        assertEquals(1, history.path("items").get(0).path("orderVersion").asLong());
+        assertEquals(0, new BigDecimal("0.4").compareTo(new BigDecimal(history.path("items").get(0).path("lines").get(0).path("quantity").asText())));
+        var page = body(send("GET", fulfillmentPath(order) + "?orderVersionFrom=1&orderVersionTo=2&sort=orderVersion,asc&pageSize=1&page=2", null, null)).path("data");
+        assertEquals(2, page.path("total").asInt()); assertEquals(2, page.path("items").get(0).path("orderVersion").asLong());
+    }
+
+    /** 订单与历史读取均阻止跨类别，非法状态、时间和版本参数返回400。
+     * @throws Exception HTTP失败
+     */
+    @Test
+    void rejectsMissingOrdersAndInvalidReadParameters() throws Exception {
+        var order = create(fixture(), TradeOrder.Kind.SALE, "1");
+        String path = "/api/erp/orders/PURCHASE/" + order.path("id").asText();
+        assertError(send("GET", path, null, null), 404, 40400);
+        assertError(send("GET", path + "/fulfillments", null, null), 404, 40400);
+        assertError(send("GET", "/api/erp/orders/SALE/" + UUID.randomUUID() + "/fulfillments", null, null), 404, 40400);
+        assertEquals(0, body(send("GET", "/api/erp/orders/PURCHASE?id=" + order.path("id").asText(), null, null)).path("data").path("total").asInt());
+        for (String invalid : List.of("status=INVALID", "totalAmount=1e512", "totalAmountFrom=0", "sort=status,asc",
+                "createdAt=2026-10-24T00:00:00.000000001Z", "unknown=x")) {
+            assertError(send("GET", "/api/erp/orders/SALE?" + invalid, null, null), 400, 40000);
+        }
+        for (String invalid : List.of("orderVersion=1.5", "orderVersion=9223372036854775808", "orderVersionFrom=2&orderVersionTo=1",
+                "orderVersionTo=1", "sort=quantity,asc", "createdAt=invalid")) {
+            assertError(send("GET", fulfillmentPath(order) + "?" + invalid, null, null), 400, 40000);
+        }
+    }
+
+    /** 读取端点的OpenAPI准确区分路径订单id与查询履约postingId。
+     * @throws Exception HTTP失败
+     */
+    @Test
+    void documentsOrderAndHistoryQueries() throws Exception {
+        var response = send("GET", "/v3/api-docs", null, null); assertEquals(200, response.statusCode());
+        var paths = json.readTree(response.body()).path("paths");
+        for (String path : List.of("/api/erp/orders/{kind}", "/api/erp/orders/{kind}/{id}", "/api/erp/orders/{kind}/{id}/fulfillments")) {
+            assertTrue(paths.path(path).path("get").path("responses").has("200"));
+        }
+        var parameters = paths.path("/api/erp/orders/{kind}/{id}/fulfillments").path("get").path("parameters");
+        var identifiers = new HashSet<String>();
+        for (var parameter : parameters) {
+            if (Set.of("id", "postingId").contains(parameter.path("name").asText())) {
+                identifiers.add(parameter.path("in").asText() + ":" + parameter.path("name").asText());
+            }
+        }
+        assertEquals(Set.of("path:id", "query:postingId"), identifiers);
     }
 
     /** 删除本测试订单、幂等键和主数据，不清空数据库。 */
