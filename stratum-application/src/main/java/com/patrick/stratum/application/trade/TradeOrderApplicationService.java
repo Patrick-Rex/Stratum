@@ -1,20 +1,27 @@
 package com.patrick.stratum.application.trade;
 
 import java.util.HashSet;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
 
 import com.patrick.stratum.application.event.OutboxEventWriter;
+import com.patrick.stratum.application.inventory.StockPosting;
+import com.patrick.stratum.application.inventory.StockPostingApplicationService;
 import com.patrick.stratum.application.service.IdempotentApplicationService;
 import com.patrick.stratum.common.error.CommonErrorCode;
 import com.patrick.stratum.common.error.StratumException;
 import com.patrick.stratum.common.helper.ValidationHelper;
 import com.patrick.stratum.domain.idempotency.IdempotencyReceipt;
 import com.patrick.stratum.domain.inventory.Quantity;
+import com.patrick.stratum.domain.inventory.StockMovement;
 import com.patrick.stratum.domain.masterdata.MasterData;
 import com.patrick.stratum.domain.masterdata.MasterDataRepository;
 import com.patrick.stratum.domain.trade.OrderChanged;
+import com.patrick.stratum.domain.trade.Fulfillment;
+import com.patrick.stratum.domain.trade.FulfillmentRepository;
 import com.patrick.stratum.domain.trade.OrderLine;
 import com.patrick.stratum.domain.trade.TradeOrder;
 import com.patrick.stratum.domain.trade.TradeOrderRepository;
@@ -32,6 +39,8 @@ public class TradeOrderApplicationService {
     private final MasterDataRepository masters;
     private final IdempotentApplicationService idempotency;
     private final OutboxEventWriter events;
+    private final FulfillmentRepository fulfillments;
+    private final StockPostingApplicationService inventory;
 
     /**
      * 验证主数据引用并创建订单，重复请求重放原始订单及明细标识。
@@ -56,6 +65,44 @@ public class TradeOrderApplicationService {
             orders.save(order);
             events.append(new OrderChanged(order, OrderChanged.Change.CREATED), "erp." + order.getKind().name().toLowerCase(Locale.ROOT) + ".created");
             return OrderResult.from(order);
+        });
+    }
+
+    /**
+     * 按观察版本履约，订单、凭据、库存流水、事件和幂等回执同事务提交。
+     * @param command 服务器主体、订单版本及本次行数量
+     * @return 本次提交或原请求重放的固定结果
+     * @throws StratumException 来源不存在、版本/数量冲突或库存不足
+     * @apiNote 示例：gateway.execute(FulfillOrderCommand.builder()...build())。
+     */
+    @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)
+    public FulfillmentResult fulfill(FulfillOrderCommand command) {
+        Objects.requireNonNull(command, "command");
+        var key = key("fulfill", command.getKind(), command.getSubjectId(), command.getIdempotencyKey());
+        return idempotency.execute(key, command, FulfillmentResult.class, () -> {
+            var order = orders.findById(Objects.requireNonNull(command.getOrderId(), "orderId"))
+                    .orElseThrow(() -> new StratumException(CommonErrorCode.NOT_FOUND));
+            if (order.getKind() != command.getKind()) throw new StratumException(CommonErrorCode.NOT_FOUND);
+            order.requireVersion(command.getVersion());
+            var quantities = new LinkedHashMap<UUID, Quantity>();
+            for (var line : command.getLines()) {
+                var id = Objects.requireNonNull(line.getOrderLineId(), "orderLineId");
+                if (quantities.putIfAbsent(id, new Quantity(line.getQuantity()).requirePositive()) != null) {
+                    throw new IllegalArgumentException("同一批次不能重复指定订单行");
+                }
+            }
+            order.fulfill(quantities);
+            orders.save(order);
+            var fulfillment = Fulfillment.create(order, quantities);
+            fulfillments.append(fulfillment);
+            var direction = order.getKind() == TradeOrder.Kind.PURCHASE ? StockMovement.Direction.RECEIPT : StockMovement.Direction.ISSUE;
+            order.getLines().stream().filter(line -> quantities.containsKey(line.getId()))
+                    .sorted(Comparator.comparing(OrderLine::getMaterialId).thenComparing(OrderLine::getId))
+                    .forEach(line -> inventory.post(StockPosting.builder().materialId(line.getMaterialId())
+                            .warehouseId(order.getWarehouseId()).source(new StockMovement.Source(order.getId(), fulfillment.getId(), line.getId()))
+                            .direction(direction).quantity(quantities.get(line.getId())).build()));
+            events.append(new OrderChanged(order, OrderChanged.Change.FULFILLED), "erp." + order.getKind().name().toLowerCase(Locale.ROOT) + ".fulfilled");
+            return new FulfillmentResult(fulfillment.getId(), OrderResult.from(order));
         });
     }
 
