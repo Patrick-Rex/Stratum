@@ -10,8 +10,8 @@
 
 ```
 阶段：Phase B（写模型骨架）
-当前节点：NODE-B03.3a（待开始）
-上次会话日期：2026-10-23（NODE-B03.2b 验收）
+当前节点：NODE-B03.3b（待开始）
+上次会话日期：2026-10-23（NODE-B03.3a 验收）
 项目状态：NODE-B01 已完成，Domain 核心抽象已建立（AggregateRoot、Entity、ValueObject、Repository、DomainEvent），domain 模块直接声明 common 依赖，源码无框架导入；根构建统一配置 Lombok 编译期依赖；Phase A 与 NODE-B02 已完成
 ```
 
@@ -34,12 +34,13 @@
 | NODE-B03.1 | 接入持久化与缓存依赖并统一 Boot 版本约束 | 2026-10-23 | starter build 与 application test 退出码0；6项测试通过；依赖仅接入技术模块，不向Domain引入框架 |
 | NODE-B03.2a | 完成数据源、Flyway 与 Application 事务装配 | 2026-10-23 | starter bootJar退出码0；独立MariaDB11.8完成1条迁移；连接独立Redis后health为UP；应用进程已停止 |
 | NODE-B03.2b | 验证真实 MariaDB 工作单元事务行为并固化 ERP 首期范围 | 2026-10-23 | starter integrationTest退出码0；8项真实MariaDB测试通过，覆盖迁移、提交可见性、运行时异常/Error/SQL失败回滚及嵌套事务 |
+| NODE-B03.3a | 建立可运行 Easy-Query 仓储测试模板 | 2026-10-23 | 6项真实MariaDB测试通过、零跳过；覆盖CRUD、事务回滚、事务外拒写、并发和过期版本冲突、分页及参数绑定；APT代理生成成功 |
 
 ---
 
 ## 3. 待执行节点（按顺序）
 
-下一节点为 **NODE-B03.3a**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
+下一节点为 **NODE-B03.3b**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
 
 ---
 
@@ -105,7 +106,9 @@ Stratum/
     └── entropy/              # 偏移日志与最近交接
 ```
 
-专题文档入口见 [文档导航](README.md)，源码模块职责见 [项目结构](项目结构.md)。当前没有 `docker/compose/`；Infrastructure 已有 Flyway 初始版本迁移（不创建业务表），application 已有 6 项命令入口测试。
+专题文档入口见 [文档导航](README.md)，源码模块职责见 [项目结构](项目结构.md)。仓储模板位于 starter 的 `src/test/java/com/patrick/stratum/starter/integration/fixture`，仅用于可运行参考；它实现 Domain Repository 契约，显式映射聚合与 ORM 表，不是已交付 ERP 业务仓储。MariaDB 1020 快照冲突和 ORM 乐观锁冲突均映射为 40900，其他 SQL 错误保持原异常。
+
+当前没有 `docker/compose/`；Infrastructure 已有 Flyway 初始版本迁移（不创建业务表），application 已有 6 项命令入口测试。
 
 ---
 

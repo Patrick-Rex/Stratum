@@ -37,4 +37,7 @@ dependencies {
     testImplementation 'com.easy-query:sql-springboot4-starter'
     testImplementation 'org.springframework.data:spring-data-redis'
     testImplementation 'com.github.ben-manes.caffeine:caffeine'
+    annotationProcessor 'com.easy-query:sql-processor'
 }
+
+configurations.testAnnotationProcessor.extendsFrom(configurations.annotationProcessor)
