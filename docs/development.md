@@ -337,3 +337,9 @@ RsaTokenAdapterImpl使用调用方提供的2048至8192位RSA密钥，只签发/�
 本地可用 `STRATUM_AUTH_JWT_ENABLED=true` 显式装配TokenCodec，并提供 `STRATUM_AUTH_PUBLIC_KEY`（X.509 PUBLIC KEY PEM）、`STRATUM_AUTH_PRIVATE_KEY`（PKCS#8 PRIVATE KEY PEM）、`STRATUM_AUTH_ISSUER` 和 `STRATUM_AUTH_AUDIENCE`。PEM使用真实换行，单块不超过16KiB；密钥2048至8192位，启动时以实际签名/验证检查配对。启用后缺失、非法、弱密钥或配对失败将阻止装配，错误和配置对象toString均隐藏敏感内容，不生成默认私钥。
 
 当前组件默认未启用；这个开关仅装配密码学端口，不提供HTTP认证或授权，D01.5仍待接入过滤链。5项真实Spring上下文装配测试与7项RSA回归通过。测试密钥动态生成并只保留在测试进程内。
+
+## Redis会话基础（NODE-D01.3a）
+
+AuthSessions通过RedisAuthSessionsAdapterImpl管理 `auth:user:{userId}:ver`、`auth:sess:{sid}`、`auth:rt:{jti}`。用户版本首次在身份验证成功后初始化为0且不设TTL；建会话脚本先核对版本和标识唯一性，再原子写入会话及Refresh白名单，TTL跟随Refresh的14天到期时间。Access在密码学校验后还须逐请求检查会话所有者和用户版本，不缓存成功结果；版本用字符串比较，避免Lua双精度丢失long精度。
+
+7项真实Redis集成测试通过，覆盖并发、TTL、版本精度、身份/用途、标识碰撞不产生部分状态；故障注入验证Redis不可用时拒绝请求且隐藏原因。脚本按既定单节点/Sentinel目标设计，不宣称支持Redis Cluster。当前未接入HTTP认证、Refresh旋转或撤销操作入口；测试中直接改变权威版本仅用于验证校验行为。
