@@ -7,6 +7,7 @@ package com.patrick.stratum.common.error;
 public enum CommonErrorCode implements ErrorCode {
 
     BAD_REQUEST(40000, "error.common.badRequest", "请求参数或协议不合法"),
+    API_VERSION_UNSUPPORTED(40001, "error.common.apiVersionUnsupported", "不支持的API版本"),
     UNAUTHORIZED(40100, "error.common.unauthorized", "未认证或认证已失效"),
     FORBIDDEN(40300, "error.common.forbidden", "无权限访问当前资源"),
     NOT_FOUND(40400, "error.common.notFound", "请求资源不存在"),

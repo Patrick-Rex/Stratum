@@ -84,6 +84,9 @@ public class GlobalExceptionHandler {
      * @apiNote 使用示例：MappedError mapped = mapException(ex)
      */
     public MappedError mapException(Throwable exception) {
+        if (exception instanceof org.springframework.web.accept.InvalidApiVersionException) {
+            return new MappedError(CommonErrorCode.API_VERSION_UNSUPPORTED, List.of());
+        }
         if (exception instanceof StratumException stratumException) {
             return new MappedError(stratumException.getErrorCode(), stratumException.getDetails());
         }
