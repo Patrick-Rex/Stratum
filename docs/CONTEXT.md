@@ -10,8 +10,8 @@
 
 ```
 阶段：Phase B（写模型骨架）
-当前节点：NODE-B03.1（待开始）
-上次会话日期：2026-10-23（NODE-B02.2 验收）
+当前节点：NODE-B03.2a（待开始）
+上次会话日期：2026-10-23（NODE-B03.1 验收）
 项目状态：NODE-B01 已完成，Domain 核心抽象已建立（AggregateRoot、Entity、ValueObject、Repository、DomainEvent），domain 模块直接声明 common 依赖，源码无框架导入；根构建统一配置 Lombok 编译期依赖；Phase A 与 NODE-B02 已完成
 ```
 
@@ -31,12 +31,13 @@
 | NODE-B01 | 建立 Domain 核心抽象 | 2026-06-28 | 通过（`:stratum-domain:build`、依赖方向与源码检查无框架依赖） |
 | NODE-B02.1 | 建立写命令、工作单元与审计契约 | 2026-10-23 | application build 退出码 0；契约无框架导入；本子节点不含行为实现 |
 | NODE-B02.2 | 完成统一命令入口，父节点 NODE-B02 完成 | 2026-10-23 | application test 6项通过、0失败；Lombok 1.18.44 与 JUnit 工具链重新编译成功 |
+| NODE-B03.1 | 接入持久化与缓存依赖并统一 Boot 版本约束 | 2026-10-23 | starter build 与 application test 退出码0；6项测试通过；依赖仅接入技术模块，不向Domain引入框架 |
 
 ---
 
 ## 3. 待执行节点（按顺序）
 
-下一节点为 **NODE-B03.1**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
+下一节点为 **NODE-B03.2a**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
 
 ---
 

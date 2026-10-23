@@ -3,4 +3,13 @@ description = 'Stratum Infrastructure'
 dependencies {
     api project(':stratum-domain')
     api project(':stratum-common')
+    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+    implementation 'org.springframework.boot:spring-boot-starter-flyway'
+    implementation 'org.flywaydb:flyway-mysql'
+    runtimeOnly 'org.mariadb.jdbc:mariadb-java-client'
+    implementation 'com.easy-query:sql-springboot4-starter'
+    implementation 'com.easy-query:sql-mysql'
+    annotationProcessor 'com.easy-query:sql-processor'
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+    implementation 'com.github.ben-manes.caffeine:caffeine'
 }

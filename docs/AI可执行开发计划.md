@@ -590,8 +590,9 @@ NODE-B02 仅建立可注入的工作单元契约与调用边界；真实数据�
 | 子节点 | 范围 | 验证 | 前置 |
 |--------|------|------|------|
 | NODE-B03.1 | 统一 Spring Boot 依赖管理；引入 Boot 4 对应 Easy-Query、MariaDB、Flyway、Redis、Caffeine 与集成测试依赖 | 相关模块编译、依赖解析和许可核对 | NODE-B02 |
-| NODE-B03.2 | 数据源与迁移、Application 事务适配及启动装配 | 真实 MariaDB 迁移、提交及回滚测试；无反向依赖 | NODE-B03.1 |
-| NODE-B03.3 | Easy-Query 仓储实现模板与客户端配置验证 | 真实数据库 CRUD 与乐观锁、Redis/Caffeine 连通性验证 | NODE-B03.2 |
+| NODE-B03.2a | 数据源与初始迁移、Application 事务适配及启动装配、运行文档 | 模块构建与真实 MariaDB 启动检查 | NODE-B03.1 |
+| NODE-B03.2b | 工作单元真实数据库行为验证 | MariaDB 迁移、提交、回滚与嵌套事务测试 | NODE-B03.2a |
+| NODE-B03.3 | Easy-Query 仓储实现模板与客户端配置验证 | 真实数据库 CRUD 与乐观锁、Redis/Caffeine 连通性验证 | NODE-B03.2b |
 
 ## 5. AI 执行提示词模板
 

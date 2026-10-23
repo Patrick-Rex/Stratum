@@ -16,4 +16,11 @@ dependencies {
 
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework:spring-jdbc'
+    testImplementation 'org.springframework:spring-tx'
+    testImplementation 'org.flywaydb:flyway-core'
+    testImplementation 'com.easy-query:sql-springboot4-starter'
+    testImplementation 'org.springframework.data:spring-data-redis'
+    testImplementation 'com.github.ben-manes.caffeine:caffeine'
 }
