@@ -281,7 +281,7 @@
 
 #### NODE-C03
 
-- objective: 建立一个端到端示例能力
+- objective: 建立通用进销存 ERP 端到端业务闭环
 - inputSpecs: SPEC-002, SPEC-005, SPEC-006, SPEC-007
 - prerequisites: NODE-A02, NODE-B05, NODE-C02
 - referenceDocs: [AI可执行开发计划.md](AI可执行开发计划.md)、[Spec清单.md](Spec清单.md)、[项目结构.md](项目结构.md)、[API设计规范.md](API设计规范.md)、[查询基架设计.md](查询基架设计.md)、[工作单元与事务一致性设计.md](工作单元与事务一致性设计.md)
@@ -290,13 +290,15 @@
   - 不进入 Phase D
   - 不实现权限与网关
 - actions:
-  - 选择一个简单领域对象
-  - 打通创建、查询、详情接口
-  - 验证写模型与读模型协作
+  - 建立物料、客户、供应商、仓库主数据
+  - 打通采购收货入库、销售出库与库存余额/流水查询
+  - 禁止负库存，支持小数数量与仓库维度；单据过账与库存变化同事务，重复过账不能重复增减库存
+  - 验证写模型、查询基架、Outbox 与缓存协作；本节点不提前实现鉴权
+  - 首期不加入财务记账、税务、批次序列号或生产 BOM
 - outputs:
-  - 一个完整样例能力
+  - 通用进销存 ERP 主数据与采购、销售、库存业务 API
 - validation:
-  - CRUD 最小闭环可运行
+  - 主数据 CRUD、采购收货、销售出库与库存查询可运行；库存不足与重复过账场景经过验证
 - handoff: 交给 Phase D
 
 ### Phase D: 安全与网关
@@ -592,7 +594,8 @@ NODE-B02 仅建立可注入的工作单元契约与调用边界；真实数据�
 | NODE-B03.1 | 统一 Spring Boot 依赖管理；引入 Boot 4 对应 Easy-Query、MariaDB、Flyway、Redis、Caffeine 与集成测试依赖 | 相关模块编译、依赖解析和许可核对 | NODE-B02 |
 | NODE-B03.2a | 数据源与初始迁移、Application 事务适配及启动装配、运行文档 | 模块构建与真实 MariaDB 启动检查 | NODE-B03.1 |
 | NODE-B03.2b | 工作单元真实数据库行为验证 | MariaDB 迁移、提交、回滚与嵌套事务测试 | NODE-B03.2a |
-| NODE-B03.3 | Easy-Query 仓储实现模板与客户端配置验证 | 真实数据库 CRUD 与乐观锁、Redis/Caffeine 连通性验证 | NODE-B03.2b |
+| NODE-B03.3a | 可运行 Easy-Query 仓储模板（测试夹具），不预建业务表 | 真实数据库 CRUD、分页与乐观锁竞争测试 | NODE-B03.2b |
+| NODE-B03.3b | Redis/Caffeine 客户端配置与连通性验证 | 真实 Redis 带 TTL 读写、Caffeine 有界缓存测试 | NODE-B03.3a |
 
 ## 5. AI 执行提示词模板
 

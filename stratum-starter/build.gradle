@@ -3,6 +3,20 @@ plugins {
     id 'io.spring.dependency-management'
 }
 
+tasks.named('test') {
+    useJUnitPlatform { excludeTags 'integration' }
+}
+
+tasks.register('integrationTest', Test) {
+    description = '在显式指定的独立 MariaDB/Redis 上执行集成测试'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform { includeTags 'integration' }
+    outputs.upToDateWhen { false }
+    shouldRunAfter tasks.named('test')
+}
+
 description = 'Stratum Starter'
 
 dependencies {
