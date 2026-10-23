@@ -8,6 +8,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.MessageSource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.beans.TypeMismatchException;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.validation.BindException;
+import org.springframework.web.ErrorResponse;
+import org.springframework.web.accept.InvalidApiVersionException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -72,7 +78,12 @@ public class GlobalExceptionHandler {
         }
 
         ApiResponse<Void> response = ApiResponse.failure(mappedError.errorCode(), localizedMessage, mappedError.details());
-        return ResponseEntity.status(toHttpStatus(mappedError.errorCode())).body(response);
+        if (exception instanceof ErrorResponse protocolError) {
+            return ResponseEntity.status(protocolError.getStatusCode()).headers(protocolError.getHeaders())
+                    .contentType(MediaType.APPLICATION_JSON).body(response);
+        }
+        return ResponseEntity.status(toHttpStatus(mappedError.errorCode()))
+                .contentType(MediaType.APPLICATION_JSON).body(response);
     }
 
     /**
@@ -84,16 +95,34 @@ public class GlobalExceptionHandler {
      * @apiNote 使用示例：MappedError mapped = mapException(ex)
      */
     public MappedError mapException(Throwable exception) {
-        if (exception instanceof org.springframework.web.accept.InvalidApiVersionException) {
+        if (exception instanceof InvalidApiVersionException) {
             return new MappedError(CommonErrorCode.API_VERSION_UNSUPPORTED, List.of());
         }
         if (exception instanceof StratumException stratumException) {
             return new MappedError(stratumException.getErrorCode(), stratumException.getDetails());
         }
-        if (exception instanceof IllegalArgumentException illegalArgumentException) {
-            String detail = illegalArgumentException.getMessage();
-            List<String> details = (detail == null || detail.isBlank()) ? List.of() : List.of(detail);
+        if (exception instanceof BindException bindingError) {
+            List<String> details = bindingError.getFieldErrors().stream()
+                    .map(error -> error.getField().matches("[A-Za-z][A-Za-z0-9_.]{0,127}")
+                            ? error.getField() + ": 参数不合法" : "请求参数不合法")
+                    .distinct().sorted().limit(20).toList();
             return new MappedError(CommonErrorCode.BAD_REQUEST, details);
+        }
+        if (exception instanceof ErrorResponse protocolError) {
+            int status = protocolError.getStatusCode().value();
+            CommonErrorCode code = switch (status) {
+                case 401 -> CommonErrorCode.UNAUTHORIZED;
+                case 403 -> CommonErrorCode.FORBIDDEN;
+                case 404 -> CommonErrorCode.NOT_FOUND;
+                case 409 -> CommonErrorCode.CONFLICT;
+                default -> status >= 400 && status < 500
+                        ? CommonErrorCode.BAD_REQUEST : CommonErrorCode.INTERNAL_ERROR;
+            };
+            return new MappedError(code, List.of());
+        }
+        if (exception instanceof IllegalArgumentException || exception instanceof TypeMismatchException
+                || exception instanceof HttpMessageNotReadableException) {
+            return new MappedError(CommonErrorCode.BAD_REQUEST, List.of());
         }
         return new MappedError(CommonErrorCode.INTERNAL_ERROR, List.of());
     }

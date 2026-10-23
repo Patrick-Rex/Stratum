@@ -31,6 +31,7 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'jakarta.validation:jakarta.validation-api'
     testImplementation 'org.springframework:spring-jdbc'
     testImplementation 'org.springframework:spring-tx'
     testImplementation 'org.flywaydb:flyway-core'
