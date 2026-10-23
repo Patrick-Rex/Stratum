@@ -136,6 +136,48 @@ class StockPostingIntegrationTest extends MariaDbIntegrationTest {
         assertCounts(input, 2, 2);
     }
 
+    /** 事件信封校验失败发生在余额与流水写入后，必须撤销前两项写入。 */
+    @Test
+    void eventFailureRollsBackAlreadyWrittenBalanceAndMovement() {
+        var input = input(StockMovement.Direction.RECEIPT, "1");
+        TraceIdContext.setTraceId("x".repeat(65));
+        try {
+            assertThrows(IllegalArgumentException.class, () -> post(input));
+        } finally { TraceIdContext.setTraceId(trace); }
+        assertTrue(balances.find(input.getMaterialId(), input.getWarehouseId()).isEmpty());
+        assertCounts(input, 0, 0);
+        post(input); assertCounts(input, 1, 1);
+    }
+
+    /** 一个工作单元内后续行库存不足时，撤销此前行的库存、流水和事件。 */
+    @Test
+    void laterLineFailureRollsBackEarlierPosting() {
+        var receipt = input(StockMovement.Direction.RECEIPT, "2");
+        var issue = input(StockMovement.Direction.ISSUE, "1");
+        assertConflict(() -> unitOfWork.execute(() -> {
+            service.post(receipt); service.post(issue); return null;
+        }));
+        assertTrue(balances.find(receipt.getMaterialId(), receipt.getWarehouseId()).isEmpty());
+        assertTrue(balances.find(issue.getMaterialId(), issue.getWarehouseId()).isEmpty());
+        assertCounts(receipt, 0, 0); assertCounts(issue, 0, 0);
+    }
+
+    /** 首次收货并发重试只建立一个余额并提交一份流水与事件。
+     * @throws Exception 并发执行失败或超时
+     */
+    @Test
+    void concurrentFirstReceiptCommitsOnlyOnce() throws Exception {
+        var input = input(StockMovement.Direction.RECEIPT, "1.25");
+        var ready = new CountDownLatch(2);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var first = executor.submit(() -> competingPost(input, ready));
+            var second = executor.submit(() -> competingPost(input, ready));
+            assertEquals(1, first.get(15, TimeUnit.SECONDS) + second.get(15, TimeUnit.SECONDS));
+        }
+        assertEquals(quantity("1.25"), balances.find(input.getMaterialId(), input.getWarehouseId()).orElseThrow().getQuantity());
+        assertCounts(input, 1, 1);
+    }
+
     /** 按外键顺序清除本测试数据及trace关联事件，并释放线程上下文。 */
     @AfterEach
     void cleanOwnRows() {
