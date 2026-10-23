@@ -8,4 +8,6 @@ dependencies {
     implementation 'org.springframework:spring-tx'
     implementation 'org.slf4j:slf4j-api'
     implementation 'io.micrometer:micrometer-core'
+    implementation 'com.easy-query:sql-springboot4-starter'
+    annotationProcessor 'com.easy-query:sql-processor'
 }
