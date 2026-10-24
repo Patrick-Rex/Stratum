@@ -2,17 +2,9 @@
 
 ## 交接报告（2026-10-24）
 
-- completedNode: NODE-D02.2c2（装配AccountPermissions查询端口并完成权限基础组合验收，D02.2c完成）。
-- changedFiles:
-  - `README.md`
-  - `docs/CONTEXT.md`
-  - `docs/development.md`
-  - `docs/entropy/SESSION-HANDOFF.md`
-  - `stratum-query/src/main/java/com/patrick/stratum/query/auth/QueryAccountPermissionsAdapterImpl.java`
-  - `stratum-starter/src/test/java/com/patrick/stratum/starter/integration/AccountPermissionQueryIntegrationTest.java`
-
-- validations: 全工程33任务实际执行，123项单元与255项集成测试通过，0失败、错误或跳过；包含6项权限查询与故障测试。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
-- unresolved: D02.2d账号/角色管理产品范围待用户答复，详情见CONTEXT活跃阻塞项；运行时RBAC、仓库过滤及后续计划未完成，部署范围暂缓。
-- nextNode: NODE-D02.2d（收到产品范围选择后细分并执行）。
-- 当前节点验收后审查、提交、推送；后续提交推送授权持续有效，不重复请求。
-- CONTEXT 已更新。用户既有 Docker 容器保持运行；测试 JVM 已退出；本次使用的独立测试容器 stratum-integration-mariadb / stratum-integration-redis 已停止，未删除数据；后续启动须重新核对动态端口。连接状态在本机临时目录 stratum-integration-state.json，不提交凭据。
+- completedNode: 最近开发完成节点仍为NODE-D02.2c2；本次仅固化用户确认和细分计划，不计开发节点完成。
+- changedFiles: README.md、docs/CONTEXT.md、docs/development.md、docs/安全认证设计.md、docs/AI可执行开发计划.md、docs/adr/ADR-001.md、docs/adr/ADR-004-账号与角色管理.md、docs/entropy/SESSION-HANDOFF.md。
+- validations: 文档链接、编码与差异检查；纯文档未重跑业务测试。最近开发验收为123项单元及255项集成通过。
+- unresolved: 管理能力、运行时RBAC、仓库权限及后续计划尚未完成；部署暂缓。产品范围阻塞已解除。
+- nextNode: NODE-D02.2d1；完成每个节点后审查、提交并推送，无需重复请求授权。
+- resources: 本次尚未启动运行资源；原独立测试容器处于停止状态。后续复用时重新核对映射端口，结束时停止本次启动资源，不影响用户原有服务。
