@@ -361,3 +361,9 @@ LocalAccount以领域UUID标识账号，只接收BCrypt散列。用户名是1至
 Infrastructure显式声明BOM管理的spring-security-crypto 7.0.4，沿用Spring Security的Apache 2.0许可。BCryptPasswordAdapterImpl生成2b、成本10、随机盐散列；输入必须非空且非全空白，UTF-8最多72字节，错误代理字符或超长输入拒绝，不做裁剪。验证仅接受模型已支持的散列成本范围，非法输入返回不匹配。适配器不持有原始密码，临时UTF-8缓冲清零，调用方负责清零其char数组。
 
 4项实际BCrypt测试通过，覆盖随机盐、正确/错误密码、ASCII/中文/补充字符的72字节边界、无截断、错误编码和散列成本上限。依赖行为参考[Spring BCrypt API](https://docs.spring.io/spring-security/reference/api/java/org/springframework/security/crypto/bcrypt/BCryptPasswordEncoder.html)；当前尚未提供HTTP登录。
+
+## 本地账号存储（NODE-D01.4c）
+
+迁移V202610240008建立auth_user，存储UUID、大小写精确用户名、BCrypt散列、启用状态、初始化槽及版本。用户名唯一；初始化槽仅允许NULL或1且唯一，因此普通账号可多个、初始管理员最多一个。数据库约束阻止非法用户名、非散列值和非法状态进入表。仓储目前只支持新建及写工作单元内重建，不能覆盖既有账号；登录读取待独立Query节点实现。账号ORM异常统一脱敏，唯一冲突返回409且不保留SQL原因链。
+
+6项真实MariaDB测试通过，覆盖散列持久化、大小写与唯一性、管理员唯一、并发仅一次提交、回滚/事务外拒绝和数据库约束。独立容器重启时动态映射端口可能变化，连接前须检查docker实际端口并更新本机临时连接配置，不沿用旧端口。
