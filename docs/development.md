@@ -427,3 +427,9 @@ SecurityErrorWriter提供带traceId、国际化文案和no-store的401/403/500�
 HttpSecurityConfiguration显式注册安全代理，执行顺序在trace过滤器之后；链内Bearer过滤器不重复注册。禁用表单登录、Basic、默认logout、请求缓存和基于Cookie的认证，使用STATELESS与NullSecurityContextRepository，不创建或读取HTTP Session身份。业务/api/**、/auth/**要求认证，其他未声明路径拒绝。仅POST登录/刷新、GET健康及既有OpenAPI/Knife4j静态读取显式公开；错误再分派可输出原HTTP错误。未配置JWT时业务入口仍为401，不会回退到本地主体或默认账号。无Cookie认证的JSON协议禁用CSRF；将来若引入Cookie认证必须重新设计该保护。配置依据[Spring Security会话持久化](https://docs.spring.io/spring-security/reference/7.0/servlet/authentication/persistence.html)。
 
 8项测试通过：6项完整MVC安全链与真实DB/RSA/Redis组合、2项真实HTTP容器验证。覆盖401/403区别、无登录跳转、HTTP Session/查询参数/自报头不能认证、权威版本失效、无Cookie、健康和文档仍可读、JWT未配置时实际业务路径受保护。当前ERP命令仍保留历史local-erp主体、查询上下文仍待身份接入，旧ERP HTTP测试也待迁移认证夹具；这些是D01.5d/e的明确未完成项，不表示认证阶段整体验收完成。
+
+## ERP写入使用登录主体（NODE-D01.5d1）
+
+主数据创建/改名/删除、采购销售创建/履约控制器通过CurrentIdentity取得服务器已验证账号ID并传给命令，已移除local-erp常量。幂等作用域继续由应用服务按业务、操作与主体隔离，客户端请求体subjectId或X-User-Id不会替代认证结果；权限细化仍待D02/D03。
+
+新增可复用真实HTTP认证测试基类，以进程内RSA和随机环境凭据启动，再通过生产/auth/login获取Access，按用例清理会话、按类清理初始化账号。1项实际HTTP多账号组合用例通过：同键同账号重放，另一账号同键独立创建，回执分别归属真实账号，自报身份无效。既有ERP HTTP用例迁移仍待D01.5e，不将本节点的单项验证冒充全部ERP回归。

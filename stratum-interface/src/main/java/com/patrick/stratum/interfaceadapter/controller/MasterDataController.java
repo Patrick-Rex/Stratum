@@ -2,6 +2,7 @@ package com.patrick.stratum.interfaceadapter.controller;
 
 import java.net.URI;
 import java.util.UUID;
+import com.patrick.stratum.application.auth.CurrentIdentity;
 import com.patrick.stratum.application.command.CommandGateway;
 import com.patrick.stratum.application.masterdata.CreateMasterDataCommand;
 import com.patrick.stratum.application.masterdata.DeleteMasterDataCommand;
@@ -21,14 +22,14 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-/** 主数据HTTP写适配，业务规则委托命令入口；固定本地主体仅供Phase D前验证。 */
+/** 主数据HTTP写适配，业务规则委托命令入口；主体由已验证Access上下文提供。 */
 @RestController
 @RequestMapping(path = "/api/erp/masters/{kind}", version = "1")
 @RequiredArgsConstructor
 public class MasterDataController {
-    private static final String LOCAL_SUBJECT = "local-erp";
     private static final String IDEMPOTENCY_PATTERN = "[A-Za-z0-9._:-]{1,128}";
     private final CommandGateway commands;
+    private final CurrentIdentity identities;
 
     /**
      * 创建输入，不开放类别和主体字段。
@@ -61,12 +62,12 @@ public class MasterDataController {
      * @apiNote 示例：POST /api/erp/masters/MATERIAL，携带Idempotency-Key与创建JSON。
      */
     @PostMapping
-    @Operation(summary = "创建主数据", description = "物料须提供baseUnit，其他类别不提供；当前使用固定本地主体。")
+    @Operation(summary = "创建主数据", description = "物料须提供baseUnit，其他类别不提供；主体来自服务器验证的Access身份。")
     @ApiResponse(responseCode = "201", description = "创建或重放成功，Location指向资源")
     public ResponseEntity<MasterDataResult> create(@PathVariable("kind") MasterData.Kind kind,
             @RequestHeader("Idempotency-Key") @Pattern(regexp = IDEMPOTENCY_PATTERN) String key,
             @Valid @RequestBody CreateRequest request) {
-        var result = commands.execute(CreateMasterDataCommand.builder().subjectId(LOCAL_SUBJECT).idempotencyKey(key)
+        var result = commands.execute(CreateMasterDataCommand.builder().subjectId(identities.require().getName()).idempotencyKey(key)
                 .kind(kind).code(request.code()).name(request.name()).baseUnit(request.baseUnit()).build()).data();
         return ResponseEntity.created(URI.create("/api/erp/masters/" + kind + "/" + result.getId())).body(result);
     }
@@ -85,7 +86,7 @@ public class MasterDataController {
     public MasterDataResult rename(@PathVariable("kind") MasterData.Kind kind, @PathVariable("id") UUID id,
             @RequestHeader("Idempotency-Key") @Pattern(regexp = IDEMPOTENCY_PATTERN) String key,
             @Valid @RequestBody RenameRequest request) {
-        return commands.execute(RenameMasterDataCommand.builder().subjectId(LOCAL_SUBJECT).idempotencyKey(key)
+        return commands.execute(RenameMasterDataCommand.builder().subjectId(identities.require().getName()).idempotencyKey(key)
                 .kind(kind).id(id.toString()).version(request.version()).name(request.name()).build()).data();
     }
 
@@ -104,7 +105,7 @@ public class MasterDataController {
     public ResponseEntity<Void> delete(@PathVariable("kind") MasterData.Kind kind, @PathVariable("id") UUID id,
             @RequestHeader("Idempotency-Key") @Pattern(regexp = IDEMPOTENCY_PATTERN) String key,
             @RequestParam("version") @PositiveOrZero long version) {
-        commands.execute(DeleteMasterDataCommand.builder().subjectId(LOCAL_SUBJECT).idempotencyKey(key)
+        commands.execute(DeleteMasterDataCommand.builder().subjectId(identities.require().getName()).idempotencyKey(key)
                 .kind(kind).id(id.toString()).version(version).build());
         return ResponseEntity.noContent().build();
     }

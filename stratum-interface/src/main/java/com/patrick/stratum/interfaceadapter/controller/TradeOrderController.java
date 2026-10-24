@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.net.URI;
 import java.util.List;
 import java.util.UUID;
+import com.patrick.stratum.application.auth.CurrentIdentity;
 import com.patrick.stratum.application.command.CommandGateway;
 import com.patrick.stratum.application.trade.CreateOrderCommand;
 import com.patrick.stratum.application.trade.FulfillOrderCommand;
@@ -24,9 +25,9 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping(path = "/api/erp/orders/{kind}", version = "1")
 @RequiredArgsConstructor
 public class TradeOrderController {
-    private static final String LOCAL_SUBJECT = "local-erp";
     private static final String IDEMPOTENCY_PATTERN = "[A-Za-z0-9._:-]{1,128}";
     private final CommandGateway commands;
+    private final CurrentIdentity identities;
 
     /**
      * 固定订单头及有界明细输入。
@@ -79,14 +80,14 @@ public class TradeOrderController {
      * @apiNote 示例：POST /api/erp/orders/PURCHASE，包含partyId、warehouseId、lines并携带Idempotency-Key。
      */
     @PostMapping
-    @Operation(summary = "创建采购或销售订单", description = "自动单号；明细创建后固定；人民币金额按精确乘积汇总后四舍五入到分。当前主体由服务器固定为local-erp。")
+    @Operation(summary = "创建采购或销售订单", description = "自动单号；明细创建后固定；人民币金额按精确乘积汇总后四舍五入到分。主体来自服务器验证的Access身份。")
     @ApiResponse(responseCode = "201", description = "创建或原请求重放成功，Location指向订单")
     public ResponseEntity<OrderResult> create(@PathVariable("kind") TradeOrder.Kind kind,
             @RequestHeader("Idempotency-Key") @Pattern(regexp = IDEMPOTENCY_PATTERN) String key,
             @Valid @RequestBody CreateRequest request) {
         var lines = request.lines().stream().map(line -> CreateOrderCommand.Line.builder().materialId(line.materialId())
                 .quantity(line.quantity()).unitPrice(line.unitPrice()).build()).toList();
-        var result = commands.execute(CreateOrderCommand.builder().subjectId(LOCAL_SUBJECT).idempotencyKey(key).kind(kind)
+        var result = commands.execute(CreateOrderCommand.builder().subjectId(identities.require().getName()).idempotencyKey(key).kind(kind)
                 .partyId(request.partyId()).warehouseId(request.warehouseId()).lines(lines).build()).data();
         return ResponseEntity.created(URI.create("/api/erp/orders/" + kind + "/" + result.getId())).body(result);
     }
@@ -108,7 +109,7 @@ public class TradeOrderController {
             @Valid @RequestBody FulfillRequest request) {
         var lines = request.lines().stream().map(line -> FulfillOrderCommand.Line.builder()
                 .orderLineId(line.orderLineId()).quantity(line.quantity()).build()).toList();
-        var result = commands.execute(FulfillOrderCommand.builder().subjectId(LOCAL_SUBJECT).idempotencyKey(key).kind(kind)
+        var result = commands.execute(FulfillOrderCommand.builder().subjectId(identities.require().getName()).idempotencyKey(key).kind(kind)
                 .orderId(id).version(request.version()).lines(lines).build()).data();
         return ResponseEntity.created(URI.create("/api/erp/orders/" + kind + "/" + id + "/fulfillments?postingId=" + result.getPostingId())).body(result);
     }
