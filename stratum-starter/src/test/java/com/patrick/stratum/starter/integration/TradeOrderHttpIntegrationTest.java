@@ -30,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 真实HTTP与数据库验证采购销售写协议、精确金额、幂等及输入边界。 */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "server.address=127.0.0.1")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
-class TradeOrderHttpIntegrationTest extends MariaDbIntegrationTest {
+class TradeOrderHttpIntegrationTest extends AuthenticatedHttpIntegrationTest {
     @LocalServerPort private int port;
     private final JdbcTemplate jdbc;
     private final MasterDataRepository masters;
@@ -80,7 +80,7 @@ class TradeOrderHttpIntegrationTest extends MariaDbIntegrationTest {
             assertNotEquals(order.path("lines").get(0).path("id"), order.path("lines").get(1).path("id"));
             assertEquals(order, body(send("POST", path, key, payload)).path("data"));
             assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM idempotency_receipt WHERE request_key = ? AND scope = ?", Integer.class,
-                    key, "trade:create:v1:" + kind + ":local-erp"));
+                    key, "trade:create:v1:" + kind + ":" + subjectId()));
             assertError(send("POST", path, key, payload.replace("0.005", "0.006")), 409, 40900);
         }
         assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_event WHERE trace_id = ?", Integer.class, trace));
@@ -313,7 +313,7 @@ class TradeOrderHttpIntegrationTest extends MariaDbIntegrationTest {
     void clean() {
         unitOfWork.execute(() -> {
             jdbc.update("DELETE FROM outbox_event WHERE trace_id = ?", trace);
-            for (String key : keys) jdbc.update("DELETE FROM idempotency_receipt WHERE request_key = ? AND scope LIKE 'trade:%:local-erp'", key);
+            for (String key : keys) jdbc.update("DELETE FROM idempotency_receipt WHERE request_key = ? AND scope LIKE ?", key, "trade:%:" + subjectId());
             for (String id : orderIds) jdbc.update("DELETE FROM erp_stock_movement WHERE order_id = ?", id);
             for (String id : orderIds) jdbc.update("DELETE FROM erp_fulfillment_line WHERE order_id = ?", id);
             for (String id : orderIds) jdbc.update("DELETE FROM erp_fulfillment WHERE order_id = ?", id);
@@ -403,7 +403,7 @@ class TradeOrderHttpIntegrationTest extends MariaDbIntegrationTest {
      */
     private HttpResponse<String> send(String method, String path, String key, String payload) throws Exception {
         var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path)).timeout(Duration.ofSeconds(15))
-                .header("X-Trace-Id", trace).header("Content-Type", "application/json");
+                .header("Authorization", "Bearer " + accessToken()).header("X-Trace-Id", trace).header("Content-Type", "application/json");
         if (key != null) request.header("Idempotency-Key", key);
         request.method(method, payload == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(payload));
         try (var client = HttpClient.newHttpClient()) {

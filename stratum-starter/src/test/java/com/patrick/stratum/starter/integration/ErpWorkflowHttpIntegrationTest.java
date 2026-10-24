@@ -28,7 +28,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 从HTTP创建全部主数据开始完成进销存闭环，只用数据库与缓存作独立断言及清理。 */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "server.address=127.0.0.1")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
-class ErpWorkflowHttpIntegrationTest extends MariaDbIntegrationTest {
+class ErpWorkflowHttpIntegrationTest extends AuthenticatedHttpIntegrationTest {
     @LocalServerPort private int port;
     private final JdbcTemplate jdbc;
     private final VersionedCache cache;
@@ -104,7 +104,7 @@ class ErpWorkflowHttpIntegrationTest extends MariaDbIntegrationTest {
     void rejectsUnsupportedVersionBeforeWriting() throws Exception {
         String key = key();
         var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/erp/masters/CUSTOMER"))
-                .timeout(Duration.ofSeconds(15)).header("X-Trace-Id", trace).header("X-API-Version", "2")
+                .timeout(Duration.ofSeconds(15)).header("Authorization", "Bearer " + accessToken()).header("X-Trace-Id", trace).header("X-API-Version", "2")
                 .header("Idempotency-Key", key).header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(Map.of("code", UUID.randomUUID().toString(), "name", "版本测试")))).build();
         try (var client = HttpClient.newHttpClient()) {
@@ -121,7 +121,7 @@ class ErpWorkflowHttpIntegrationTest extends MariaDbIntegrationTest {
     @AfterEach
     void clean() {
         jdbc.update("DELETE FROM outbox_event WHERE trace_id = ?", trace);
-        for (String key : keys) jdbc.update("DELETE FROM idempotency_receipt WHERE request_key = ? AND scope LIKE '%:local-erp'", key);
+        for (String key : keys) jdbc.update("DELETE FROM idempotency_receipt WHERE request_key = ? AND scope LIKE ?", key, "%:" + subjectId());
         for (String id : orderIds) jdbc.update("DELETE FROM erp_stock_movement WHERE order_id = ?", id);
         for (String id : orderIds) jdbc.update("DELETE FROM erp_fulfillment_line WHERE order_id = ?", id);
         for (String id : orderIds) jdbc.update("DELETE FROM erp_fulfillment WHERE order_id = ?", id);
@@ -216,7 +216,7 @@ class ErpWorkflowHttpIntegrationTest extends MariaDbIntegrationTest {
      */
     private JsonNode send(String method, String path, String key, Object payload, int status) throws Exception {
         var builder = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path)).timeout(Duration.ofSeconds(15))
-                .header("X-Trace-Id", trace).header("X-API-Version", "1").header("Content-Type", "application/json");
+                .header("Authorization", "Bearer " + accessToken()).header("X-Trace-Id", trace).header("X-API-Version", "1").header("Content-Type", "application/json");
         if (key != null) builder.header("Idempotency-Key", key);
         builder.method(method, payload == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(json.writeValueAsString(payload)));
         try (var client = HttpClient.newHttpClient()) {

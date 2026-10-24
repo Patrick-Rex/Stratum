@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 通过真实HTTP、命令事务与MariaDB/Redis验证主数据写协议。 */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "server.address=127.0.0.1")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
-class MasterDataHttpIntegrationTest extends MariaDbIntegrationTest {
+class MasterDataHttpIntegrationTest extends AuthenticatedHttpIntegrationTest {
     @LocalServerPort private int port;
     private final JdbcTemplate jdbc;
     private final VersionedCache cache;
@@ -50,7 +50,7 @@ class MasterDataHttpIntegrationTest extends MariaDbIntegrationTest {
         this.jdbc = jdbc; this.cache = cache; this.redis = redis;
     }
 
-    /** 四类创建、改名、删除可重放，固定主体且Location/trace/空响应符合协议。
+    /** 四类创建、改名、删除可重放，已认证主体且Location/trace/空响应符合协议。
      * @throws Exception HTTP失败
      */
     @Test
@@ -63,7 +63,7 @@ class MasterDataHttpIntegrationTest extends MariaDbIntegrationTest {
             var data = body(created).path("data"); String id = data.path("id").asText(); ids.add(id);
             assertEquals(path + "/" + id, created.headers().firstValue("Location").orElseThrow());
             assertEquals(data, body(send("POST", path, createKey, payload)).path("data"));
-            assertEquals("master:create:v1:" + kind + ":local-erp", jdbc.queryForObject(
+            assertEquals("master:create:v1:" + kind + ":" + subjectId(), jdbc.queryForObject(
                     "SELECT scope FROM idempotency_receipt WHERE request_key = ?", String.class, createKey));
             String renameKey = key(); String rename = "{\"name\":\"新名称\",\"version\":0}";
             var renamed = send("PATCH", path + "/" + id, renameKey, rename);
@@ -212,7 +212,7 @@ class MasterDataHttpIntegrationTest extends MariaDbIntegrationTest {
     @AfterEach
     void clean() {
         jdbc.update("DELETE FROM outbox_event WHERE trace_id = ?", trace);
-        for (String key : keys) jdbc.update("DELETE FROM idempotency_receipt WHERE request_key = ? AND scope LIKE 'master:%:local-erp'", key);
+        for (String key : keys) jdbc.update("DELETE FROM idempotency_receipt WHERE request_key = ? AND scope LIKE ?", key, "master:%:" + subjectId());
         for (String id : ids) {
             jdbc.update("DELETE FROM stratum_it_master_data_reference WHERE master_data_id = ?", id);
             jdbc.update("DELETE FROM erp_master_data WHERE id = ?", id);
@@ -233,7 +233,7 @@ class MasterDataHttpIntegrationTest extends MariaDbIntegrationTest {
      */
     private HttpResponse<String> send(String method, String path, String key, String payload) throws Exception {
         var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path)).timeout(Duration.ofSeconds(15))
-                .header("X-Trace-Id", trace).header("Content-Type", "application/json");
+                .header("Authorization", "Bearer " + accessToken()).header("X-Trace-Id", trace).header("Content-Type", "application/json");
         if (key != null) request.header("Idempotency-Key", key);
         request.method(method, payload == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(payload));
         try (var client = HttpClient.newHttpClient()) {

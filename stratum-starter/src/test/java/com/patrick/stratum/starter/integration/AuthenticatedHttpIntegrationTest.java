@@ -89,6 +89,12 @@ abstract class AuthenticatedHttpIntegrationTest extends MariaDbIntegrationTest {
     protected String accessToken() { return defaultSession.accessToken(); }
 
     /**
+     * 返回默认会话Refresh以验证实际网络旋转。
+     * @return 仅用于刷新请求的敏感令牌
+     */
+    protected String refreshToken() { return defaultSession.refreshToken(); }
+
+    /**
      * 返回默认测试身份，用于独立核对幂等作用域。
      * @return 已通过登录确定的用户ID
      */
@@ -114,7 +120,7 @@ abstract class AuthenticatedHttpIntegrationTest extends MariaDbIntegrationTest {
             authenticationKeys.add("auth:user:" + claims.subject() + ":ver");
             authenticationKeys.add("auth:sess:" + claims.sessionId()); authenticationKeys.add("auth:rt:" + claims.tokenId());
             assertEquals(claims.subject(), tokens.verify(data.path("accessToken").asText(), Purpose.ACCESS).subject());
-            return new Session(data.path("accessToken").asText(), claims.subject());
+            return new Session(data.path("accessToken").asText(), data.path("refreshToken").asText(), claims.subject());
         }
     }
 
@@ -140,9 +146,10 @@ abstract class AuthenticatedHttpIntegrationTest extends MariaDbIntegrationTest {
     /**
      * 测试会话，只允许显式取出令牌用于HTTP，不使用默认记录日志。
      * @param accessToken 敏感Access
+     * @param refreshToken 敏感Refresh
      * @param subjectId 已验证用户ID
      */
-    protected record Session(String accessToken, String subjectId) {
+    protected record Session(String accessToken, String refreshToken, String subjectId) {
         /** {@inheritDoc} */
         @Override public String toString() { return "TestSession[内容已隐藏]"; }
     }
