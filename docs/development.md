@@ -459,3 +459,9 @@ D01.5e1完成23项测试，审查发现独立InventoryQueryIntegrationTest仍包
 2026-10-24执行 `./gradlew.bat --no-daemon test :stratum-starter:integrationTest --rerun-tasks`，33个任务实际执行；119项单元与234项真实MariaDB/Redis/HTTP集成测试全部通过，0失败/错误/跳过。测试覆盖认证、环境初始化、Redis会话旋转、ERP身份隔离、完整进销存、OpenAPI及响应包装；分层静态检查未发现Domain框架导入、Application依赖Infrastructure实现、Query写操作或Infrastructure端点。
 
 D01认证基础完成。D02继续实现注销/撤销管理和RBAC，D03接入仓库授权；当前不能将已登录视为已完成业务权限检查。测试上下文和JVM已退出，独立测试容器继续用于下一节点；不执行部署。
+
+## 本人会话原子撤销（NODE-D02.1a）
+
+AuthRevocations端口只接受服务器身份中的账号UUID、会话UUID和版本。Redis适配器原子核对权威版本与会话归属；单会话退出删除该会话，全量退出递增用户版本，不扫描键。旧Refresh白名单即使保留也无法绕过会话/版本校验，按原TTL回收。后续凭据登录可取得新版本。全量退出的整数递增由Redis执行，再读取十进制字符串返回，不经Lua浮点转换；Long溢出保持原状态并拒绝成功。
+
+6项新增撤销测试和13项会话回归通过，0失败/错误/跳过。覆盖错误用户/会话/版本不改状态、单会话隔离、全量Access/Refresh失效、刷新竞争、最大整数精度/溢出、存储错误类型和连接故障脱敏。尚未暴露注销HTTP端点；D02.1b继续接入。
