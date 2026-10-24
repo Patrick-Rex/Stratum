@@ -503,3 +503,11 @@ QueryAccountPermissionsAdapterImpl将Domain的AccountPermissions端口装配到Q
 AuthorizationRole保持UUID和编码固定，名称可修改，权限有界且不可变。普通角色创建为空权限，只能分配PermissionCatalog已登记标识；管理员保留编码administrator，其全部权限由目录同步，普通权限替换入口拒绝修改。重建读取不会自动补授权，必须由后续可信初始化显式同步。目录包含ERP主数据读/维护、采购销售读/创建/履约、库存读取、账号/角色管理API及对应FEAT显示标识；目录本身不授予账号权限，也尚未用于HTTP放行。
 
 4项新增领域测试通过，覆盖普通角色默认拒绝、身份及名称边界、权限不可变/登记校验、管理员保护与版本单调性；整个domain模块47项测试通过，0失败/错误/跳过。存储、管理员绑定和管理接口继续由后续节点交付。
+
+## 管理协调与角色仓储（NODE-D02.2d2a/b）
+
+V202610240011建立auth_administration_guard固定协调行，初始绑定标记与管理变更共享事务锁；它不是业务实体ID。AdministrationPolicy集中验证当前可用管理员与最后一人保护。d2a的49项领域和2项真实库测试通过，包含NOWAIT排他锁冲突与回滚释放；成员关系管理实现仍待d2c。
+
+AuthorizationRoleRepositoryImpl仅在Application写事务内工作，批量登记权限目录并保留已有ID，新条目UUID在Domain目录中生成。角色名称与权限关系同事务保存；固定编码不参与UPDATE，版本校验失败返回脱敏409。权限批量解析，不逐项查询；读聚合使用FOR UPDATE并限制1024项关系，未知角色返回空。普通角色的业务权限规则仍在Domain，仓储不暴露HTTP。
+
+d2b本轮49项领域测试及9项真实库测试通过，0失败/错误/跳过，涵盖目录幂等、权限替换/清空、重复编码与旧版本、整体回滚、事务边界及旧快照拒绝。MariaDB 11.8启用快照隔离时，旧读视图后的锁定读取可返回1020；仓储将其映射409，调用方必须放弃整个工作单元后重新读取，不使用旧授权继续。新事务读取最新状态的测试已通过；未修改全局隔离设置。行为依据[MariaDB快照隔离说明](https://github.com/mariadb-corporation/mariadb-docs/blob/main/server/server-usage/storage-engines/innodb/innodb-system-variables.md)。

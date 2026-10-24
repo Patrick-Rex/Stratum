@@ -1,6 +1,8 @@
 package com.patrick.stratum.domain.auth;
 
 import java.util.Arrays;
+import java.util.UUID;
+import java.nio.charset.StandardCharsets;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -60,6 +62,15 @@ public enum PermissionCatalog {
      * @apiNote 示例：{@code PermissionCatalog.MATERIAL_READ.displayName()}。
      */
     public String displayName() { return displayName; }
+
+    /**
+     * 在领域内生成目录条目的稳定UUID，仅用于首次落盘，既有记录保持其原ID。
+     * @return 命名空间隔离的目录UUID
+     * @apiNote 示例：{@code entry.registrationId()}用于登记新权限。
+     */
+    public UUID registrationId() {
+        return UUID.nameUUIDFromBytes(("stratum:permission:" + permission.type() + ":" + permission.code()).getBytes(StandardCharsets.UTF_8));
+    }
 
     /**
      * 获取当前已登记的全部权限，不包含通配符。
