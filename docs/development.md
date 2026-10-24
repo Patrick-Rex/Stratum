@@ -403,3 +403,9 @@ LocalIdentityApplicationService只依赖凭据与密码端口；正确用户名/
 AuthSessionApplicationService在本地身份成功后读取权威用户版本、生成独立sid并签发令牌，只有Redis原子登记完成后返回；刷新先验证REFRESH用途，再消费旧白名单并登记同会话后继。Access每次检查密码学声明及Redis权威会话/用户版本，不缓存认证结果。令牌对toString固定脱敏，Access有效秒数为900；HTTP响应缓存与协议保护在后续接口节点接入。
 
 6项真实MariaDB/RSA/Redis组合测试通过，覆盖登录/刷新/Access用途隔离、错误与禁用账号不创建会话、版本或会话失效、6并发刷新仅一次成功、存储失败不返回候选令牌，以及显式启用时的Spring装配。此节点未提供HTTP入口或RBAC。
+
+## 登录与刷新HTTP协议（NODE-D01.5b）
+
+启用JWT组件后，POST /auth/login接受username和password，POST /auth/refresh接受refreshToken，均沿用X-API-Version=1、标准ApiResponse和X-Trace-Id。成功响应data包含accessToken、refreshToken和expiresIn=900，携带Cache-Control: no-store与Pragma: no-cache。请求不开放用户ID、会话ID或版本；密码/Refresh字段只写，输入对象toString固定脱敏。MVC限制用户名64字符、密码72个UTF-16字符及Refresh 16KiB；实际密码UTF-8最多72字节仍由密码端口校验。
+
+4项真实MariaDB/RSA/Redis与MVC协议组合测试通过，覆盖登录、旋转重放、用途混用、版本/输入边界、无Session、缓存头、输入不回显及伪造subjectId无效。这是实际MVC协议测试，尚未接安全过滤链或真实网络HTTP认证回归；D01.5c至D01.5f继续交付。
