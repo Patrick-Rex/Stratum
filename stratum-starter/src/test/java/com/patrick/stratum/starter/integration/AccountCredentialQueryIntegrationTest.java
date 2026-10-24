@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.UUID;
 
 import com.patrick.stratum.application.transaction.UnitOfWork;
+import com.patrick.stratum.domain.auth.AccountCredentials;
 import com.patrick.stratum.domain.auth.LocalAccount;
 import com.patrick.stratum.domain.auth.LocalAccountRepository;
 import com.patrick.stratum.domain.auth.PasswordHasher;
@@ -26,6 +27,7 @@ class AccountCredentialQueryIntegrationTest extends MariaDbIntegrationTest {
     private final UnitOfWork unitOfWork;
     private final JdbcTemplate jdbc;
     private final QueryGateway gateway;
+    private final AccountCredentials credentials;
     private final List<String> ids = new ArrayList<>();
 
     /**
@@ -35,12 +37,14 @@ class AccountCredentialQueryIntegrationTest extends MariaDbIntegrationTest {
      * @param unitOfWork 工作单元
      * @param jdbc 断言与清理客户端
      * @param gateway 查询网关
+     * @param credentials 应用依赖的凭据端口
      */
     @Autowired
     AccountCredentialQueryIntegrationTest(LocalAccountRepository accounts, PasswordHasher passwords,
-            UnitOfWork unitOfWork, JdbcTemplate jdbc, QueryGateway gateway) {
+            UnitOfWork unitOfWork, JdbcTemplate jdbc, QueryGateway gateway, AccountCredentials credentials) {
         this.accounts = accounts; this.passwords = passwords; this.unitOfWork = unitOfWork;
         this.jdbc = jdbc; this.gateway = gateway;
+        this.credentials = credentials;
     }
 
     /** 清除自己的随机账号。 */
@@ -84,6 +88,19 @@ class AccountCredentialQueryIntegrationTest extends MariaDbIntegrationTest {
         var account = create("transaction" + UUID.randomUUID());
         assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() ->
                 gateway.execute(AccountCredentialQuery.create(account.getUsername()), QueryContext.anonymous("auth-query-test"))));
+    }
+
+    /** 领域端口与查询网关结果一致，保留未知账号、链路和事务边界。 */
+    @Test
+    void adaptsCredentialPortThroughGateway() {
+        var account = create("port" + UUID.randomUUID());
+        var result = credentials.findByUsername(account.getUsername(), "credential-port-test").orElseThrow();
+        assertEquals(account.getId(), result.id().toString());
+        assertEquals(account.getPasswordHash(), result.passwordHash());
+        assertTrue(credentials.findByUsername("unknown" + UUID.randomUUID(), "credential-port-test").isEmpty());
+        assertThrows(IllegalArgumentException.class, () -> credentials.findByUsername(account.getUsername(), "invalid\ntrace"));
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() ->
+                credentials.findByUsername(account.getUsername(), "credential-port-test")));
     }
 
     /**

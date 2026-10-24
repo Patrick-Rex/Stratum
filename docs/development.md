@@ -373,3 +373,7 @@ Infrastructure显式声明BOM管理的spring-security-crypto 7.0.4，沿用Sprin
 AccountCredentialQuery以固定一页一条的QuerySpec精确绑定用户名，通过QueryGateway执行只读投影；账号快照包含身份、散列及启用状态，toString隐藏全部内容，不提供HTTP端点。查询记录仅沿用网关的低基数操作指标，不输出用户名、密码或散列。凭据端口的应用适配待D01.4d2。
 
 3项真实MariaDB查询测试通过，覆盖大小写精确匹配、禁用状态、未知账号、非法输入和活动事务内拒绝。
+
+## 凭据端口装配（NODE-D01.4d2）
+
+QueryAccountCredentialsAdapterImpl实现Domain的AccountCredentials端口，应用只依赖端口即可经QueryGateway读取精确凭据；认证前使用无身份上下文传递服务器traceId。没有HTTP凭据端点，也不绕过网关事务检查。4项真实MariaDB查询组合测试重新通过，包含端口装配、未知账号、非法traceId及活动事务拒绝。
