@@ -421,3 +421,9 @@ Interface显式接入BOM管理的spring-security-web/config 7.0.4，沿用Spring
 BearerAuthenticationFilter只接受单个Authorization头及有界紧凑JWT，不从查询参数或Cookie读取令牌；完整Access密码学与Redis校验后建立专用认证对象。缺失头暂交安全链决定是否公开；重复/畸形/错误用途/未配置认证服务返回401，认证存储和内部故障返回脱敏500。过滤器在成功、拒绝及下游异常后清理身份，支持异步和错误再分派；仍需后续无状态链装配才能保护业务端点。
 
 SecurityErrorWriter提供带traceId、国际化文案和no-store的401/403/500标准响应，401增加WWW-Authenticate: Bearer。5项真实RSA/Redis过滤器集成测试通过，覆盖头解析、可信主体、用途、版本失效、Redis错误类型与服务故障失败关闭、上下文清理和403语义。
+
+## 无状态HTTP安全链（NODE-D01.5c3）
+
+HttpSecurityConfiguration显式注册安全代理，执行顺序在trace过滤器之后；链内Bearer过滤器不重复注册。禁用表单登录、Basic、默认logout、请求缓存和基于Cookie的认证，使用STATELESS与NullSecurityContextRepository，不创建或读取HTTP Session身份。业务/api/**、/auth/**要求认证，其他未声明路径拒绝。仅POST登录/刷新、GET健康及既有OpenAPI/Knife4j静态读取显式公开；错误再分派可输出原HTTP错误。未配置JWT时业务入口仍为401，不会回退到本地主体或默认账号。无Cookie认证的JSON协议禁用CSRF；将来若引入Cookie认证必须重新设计该保护。配置依据[Spring Security会话持久化](https://docs.spring.io/spring-security/reference/7.0/servlet/authentication/persistence.html)。
+
+8项测试通过：6项完整MVC安全链与真实DB/RSA/Redis组合、2项真实HTTP容器验证。覆盖401/403区别、无登录跳转、HTTP Session/查询参数/自报头不能认证、权威版本失效、无Cookie、健康和文档仍可读、JWT未配置时实际业务路径受保护。当前ERP命令仍保留历史local-erp主体、查询上下文仍待身份接入，旧ERP HTTP测试也待迁移认证夹具；这些是D01.5d/e的明确未完成项，不表示认证阶段整体验收完成。

@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import com.patrick.stratum.application.auth.AuthSessionApplicationService;
+import com.patrick.stratum.application.auth.CurrentIdentity;
 import com.patrick.stratum.application.auth.LocalIdentityApplicationService;
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.domain.auth.AuthSessions;
@@ -22,6 +23,8 @@ import com.patrick.stratum.domain.auth.TokenCodec.Purpose;
 import com.patrick.stratum.infrastructure.auth.RsaTokenAdapterImpl;
 import com.patrick.stratum.interfaceadapter.controller.AuthController;
 import com.patrick.stratum.interfaceadapter.response.ApiResponseAdvice;
+import com.patrick.stratum.interfaceadapter.security.HttpSecurityConfiguration;
+import com.patrick.stratum.interfaceadapter.security.SecurityCurrentIdentityAdapterImpl;
 import com.patrick.stratum.interfaceadapter.web.ApiVersionConfiguration;
 import com.patrick.stratum.interfaceadapter.web.RequestTraceFilter;
 import com.patrick.stratum.starter.web.GlobalExceptionHandler;
@@ -39,18 +42,24 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockServletContext;
+import org.springframework.mock.web.MockHttpSession;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.support.AnnotationConfigWebApplicationContext;
 import org.springframework.web.servlet.config.annotation.EnableWebMvc;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 
-/** 实际MVC路由/校验/Advice及真实RSA、MariaDB、Redis组合；安全过滤链另行验收。 */
+/** 实际无状态安全链、MVC协议与真实RSA、MariaDB、Redis组合验证。 */
 class AuthHttpProtocolIntegrationTest extends MariaDbIntegrationTest {
     private static TokenCodec codec;
     private final AuthSessionApplicationService authentication;
@@ -104,7 +113,8 @@ class AuthHttpProtocolIntegrationTest extends MariaDbIntegrationTest {
         context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("auth-http-test", Map.of("stratum.auth.jwt.enabled", "true")));
         context.addBeanFactoryPostProcessor(factory -> factory.registerSingleton("authentication", authentication));
         context.register(MvcConfiguration.class); context.refresh();
-        mvc = MockMvcBuilders.webAppContextSetup(context).addFilters(new RequestTraceFilter()).build();
+        mvc = MockMvcBuilders.webAppContextSetup(context).addFilters(new RequestTraceFilter(),
+                context.getBean("springSecurityFilterChain", jakarta.servlet.Filter.class)).build();
     }
 
     /** 关闭MVC上下文，清除自己的账号、会话和密码数组。 */
@@ -113,6 +123,8 @@ class AuthHttpProtocolIntegrationTest extends MariaDbIntegrationTest {
         if (context != null) { context.close(); }
         Arrays.fill(password, '\0'); redis.delete(keys);
         jdbc.update("DELETE FROM auth_user WHERE username = ?", username);
+        assertNull(SecurityContextHolder.getContext().getAuthentication());
+        SecurityContextHolder.clearContext();
     }
 
     /**
@@ -177,6 +189,44 @@ class AuthHttpProtocolIntegrationTest extends MariaDbIntegrationTest {
     }
 
     /**
+     * 业务只有真实Access可以访问，查询参数、自报头与HTTP Session不能代替认证。
+     * @throws Exception MVC调用失败
+     */
+    @Test
+    void securityChainRequiresBearerAndIgnoresSessionIdentity() throws Exception {
+        var login = send("/auth/login", Map.of("username", username, "password", new String(password)), 200);
+        String token = body(login).path("data").path("accessToken").asText();
+        var success = mvc.perform(get("/api/auth-test/identity").header("Authorization", "Bearer " + token)).andReturn();
+        assertEquals(200, success.getResponse().getStatus());
+        assertEquals(account.getId(), body(success).path("data").path("userId").asText());
+        assertNull(success.getRequest().getSession(false)); assertNull(success.getResponse().getHeader("Set-Cookie"));
+        var anonymous = mvc.perform(get("/api/auth-test/identity").param("access_token", token).header("X-User-Id", account.getId())).andReturn();
+        assertEquals(401, anonymous.getResponse().getStatus());
+        var session = new MockHttpSession(); var forged = SecurityContextHolder.createEmptyContext();
+        forged.setAuthentication(UsernamePasswordAuthenticationToken.authenticated(account.getId(), null, java.util.List.of()));
+        session.setAttribute("SPRING_SECURITY_CONTEXT", forged);
+        assertEquals(401, mvc.perform(get("/api/auth-test/identity").session(session)).andReturn().getResponse().getStatus());
+        redis.opsForValue().set("auth:user:" + account.getId() + ":ver", "1");
+        assertEquals(401, mvc.perform(get("/api/auth-test/identity").header("Authorization", "Bearer " + token)).andReturn().getResponse().getStatus());
+    }
+
+    /**
+     * 不提供默认登录页，匿名拒绝与认证后访问未声明资源分别为401和403。
+     * @throws Exception MVC调用失败
+     */
+    @Test
+    void distinguishesUnauthorizedAndForbiddenWithoutRedirects() throws Exception {
+        var anonymous = mvc.perform(get("/login")).andReturn();
+        assertEquals(401, anonymous.getResponse().getStatus()); assertNull(anonymous.getResponse().getRedirectedUrl());
+        assertEquals("Bearer", anonymous.getResponse().getHeader("WWW-Authenticate"));
+        var login = send("/auth/login", Map.of("username", username, "password", new String(password)), 200);
+        var forbidden = mvc.perform(get("/undeclared-resource").header("Authorization", "Bearer " + body(login).path("data").path("accessToken").asText())).andReturn();
+        assertEquals(403, forbidden.getResponse().getStatus()); assertEquals(40300, body(forbidden).path("code").asInt());
+        assertFalse(body(forbidden).path("traceId").asText().isBlank());
+        assertEquals(401, mvc.perform(get("/auth/login")).andReturn().getResponse().getStatus());
+    }
+
+    /**
      * 发起版本1JSON请求，并收集成功会话供清理。
      * @param path 路径
      * @param request 输入对象
@@ -209,7 +259,8 @@ class AuthHttpProtocolIntegrationTest extends MariaDbIntegrationTest {
     /** 只装配生产认证控制器、校验、响应包装和错误处理。 */
     @TestComponent
     @EnableWebMvc
-    @Import({AuthController.class, ApiVersionConfiguration.class, ApiResponseAdvice.class, GlobalExceptionHandler.class})
+    @Import({AuthController.class, ApiVersionConfiguration.class, ApiResponseAdvice.class, GlobalExceptionHandler.class,
+            HttpSecurityConfiguration.class, SecurityCurrentIdentityAdapterImpl.class, IdentityProbe.class})
     static class MvcConfiguration {
         /**
          * 提供生产Advice使用的Jackson映射器。
@@ -222,6 +273,26 @@ class AuthHttpProtocolIntegrationTest extends MariaDbIntegrationTest {
          */
         @Bean ResourceBundleMessageSource messageSource() {
             var source = new ResourceBundleMessageSource(); source.setBasename("messages"); source.setDefaultEncoding("UTF-8"); return source;
+        }
+    }
+
+    /** 仅在专属MVC测试上下文装配的受保护身份探针，不进入生产扫描。 */
+    @TestComponent
+    @RestController
+    static class IdentityProbe {
+        private final CurrentIdentity identities;
+        /**
+         * 注入生产可信身份端口。
+         * @param identities 当前身份端口
+         */
+        IdentityProbe(CurrentIdentity identities) { this.identities = identities; }
+        /**
+         * 返回已认证用户ID以验证过滤链。
+         * @return 无会话或令牌的测试结果
+         */
+        @GetMapping(path = "/api/auth-test/identity", version = "1")
+        com.patrick.stratum.common.api.ApiResponse<Map<String, String>> identity() {
+            return com.patrick.stratum.common.api.ApiResponse.success(Map.of("userId", identities.require().getName()));
         }
     }
 }
