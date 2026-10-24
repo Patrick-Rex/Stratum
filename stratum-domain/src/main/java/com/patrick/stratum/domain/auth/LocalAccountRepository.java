@@ -13,7 +13,15 @@ public interface LocalAccountRepository {
     void insert(LocalAccount account);
 
     /**
-     * 在写工作单元内按ID恢复账号。
+     * 乐观更新既有账号的启用状态，不修改用户名、密码散列或初始化标记。
+     * @param account 带有预期持久化版本的账号
+     * @throws IllegalStateException 不在Application写工作单元内
+     * @apiNote 示例：{@code accounts.updateStatus(account)}；冲突须回滚整个工作单元。
+     */
+    void updateStatus(LocalAccount account);
+
+    /**
+     * 在写工作单元内按ID锁定并恢复账号；旧事务快照冲突须整体回滚后重试。
      * @param id 账号UUID
      * @return 存在时返回聚合
      * @apiNote 示例：{@code accounts.findById(id)}用于写用例校验。

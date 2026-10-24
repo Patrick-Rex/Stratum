@@ -3,6 +3,9 @@ package com.patrick.stratum.infrastructure.persistence.auth;
 import com.easy.query.core.annotation.Column;
 import com.easy.query.core.annotation.EntityProxy;
 import com.easy.query.core.annotation.Table;
+import com.easy.query.core.annotation.UpdateIgnore;
+import com.easy.query.core.annotation.Version;
+import com.easy.query.core.basic.extension.version.VersionLongStrategy;
 import com.easy.query.core.proxy.ProxyEntityAvailable;
 import com.patrick.stratum.infrastructure.persistence.auth.proxy.LocalAccountRecordProxy;
 import lombok.Getter;
@@ -16,9 +19,13 @@ import lombok.Setter;
 public class LocalAccountRecord implements ProxyEntityAvailable<LocalAccountRecord, LocalAccountRecordProxy> {
     @Column(primaryKey = true)
     private String id;
+    @UpdateIgnore
     private String username;
+    @UpdateIgnore
     private String passwordHash;
     private Boolean enabled;
+    @UpdateIgnore
     private Integer bootstrapSlot;
+    @Version(strategy = VersionLongStrategy.class)
     private Long version;
 }

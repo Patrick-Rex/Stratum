@@ -145,6 +145,85 @@ class LocalAccountRepositoryIntegrationTest extends MariaDbIntegrationTest {
         } finally { start.countDown(); }
     }
 
+    /** 状态更新使用乐观版本，过期请求及伪造固定字段不能覆盖账号身份与凭据。 */
+    @Test
+    void updatesStatusWithoutOverwritingFixedFields() {
+        var original = account("status" + UUID.randomUUID(), true);
+        persist(original);
+        var stale = unitOfWork.execute(() -> accounts.findById(original.getId()).orElseThrow());
+        var modified = LocalAccount.restore(original.getId(), "changed", "$2b$10$" + "a".repeat(53), false, false, 0);
+        unitOfWork.execute(() -> { accounts.updateStatus(modified); return null; });
+        assertEquals(1L, modified.getVersion());
+        var loaded = unitOfWork.execute(() -> accounts.findById(original.getId()).orElseThrow());
+        assertFalse(loaded.isEnabled());
+        assertTrue(loaded.isBootstrapAdministrator());
+        assertEquals(original.getUsername(), loaded.getUsername());
+        assertEquals(original.getPasswordHash(), loaded.getPasswordHash());
+        var failure = assertThrows(StratumException.class, () -> unitOfWork.execute(() -> {
+            accounts.updateStatus(stale); return null;
+        }));
+        assertEquals(CommonErrorCode.CONFLICT, failure.getErrorCode());
+        assertNull(failure.getCause());
+        loaded.changeEnabled(true);
+        unitOfWork.execute(() -> { accounts.updateStatus(loaded); return null; });
+        assertTrue(unitOfWork.execute(() -> accounts.findById(original.getId()).orElseThrow()).isEnabled());
+        assertEquals(2L, loaded.getVersion());
+    }
+
+    /** 回滚保留旧状态和版本；未持久化或溢出版本不能绕过写入校验。 */
+    @Test
+    void rollsBackStatusAndRejectsInvalidVersions() {
+        var account = account("rollbackStatus" + UUID.randomUUID(), false);
+        assertThrows(IllegalStateException.class, () -> accounts.updateStatus(account));
+        assertEquals(CommonErrorCode.CONFLICT, assertThrows(StratumException.class, () -> unitOfWork.execute(() -> {
+            accounts.updateStatus(account); return null;
+        })).getErrorCode());
+        persist(account);
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
+            var loaded = accounts.findById(account.getId()).orElseThrow();
+            loaded.changeEnabled(false);
+            accounts.updateStatus(loaded);
+            throw new IllegalStateException("测试回滚");
+        }));
+        var loaded = unitOfWork.execute(() -> accounts.findById(account.getId()).orElseThrow());
+        assertTrue(loaded.isEnabled());
+        assertEquals(0L, loaded.getVersion());
+        jdbc.update("UPDATE auth_user SET version = ? WHERE id = ?", Long.MAX_VALUE, account.getId());
+        var overflow = assertThrows(StratumException.class, () -> unitOfWork.execute(() -> {
+            var maximum = accounts.findById(account.getId()).orElseThrow();
+            maximum.changeEnabled(false);
+            accounts.updateStatus(maximum); return null;
+        }));
+        assertEquals(CommonErrorCode.CONFLICT, overflow.getErrorCode());
+        assertNull(overflow.getCause());
+        assertTrue(unitOfWork.execute(() -> accounts.findById(account.getId()).orElseThrow()).isEnabled());
+        assertEquals(Long.MAX_VALUE, jdbc.queryForObject("SELECT version FROM auth_user WHERE id = ?", Long.class, account.getId()));
+    }
+
+    /** 旧事务快照遇到并发状态提交时失败关闭，新的工作单元读到已提交状态。 */
+    @Test
+    void refusesStaleSnapshotAfterConcurrentStatusChange() {
+        var account = account("snapshot" + UUID.randomUUID(), false);
+        persist(account);
+        assertEquals(1, jdbc.queryForObject("SELECT @@innodb_snapshot_isolation", Integer.class));
+        var failure = assertThrows(StratumException.class, () -> unitOfWork.execute(() -> {
+            assertTrue(jdbc.queryForObject("SELECT enabled FROM auth_user WHERE id = ?", Boolean.class, account.getId()));
+            try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                executor.submit(() -> unitOfWork.execute(() -> {
+                    var current = accounts.findById(account.getId()).orElseThrow();
+                    current.changeEnabled(false);
+                    accounts.updateStatus(current); return null;
+                })).get(10, TimeUnit.SECONDS);
+            } catch (Exception unexpected) { throw new AssertionError("并发状态更新失败", unexpected); }
+            return accounts.findById(account.getId());
+        }));
+        assertEquals(CommonErrorCode.CONFLICT, failure.getErrorCode());
+        assertNull(failure.getCause());
+        var current = unitOfWork.execute(() -> accounts.findById(account.getId()).orElseThrow());
+        assertFalse(current.isEnabled());
+        assertEquals(1L, current.getVersion());
+    }
+
     /**
      * 创建随机密码的账号夹具，原始数组在散列后立即清零。
      * @param username 用户名

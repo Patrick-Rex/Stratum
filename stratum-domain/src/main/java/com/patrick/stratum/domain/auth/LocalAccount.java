@@ -10,7 +10,7 @@ public final class LocalAccount extends AggregateRoot<String> {
     private static final Pattern USERNAME = Pattern.compile("[A-Za-z0-9._-]{1,64}");
     private final String username;
     private final String passwordHash;
-    private final boolean enabled;
+    private boolean enabled;
     private final boolean bootstrapAdministrator;
 
     /**
@@ -100,6 +100,13 @@ public final class LocalAccount extends AggregateRoot<String> {
      * @apiNote 示例：{@code account.isEnabled()}。
      */
     public boolean isEnabled() { return enabled; }
+
+    /**
+     * 调整启用状态；操作者授权、最后管理员保护和令牌撤销由应用用例协调。
+     * @param enabled 新启用状态
+     * @apiNote 示例：{@code account.changeEnabled(false)}，随后在工作单元内保存并撤销会话。
+     */
+    public void changeEnabled(boolean enabled) { this.enabled = enabled; }
 
     /**
      * 获取初始化标记，仅供初始化幂等与后续角色绑定使用。

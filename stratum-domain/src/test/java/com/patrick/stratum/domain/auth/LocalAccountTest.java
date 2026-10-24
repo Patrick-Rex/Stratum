@@ -26,6 +26,24 @@ class LocalAccountTest {
         assertFalse(account.toString().contains("Admin_1"));
     }
 
+    /** 启停只改变状态，重复设置不改变固定身份、凭据及持久化版本。 */
+    @Test
+    void changesOnlyEnabledState() {
+        var account = LocalAccount.create("admin", FORMAT_SAMPLE, true);
+        account.markPersisted(0);
+        String id = account.getId();
+        account.changeEnabled(false);
+        assertFalse(account.isEnabled());
+        account.changeEnabled(false);
+        account.changeEnabled(true);
+        assertTrue(account.isEnabled());
+        assertEquals(id, account.getId());
+        assertEquals("admin", account.getUsername());
+        assertEquals(FORMAT_SAMPLE, account.getPasswordHash());
+        assertTrue(account.isBootstrapAdministrator());
+        assertEquals(0L, account.getVersion());
+    }
+
     /** 精确用户名边界拒绝空白、控制字符和超长输入，不悄悄修正。 */
     @Test
     void rejectsInvalidUsernames() {
