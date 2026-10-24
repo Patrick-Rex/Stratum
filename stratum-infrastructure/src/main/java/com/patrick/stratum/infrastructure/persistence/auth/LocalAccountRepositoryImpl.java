@@ -32,7 +32,9 @@ public class LocalAccountRepositoryImpl implements LocalAccountRepository {
         row.setBootstrapSlot(account.isBootstrapAdministrator() ? 1 : null);
         row.setVersion(0L);
         try {
-            if (query.insertable(row).executeRows() != 1) { throw new StratumException(CommonErrorCode.CONFLICT); }
+            if (query.insertable(row).configure(options -> options.setPrintSQL(false)).executeRows() != 1) {
+                throw new StratumException(CommonErrorCode.CONFLICT);
+            }
             account.markPersisted(0);
         } catch (EasyQueryException failure) { throw safeFailure(failure); }
     }
@@ -42,7 +44,8 @@ public class LocalAccountRepositoryImpl implements LocalAccountRepository {
     public Optional<LocalAccount> findById(String id) {
         requireWriteTransaction();
         try {
-            return Optional.ofNullable(query.queryable(LocalAccountRecord.class).where(row -> row.id().eq(id)).singleOrNull())
+            return Optional.ofNullable(query.queryable(LocalAccountRecord.class).configure(options -> options.setPrintSQL(false))
+                    .where(row -> row.id().eq(id)).singleOrNull())
                     .map(LocalAccountRepositoryImpl::restore);
         } catch (EasyQueryException failure) { throw safeFailure(failure); }
     }
@@ -53,6 +56,7 @@ public class LocalAccountRepositoryImpl implements LocalAccountRepository {
         requireWriteTransaction();
         try {
             return Optional.ofNullable(query.queryable(LocalAccountRecord.class)
+                    .configure(options -> options.setPrintSQL(false))
                     .where(row -> row.bootstrapSlot().eq(1)).singleOrNull()).map(LocalAccountRepositoryImpl::restore);
         } catch (EasyQueryException failure) { throw safeFailure(failure); }
     }

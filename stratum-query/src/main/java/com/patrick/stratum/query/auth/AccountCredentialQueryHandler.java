@@ -33,6 +33,7 @@ public class AccountCredentialQueryHandler implements QueryHandler<AccountCreden
         try {
             String username = (String) query.spec().getFilters().getFirst().value();
             var rows = database.queryable(AccountCredentialView.class).where(row -> row.username().eq(username))
+                    .configure(options -> options.setPrintSQL(false))
                     .limit(1).toList().stream().map(row -> new AccountCredentials.Snapshot(UUID.fromString(row.getId()),
                             row.getUsername(), row.getPasswordHash(), row.getEnabled())).toList();
             return new QueryResult<>(1, 1, rows.size(), rows);

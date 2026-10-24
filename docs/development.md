@@ -383,3 +383,11 @@ QueryAccountCredentialsAdapterImpl实现Domain的AccountCredentials端口，应�
 BootstrapAccountApplicationService首次创建初始化账号；重复调用忽略新的凭据，保留原用户名、散列和启用状态。BCrypt计算在事务外，写入由Application工作单元完成；唯一冲突回滚后以新的工作单元读取并发胜者，普通账号同名冲突不会升级为管理员。入口禁止嵌套调用方事务，消费后擦除密码数组，启动调用方也须保证外层清理。初始化标记不替代RBAC授权。
 
 5项真实MariaDB测试通过，覆盖首次创建、缺失/非法输入拒绝、重复不覆盖、普通账号占名、并发收敛及外层事务拒绝。环境变量启动装配待D01.4e2。
+
+## 环境变量初始化（NODE-D01.4e2）
+
+启用STRATUM_AUTH_JWT_ENABLED时，应用启动任务在迁移和组件装配后、就绪前运行初始账号创建。首次必须提供操作系统环境变量STRATUM_AUTH_ADMIN_USERNAME、STRATUM_AUTH_ADMIN_PASSWORD；没有默认值，也不从普通配置文件或命令行属性读取凭据。直接读取原始环境属性，保留密码中的占位符、空格与特殊字符。初始化完成后可移除这两个环境变量；后续启动不会重置既有账号或禁用状态。失败阻止启动，异常原因链脱敏；这仍不代表HTTP过滤链已接入，后续D01.5交付。
+
+本轮启动日志测试发现Easy-Query默认SQL参数输出会记录密码散列。现已关闭全局print-sql，并在账号写仓储和内部凭据查询上逐操作显式关闭；即使开发环境重新开启全局SQL日志，认证读写也不输出登录标识与散列。参数依据[Easy-Query配置说明](https://www.easy-query.com/easy-query-doc/framework/config-option.html)，逐操作API已核对本地3.3.1依赖。
+
+19项真实MariaDB集成测试重新通过：4项启动配置、5项初始化、6项仓储、4项凭据查询。覆盖缺失/非法环境值启动失败、字面密码、重启不重置、并发、全局SQL日志开启下的凭据保护；测试上下文均关闭。

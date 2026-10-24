@@ -23,6 +23,7 @@ spring:
       timeout: 2s
 
 easy-query:
+  print-sql: false
   database: mysql
   name-conversion: underlined
 
