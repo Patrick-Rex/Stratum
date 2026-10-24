@@ -397,3 +397,9 @@ BootstrapAccountApplicationService首次创建初始化账号；重复调用忽�
 LocalIdentityApplicationService只依赖凭据与密码端口；正确用户名/密码返回领域账号UUID。未知、非法、禁用和错误密码统一UNAUTHORIZED，无账号差异明细；未知账号使用启动时随机生成的占位散列执行BCrypt比较，避免直接跳过密码计算，不宣称所有输入严格等时。原始密码数组在成功和异常路径均清零。数据库故障保留内部错误并拒绝认证，查询继续经QueryGateway且拒绝活动事务。
 
 本轮8项领域/BCrypt单元测试和23项真实MariaDB集成测试均重新执行通过，0失败/错误/跳过；涵盖账号存储、查询、初始化、环境启动和身份验证。D01.4完成；当前尚无HTTP登录/安全过滤链，D01.5继续接入，不能把内部身份验证视作完整认证或授权完成。
+
+## 登录与会话应用编排（NODE-D01.5a）
+
+AuthSessionApplicationService在本地身份成功后读取权威用户版本、生成独立sid并签发令牌，只有Redis原子登记完成后返回；刷新先验证REFRESH用途，再消费旧白名单并登记同会话后继。Access每次检查密码学声明及Redis权威会话/用户版本，不缓存认证结果。令牌对toString固定脱敏，Access有效秒数为900；HTTP响应缓存与协议保护在后续接口节点接入。
+
+6项真实MariaDB/RSA/Redis组合测试通过，覆盖登录/刷新/Access用途隔离、错误与禁用账号不创建会话、版本或会话失效、6并发刷新仅一次成功、存储失败不返回候选令牌，以及显式启用时的Spring装配。此节点未提供HTTP入口或RBAC。
