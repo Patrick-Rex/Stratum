@@ -1,11 +1,14 @@
 package com.patrick.stratum.starter.integration;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
+import com.easy.query.api.proxy.client.EasyEntityQuery;
+import com.easy.query.core.exception.EasyQueryException;
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.common.error.CommonErrorCode;
 import com.patrick.stratum.common.error.StratumException;
@@ -17,16 +20,22 @@ import com.patrick.stratum.domain.auth.Permission;
 import com.patrick.stratum.query.QueryContext;
 import com.patrick.stratum.query.QueryGateway;
 import com.patrick.stratum.query.auth.AccountPermissionQuery;
+import com.patrick.stratum.query.auth.AccountPermissionQueryHandler;
+import com.patrick.stratum.query.auth.AccountCredentialView;
+import com.patrick.stratum.query.auth.QueryAccountPermissionsAdapterImpl;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 /** 通过真实QueryGateway与MariaDB验证账号权限快照及有界读取，不通过HTTP暴露权限读取器。 */
 class AccountPermissionQueryIntegrationTest extends MariaDbIntegrationTest {
     private final QueryGateway gateway;
+    private final AccountPermissions permissions;
     private final UnitOfWork unitOfWork;
     private final JdbcTemplate jdbc;
     private final LocalAccountRepository accounts;
@@ -42,10 +51,12 @@ class AccountPermissionQueryIntegrationTest extends MariaDbIntegrationTest {
      * @param jdbc 独立写夹具和清理客户端
      * @param accounts 账号仓储
      * @param passwords 随机凭据散列器
+     * @param permissions 已装配的领域读取端口
      */
     @Autowired
     AccountPermissionQueryIntegrationTest(QueryGateway gateway, UnitOfWork unitOfWork, JdbcTemplate jdbc,
-            LocalAccountRepository accounts, PasswordHasher passwords) {
+            LocalAccountRepository accounts, PasswordHasher passwords, AccountPermissions permissions) {
+        this.permissions = permissions;
         this.gateway = gateway; this.unitOfWork = unitOfWork; this.jdbc = jdbc; this.accounts = accounts; this.passwords = passwords;
     }
 
@@ -121,6 +132,38 @@ class AccountPermissionQueryIntegrationTest extends MariaDbIntegrationTest {
         grant(role, permission(prefix + ".extra", "API"));
         var failure = assertThrows(StratumException.class, () -> read(user));
         assertEquals(CommonErrorCode.INTERNAL_ERROR, failure.getErrorCode()); assertNull(failure.getCause());
+    }
+
+    /** 领域端口保留网关事务边界与输入校验，快照不随后续授权改变，重新读取立即反映变化。 */
+    @Test
+    void adaptsPermissionPortWithoutCachingOrSharingSnapshots() {
+        UUID user = account(); String role = role(user);
+        String code = "adapter." + UUID.randomUUID().toString().replace("-", "");
+        String permission = permission(code, "API"); grant(role, permission);
+        var snapshot = permissions.findByUserId(user, "permission-port-test").orElseThrow();
+        assertEquals(read(user).orElseThrow(), snapshot);
+        write("DELETE FROM auth_role_permission WHERE role_id=? AND permission_id=?", role, permission);
+        assertEquals(1, snapshot.permissions().size());
+        assertTrue(permissions.findByUserId(user, "permission-port-test").orElseThrow().permissions().isEmpty());
+        assertTrue(permissions.findByUserId(UUID.randomUUID(), "permission-port-test").isEmpty());
+        assertThrows(NullPointerException.class, () -> permissions.findByUserId(null, "permission-port-test"));
+        assertThrows(IllegalArgumentException.class, () -> permissions.findByUserId(user, "bad\ntrace"));
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> permissions.findByUserId(user, "permission-port-test")));
+    }
+
+    /** 注入ORM读取故障，确认端口抛出脱敏内部错误，不返回空集合冒充成功或保留SQL原因链。 */
+    @Test
+    void failsClosedOnStorageErrors() {
+        var database = mock(EasyEntityQuery.class);
+        when(database.queryable(AccountCredentialView.class)).thenThrow(new EasyQueryException("sensitive-query-marker"));
+        var metrics = new SimpleMeterRegistry();
+        try {
+            var failingGateway = new QueryGateway(List.of(new AccountPermissionQueryHandler(database)), metrics, Duration.ofSeconds(1));
+            var adapter = new QueryAccountPermissionsAdapterImpl(failingGateway);
+            var failure = assertThrows(StratumException.class, () -> adapter.findByUserId(UUID.randomUUID(), "permission-failure-test"));
+            assertEquals(CommonErrorCode.INTERNAL_ERROR, failure.getErrorCode());
+            assertNull(failure.getCause()); assertFalse(failure.toString().contains("sensitive-query-marker"));
+        } finally { metrics.close(); }
     }
 
     /**

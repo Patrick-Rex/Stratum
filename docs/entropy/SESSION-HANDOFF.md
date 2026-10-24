@@ -2,19 +2,17 @@
 
 ## 交接报告（2026-10-24）
 
-- completedNode: NODE-D02.2c1（建立可信账号的单语句去重权限查询，不读取凭据、不缓存授权结果）。
+- completedNode: NODE-D02.2c2（装配AccountPermissions查询端口并完成权限基础组合验收，D02.2c完成）。
 - changedFiles:
+  - `README.md`
   - `docs/CONTEXT.md`
+  - `docs/development.md`
   - `docs/entropy/SESSION-HANDOFF.md`
-  - `stratum-query/src/main/java/com/patrick/stratum/query/auth/AccountPermissionQuery.java`
-  - `stratum-query/src/main/java/com/patrick/stratum/query/auth/AccountPermissionQueryHandler.java`
-  - `stratum-query/src/main/java/com/patrick/stratum/query/auth/PermissionView.java`
-  - `stratum-query/src/main/java/com/patrick/stratum/query/auth/RolePermissionView.java`
-  - `stratum-query/src/main/java/com/patrick/stratum/query/auth/UserRoleView.java`
+  - `stratum-query/src/main/java/com/patrick/stratum/query/auth/QueryAccountPermissionsAdapterImpl.java`
   - `stratum-starter/src/test/java/com/patrick/stratum/starter/integration/AccountPermissionQueryIntegrationTest.java`
 
-- validations: 4项真实MariaDB查询测试通过，0失败、错误或跳过；含1024边界及超界拒绝、多角色去重、类型隔离、未知禁用账号和事务/主体拒绝。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
-- unresolved: 部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
-- nextNode: NODE-D02.2c2。
-- 当前节点验收后审查、提交、推送；完成后继续下一节点，不重复请求授权。
-- CONTEXT 已更新。共享 Docker 容器保持运行，仅清理本轮创建的测试资源；测试 JVM 已退出；独立测试容器 stratum-integration-mariadb / stratum-integration-redis 暂留供连续验证，会话结束前清理。连接状态在本机临时目录 stratum-integration-state.json，不提交凭据。
+- validations: 全工程33任务实际执行，123项单元与255项集成测试通过，0失败、错误或跳过；包含6项权限查询与故障测试。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
+- unresolved: D02.2d账号/角色管理产品范围待用户答复，详情见CONTEXT活跃阻塞项；运行时RBAC、仓库过滤及后续计划未完成，部署范围暂缓。
+- nextNode: NODE-D02.2d（收到产品范围选择后细分并执行）。
+- 当前节点验收后审查、提交、推送；后续提交推送授权持续有效，不重复请求。
+- CONTEXT 已更新。用户既有 Docker 容器保持运行；测试 JVM 已退出；本次使用的独立测试容器 stratum-integration-mariadb / stratum-integration-redis 已停止，未删除数据；后续启动须重新核对动态端口。连接状态在本机临时目录 stratum-integration-state.json，不提交凭据。
