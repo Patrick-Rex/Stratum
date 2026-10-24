@@ -409,3 +409,9 @@ AuthSessionApplicationService在本地身份成功后读取权威用户版本、
 启用JWT组件后，POST /auth/login接受username和password，POST /auth/refresh接受refreshToken，均沿用X-API-Version=1、标准ApiResponse和X-Trace-Id。成功响应data包含accessToken、refreshToken和expiresIn=900，携带Cache-Control: no-store与Pragma: no-cache。请求不开放用户ID、会话ID或版本；密码/Refresh字段只写，输入对象toString固定脱敏。MVC限制用户名64字符、密码72个UTF-16字符及Refresh 16KiB；实际密码UTF-8最多72字节仍由密码端口校验。
 
 4项真实MariaDB/RSA/Redis与MVC协议组合测试通过，覆盖登录、旋转重放、用途混用、版本/输入边界、无Session、缓存头、输入不回显及伪造subjectId无效。这是实际MVC协议测试，尚未接安全过滤链或真实网络HTTP认证回归；D01.5c至D01.5f继续交付。
+
+## 可信HTTP身份契约（NODE-D01.5c1）
+
+Interface显式接入BOM管理的spring-security-web/config 7.0.4，沿用Spring Security Apache 2.0许可；不引入默认账号或自动登录页。Application的CurrentIdentity端口返回不含令牌的账号/会话/版本快照，安全适配器只接受本项目专用VerifiedAccessAuthentication且状态已认证；用户名认证对象、匿名对象和失效对象均返回401。身份本身不表示已通过RBAC，当前权限集合为空。
+
+4项单元测试通过，覆盖可信类型、错误类型拒绝、不可用setter提升认证、元数据边界及新线程默认隔离；依赖解析确认7.0.4。上下文使用依据[Spring Security认证架构](https://docs.spring.io/spring-security/reference/servlet/authentication/architecture.html)。过滤器、链装配和ERP身份替换仍待后续节点，不能将本节点视为HTTP鉴权完成。
