@@ -355,3 +355,9 @@ AuthSessions.rotate在一个Redis脚本中核对用户版本、会话所有者�
 LocalAccount以领域UUID标识账号，只接收BCrypt散列。用户名是1至64位ASCII字母、数字、点、下划线或连字符，区分大小写且不自动裁剪；这是登录标识的技术边界，不作为员工姓名。BCrypt格式接受2a/2b/2y、成本4至12，限制持久化凭据的验证成本；签发成本由后续适配器固定。初始化管理员标记仅用于初始化幂等，不赋予授权。账号默认toString只包含ID，禁止把散列getter用于HTTP响应。
 
 4项领域测试通过，验证身份生成、精确用户名、仅接受散列、重建/版本及敏感值不输出。仓储和PasswordHasher当前仅为端口，数据库与BCrypt计算由后续节点交付。
+
+## BCrypt密码适配（NODE-D01.4b）
+
+Infrastructure显式声明BOM管理的spring-security-crypto 7.0.4，沿用Spring Security的Apache 2.0许可。BCryptPasswordAdapterImpl生成2b、成本10、随机盐散列；输入必须非空且非全空白，UTF-8最多72字节，错误代理字符或超长输入拒绝，不做裁剪。验证仅接受模型已支持的散列成本范围，非法输入返回不匹配。适配器不持有原始密码，临时UTF-8缓冲清零，调用方负责清零其char数组。
+
+4项实际BCrypt测试通过，覆盖随机盐、正确/错误密码、ASCII/中文/补充字符的72字节边界、无截断、错误编码和散列成本上限。依赖行为参考[Spring BCrypt API](https://docs.spring.io/spring-security/reference/api/java/org/springframework/security/crypto/bcrypt/BCryptPasswordEncoder.html)；当前尚未提供HTTP登录。
