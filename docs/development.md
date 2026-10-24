@@ -511,3 +511,9 @@ V202610240011建立auth_administration_guard固定协调行，初始绑定标记
 AuthorizationRoleRepositoryImpl仅在Application写事务内工作，批量登记权限目录并保留已有ID，新条目UUID在Domain目录中生成。角色名称与权限关系同事务保存；固定编码不参与UPDATE，版本校验失败返回脱敏409。权限批量解析，不逐项查询；读聚合使用FOR UPDATE并限制1024项关系，未知角色返回空。普通角色的业务权限规则仍在Domain，仓储不暴露HTTP。
 
 d2b本轮49项领域测试及9项真实库测试通过，0失败/错误/跳过，涵盖目录幂等、权限替换/清空、重复编码与旧版本、整体回滚、事务边界及旧快照拒绝。MariaDB 11.8启用快照隔离时，旧读视图后的锁定读取可返回1020；仓储将其映射409，调用方必须放弃整个工作单元后重新读取，不使用旧授权继续。新事务读取最新状态的测试已通过；未修改全局隔离设置。行为依据[MariaDB快照隔离说明](https://github.com/mariadb-corporation/mariadb-docs/blob/main/server/server-usage/storage-engines/innodb/innodb-system-variables.md)。
+
+## 管理员状态与成员关系存储（NODE-D02.2d2c）
+
+AuthorizationAdministrationRepositoryImpl每个入口先获取数据库协调行排他锁，锁随Application事务结束释放；不使用跨事务内存标志。管理员统计按启用账号与真实administrator角色关系执行当前读，不加载凭据；旧快照发生冲突时返回409，不能据旧状态继续。账号角色替换最多64项，整组删除/插入与初始化标记均受同一事务保护；标记只提供置为完成的生产入口。
+
+12项真实库组合测试通过，0失败/错误/跳过，包括5项新增管理存储测试、5项角色仓储和2项协调行回归。两个事务并发移除两名管理员时，结合Domain规则只有一次成功，最后一名保留；此时仍是测试编排验证，生产管理应用及HTTP端点尚待后续节点。D02.2d2存储基础完成。
