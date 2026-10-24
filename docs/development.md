@@ -445,3 +445,11 @@ query模块21项单元测试重新通过，新增2项验证可信账号/trace不
 主数据、采购销售、库存查询及完整进销存闭环测试通过生产登录端点取得Access，再调用真实HTTP业务端点；幂等回执断言和清理使用真实账号ID。网络测试覆盖Refresh旋转、重放与用途混用拒绝，匿名/畸形Access拒绝，以及权威用户版本变化后的Access/Refresh失效；响应检查trace传播和无Session Cookie。权威版本由测试直接改变，撤销管理HTTP入口仍待D02。
 
 D01.5e1完成23项测试，审查发现独立InventoryQueryIntegrationTest仍包含未迁移的HTTP用例，因此登记e2并补齐。e2重新执行上述测试及库存查询，共33项真实HTTP/MariaDB/Redis集成测试通过，0失败/错误/跳过，父节点D01.5e完成。OpenAPI安全声明仍待D01.5f。
+
+## OpenAPI安全契约（NODE-D01.5f）
+
+生成文档以HTTP Bearer/JWT安全方案描述/api/**及/auth/**，仅POST登录/刷新明确无需Access。统一业务错误模型补齐40100与40300，受保护接口的401声明WWW-Authenticate；Knife4j继续消费同一OpenAPI，不额外维护接口清单。文档测试探针移到受保护的/api路径并经真实登录调用，公开文档和静态资源仍以匿名HTTP验证。
+
+实际安全链回归发现旧Content-Length清除会触发Security 7.0.4空值解析异常，包装201响应变为500。ApiResponseAdvice现通过Servlet长度API清除旧长度，保持状态、Location及完整JSON；未更换当前依赖基线。对应上游问题见[Spring Security #18970](https://github.com/spring-projects/spring-security/issues/18970)，并已核对本地Spring 7.0.6响应头适配器实现。
+
+6项响应包装单元测试及10项真实HTTP文档/安全链/认证网络集成测试全部通过，0失败/错误/跳过。覆盖生成安全声明、公开认证入口、401/403标准模型、受保护业务匿名拒绝、未授权路径403、201响应包装以及Knife4j脚本加载。D01.5完成，D01.6继续全工程组合验收；RBAC、撤销管理入口和仓库过滤尚未交付。

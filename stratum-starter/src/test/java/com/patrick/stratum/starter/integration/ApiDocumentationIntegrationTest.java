@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.*;
         properties = "server.address=127.0.0.1")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @Import(DocumentationProbeController.class)
-class ApiDocumentationIntegrationTest extends MariaDbIntegrationTest {
+class ApiDocumentationIntegrationTest extends AuthenticatedHttpIntegrationTest {
 
     @LocalServerPort
     private int port;
@@ -98,7 +98,7 @@ class ApiDocumentationIntegrationTest extends MariaDbIntegrationTest {
             JsonNode document = json.readTree(get(client, "/v3/api-docs").body());
             assertEquals("Stratum ERP API", document.path("info").path("title").asString());
             for (String suffix : List.of("object", "wrapped", "string", "empty", "created")) {
-                String path = "/documentation-probes/" + suffix;
+                String path = "/api/documentation-probes/" + suffix;
                 var actual = get(client, path);
                 int expectedStatus = suffix.equals("created") ? 201 : 200;
                 assertEquals(expectedStatus, actual.statusCode());
@@ -130,7 +130,7 @@ class ApiDocumentationIntegrationTest extends MariaDbIntegrationTest {
     void documentsVersionErrorsAndPreservesDownloads() throws Exception {
         try (var client = HttpClient.newHttpClient()) {
             JsonNode document = json.readTree(get(client, "/v3/api-docs").body());
-            JsonNode operation = document.path("paths").path("/documentation-probes/object").path("get");
+            JsonNode operation = document.path("paths").path("/api/documentation-probes/object").path("get");
             boolean versionFound = false;
             for (JsonNode parameter : operation.path("parameters")) {
                 if (parameter.path("name").asString().equals("X-API-Version")) {
@@ -139,7 +139,7 @@ class ApiDocumentationIntegrationTest extends MariaDbIntegrationTest {
                 }
             }
             assertTrue(versionFound);
-            for (var code : List.of(CommonErrorCode.BAD_REQUEST, CommonErrorCode.NOT_FOUND, CommonErrorCode.CONFLICT, CommonErrorCode.INTERNAL_ERROR)) {
+            for (var code : List.of(CommonErrorCode.BAD_REQUEST, CommonErrorCode.UNAUTHORIZED, CommonErrorCode.FORBIDDEN, CommonErrorCode.NOT_FOUND, CommonErrorCode.CONFLICT, CommonErrorCode.INTERNAL_ERROR)) {
                 String status = Integer.toString(code.getCode() / 100);
                 var error = operation.path("responses").path(status);
                 assertTrue(error.path("headers").has("X-Trace-Id"));
@@ -151,17 +151,62 @@ class ApiDocumentationIntegrationTest extends MariaDbIntegrationTest {
                 assertEquals(code.getDefaultMessage(),
                         properties.path("message").path("example").asString());
             }
-            var invalid = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/documentation-probes/object"))
-                    .header("X-API-Version", "2").timeout(Duration.ofSeconds(15)).build();
+            var invalid = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/documentation-probes/object"))
+                    .header("Authorization", "Bearer " + accessToken()).header("X-API-Version", "2").timeout(Duration.ofSeconds(15)).build();
             var failure = client.send(invalid, HttpResponse.BodyHandlers.ofString());
             assertEquals(400, failure.statusCode());
             assertEquals(40001, json.readTree(failure.body()).path("code").asInt());
-            var download = get(client, "/documentation-probes/download");
+            var download = get(client, "/api/documentation-probes/download");
             assertEquals(200, download.statusCode());
             assertEquals(3, download.body().length());
-            JsonNode downloadSchema = document.path("paths").path("/documentation-probes/download").path("get")
+            JsonNode downloadSchema = document.path("paths").path("/api/documentation-probes/download").path("get")
                     .path("responses").path("200").path("content").path("application/octet-stream").path("schema");
             assertFalse(downloadSchema.path("properties").has("code"));
+        }
+    }
+
+    /** Bearer方案、公开认证入口及业务拒绝响应与真实安全链一致。
+     * @throws Exception HTTP通信失败
+     */
+    @Test
+    void documentsBearerAndPublicAuthentication() throws Exception {
+        try (var client = HttpClient.newHttpClient()) {
+            var document = json.readTree(get(client, "/v3/api-docs").body());
+            var scheme = document.path("components").path("securitySchemes").path("bearerAuth");
+            assertEquals("http", scheme.path("type").asText());
+            assertEquals("bearer", scheme.path("scheme").asText());
+            assertEquals("JWT", scheme.path("bearerFormat").asText());
+            for (String path : List.of("/auth/login", "/auth/refresh")) {
+                var operation = document.path("paths").path(path).path("post");
+                assertFalse(operation.isMissingNode());
+                assertTrue(operation.path("security").isArray());
+                assertEquals(0, operation.path("security").size());
+                assertTrue(operation.path("responses").has("401"));
+            }
+            for (var entry : document.path("paths").properties()) {
+                if (!entry.getKey().startsWith("/api/")) continue;
+                for (String method : List.of("get", "post", "patch", "delete")) {
+                    var operation = entry.getValue().path(method);
+                    if (operation.isMissingNode()) continue;
+                    assertTrue(operation.path("security").get(0).has("bearerAuth"), entry.getKey());
+                    for (String status : List.of("401", "403")) {
+                        var error = operation.path("responses").path(status);
+                        var schema = resolveSchema(document, error.path("content").path("application/json").path("schema"));
+                        assertEquals(Integer.parseInt(status) * 100, schema.path("properties").path("code").path("example").asInt());
+                        assertTrue(error.path("headers").has("X-Trace-Id"));
+                    }
+                }
+            }
+            var anonymous = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/erp/masters/MATERIAL"))
+                    .timeout(Duration.ofSeconds(15)).GET().build();
+            var denied = client.send(anonymous, HttpResponse.BodyHandlers.ofString());
+            assertEquals(401, denied.statusCode());
+            assertEquals(40100, json.readTree(denied.body()).path("code").asInt());
+            var forbidden = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/unmapped-path"))
+                    .timeout(Duration.ofSeconds(15)).header("Authorization", "Bearer " + accessToken()).GET().build();
+            var rejected = client.send(forbidden, HttpResponse.BodyHandlers.ofString());
+            assertEquals(403, rejected.statusCode());
+            assertEquals(40300, json.readTree(rejected.body()).path("code").asInt());
         }
     }
 
@@ -187,7 +232,8 @@ class ApiDocumentationIntegrationTest extends MariaDbIntegrationTest {
      */
     private HttpResponse<String> get(HttpClient client, String path) throws Exception {
         var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path))
-                .timeout(Duration.ofSeconds(15)).header("X-Trace-Id", "docs-test").GET().build();
-        return client.send(request, HttpResponse.BodyHandlers.ofString());
+                .timeout(Duration.ofSeconds(15)).header("X-Trace-Id", "docs-test").GET();
+        if (path.startsWith("/api/")) request.header("Authorization", "Bearer " + accessToken());
+        return client.send(request.build(), HttpResponse.BodyHandlers.ofString());
     }
 }

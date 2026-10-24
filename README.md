@@ -28,6 +28,6 @@ Phase C 的 ERP 整体验收已完成：2026-10-24 重新执行93项单元测试
 .\gradlew.bat --no-daemon :stratum-starter:bootRun
 ```
 
-当前使用环境变量配置本地依赖，Nacos 尚未接入。HTTP安全链已接入，未配置JWT时ERP业务端点返回401。按开发文档启用外部RSA密钥并通过环境变量初始化本地账号后，可调用/auth/login与/auth/refresh；业务请求携带Authorization: Bearer。ERP内部主体接入、RBAC及仓库权限仍在推进，认证阶段尚未整体验收。启动成功后可检查 `http://localhost:8080/actuator/health`，结束时按 `Ctrl+C` 退出。
+当前使用环境变量配置本地依赖，Nacos 尚未接入。HTTP安全链已接入，未配置JWT时ERP业务端点返回401。按开发文档启用外部RSA密钥并通过环境变量初始化本地账号后，可调用/auth/login与/auth/refresh；业务请求携带Authorization: Bearer。ERP写入与查询已使用登录身份，并通过真实HTTP闭环回归；OpenAPI已声明Bearer及401/403契约。RBAC与仓库权限仍在推进，认证基础整体验收在D01.6执行。启动成功后可检查 `http://localhost:8080/actuator/health`，结束时按 `Ctrl+C` 退出。
 
 启动后可访问 `/v3/api-docs` 获取生成文档、`/doc.html` 查看 Knife4j。当前未提供 Docker Compose 文件或 Prometheus 指标端点。完整的操作说明、验证边界与后续设计见 [开发与迭代](docs/development.md)。

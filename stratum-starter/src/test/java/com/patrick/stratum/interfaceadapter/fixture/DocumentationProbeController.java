@@ -17,31 +17,31 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 public class DocumentationProbeController {
 
     /** @return 自动包装的对象模型 */
-    @GetMapping(path = "/documentation-probes/object", version = "1")
+    @GetMapping(path = "/api/documentation-probes/object", version = "1")
     ProbeResult object() { return new ProbeResult("文档验收", 2); }
 
     /** @return 已有标准外壳 */
-    @GetMapping("/documentation-probes/wrapped")
+    @GetMapping("/api/documentation-probes/wrapped")
     ApiResponse<ProbeResult> wrapped() { return ApiResponse.success(new ProbeResult("已包装", 3)); }
 
     /** @return 自动包装的字符串 */
-    @GetMapping("/documentation-probes/string")
+    @GetMapping("/api/documentation-probes/string")
     String string() { return "文档验收字符串"; }
 
     /** 返回空成功结果。 */
-    @GetMapping("/documentation-probes/empty")
+    @GetMapping("/api/documentation-probes/empty")
     void empty() {}
 
     /** @return 带旧长度的对象响应，用于真实Servlet长度清理验收 */
-    @GetMapping("/documentation-probes/created")
+    @GetMapping("/api/documentation-probes/created")
     @ResponseStatus(HttpStatus.CREATED)
     ResponseEntity<ProbeResult> created() {
-        return ResponseEntity.created(URI.create("/documentation-probes/object"))
+        return ResponseEntity.created(URI.create("/api/documentation-probes/object"))
                 .contentLength(1).body(new ProbeResult("新建", 4));
     }
 
     /** @return 不应包装的二进制下载 */
-    @GetMapping(path = "/documentation-probes/download", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    @GetMapping(path = "/api/documentation-probes/download", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
     byte[] download() { return new byte[]{1, 2, 3}; }
 
     /**

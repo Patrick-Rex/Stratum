@@ -51,7 +51,12 @@ public class ApiResponseAdvice implements ResponseBodyAdvice<Object> {
             return body;
         }
         ApiResponse<Object> wrapped = ApiResponse.success(body);
-        response.getHeaders().remove(HttpHeaders.CONTENT_LENGTH);
+        if (response instanceof ServletServerHttpResponse servletResponse) {
+            // Security 7.0.4不接受Content-Length空头；Servlet长度API同时清除旧长度与包装器计数。
+            servletResponse.getServletResponse().setContentLengthLong(-1);
+        } else {
+            response.getHeaders().remove(HttpHeaders.CONTENT_LENGTH);
+        }
         if (stringConverter) {
             response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
             String serialized = jsonMapper.writeValueAsString(wrapped);

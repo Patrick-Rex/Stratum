@@ -8,6 +8,9 @@ import com.patrick.stratum.common.error.CommonErrorCode;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.Operation;
+import io.swagger.v3.oas.models.PathItem;
+import io.swagger.v3.oas.models.security.SecurityRequirement;
+import io.swagger.v3.oas.models.security.SecurityScheme;
 import io.swagger.v3.oas.models.headers.Header;
 import io.swagger.v3.oas.models.info.Info;
 import io.swagger.v3.oas.models.media.ArraySchema;
@@ -40,7 +43,34 @@ public class OpenApiConfiguration {
     @Bean
     public OpenAPI stratumOpenApi() {
         return new OpenAPI().info(new Info().title("Stratum ERP API").version("1")
-                .description("Stratum 通用进销存接口；版本通过 X-API-Version 传入，缺省为1。"));
+                .description("Stratum 通用进销存接口；版本通过 X-API-Version 传入，缺省为1。"))
+                .components(new Components().addSecuritySchemes("bearerAuth", new SecurityScheme()
+                        .type(SecurityScheme.Type.HTTP).scheme("bearer").bearerFormat("JWT")
+                        .description("通过/auth/login取得Access；Refresh仅用于/auth/refresh。")));
+    }
+
+    /**
+     * 按安全链的路径规则声明Bearer要求，登录和刷新显式允许无Access请求。
+     * @return 安全契约定制器
+     * @apiNote 使用示例：Knife4j授权输入Access后调用/api/**业务接口。
+     */
+    @Bean
+    public OpenApiCustomizer stratumSecurityContract() {
+        return document -> {
+            if (document.getPaths() == null) return;
+            document.getPaths().forEach((path, item) -> item.readOperationsMap().forEach((method, operation) -> {
+                boolean publicAuthentication = method == PathItem.HttpMethod.POST
+                        && (path.equals("/auth/login") || path.equals("/auth/refresh"));
+                if (publicAuthentication) {
+                    operation.setSecurity(List.of());
+                } else if (path.startsWith("/api/") || path.startsWith("/auth/")) {
+                    operation.setSecurity(List.of(new SecurityRequirement().addList("bearerAuth")));
+                    var unauthorized = operation.getResponses().get("401");
+                    if (unauthorized != null) unauthorized.addHeaderObject("WWW-Authenticate",
+                            new Header().schema(new StringSchema().example("Bearer")));
+                }
+            }));
+        };
     }
 
     /**
@@ -126,6 +156,8 @@ public class OpenApiConfiguration {
             }
         });
         addErrorResponse(operation, "400", "请求参数、协议或版本错误（40000/40001）", CommonErrorCode.BAD_REQUEST);
+        addErrorResponse(operation, "401", "缺少有效身份、凭据或会话已失效（40100）", CommonErrorCode.UNAUTHORIZED);
+        addErrorResponse(operation, "403", "已认证但无操作或数据访问权限（40300）", CommonErrorCode.FORBIDDEN);
         addErrorResponse(operation, "404", "资源不存在或类别不匹配（40400）", CommonErrorCode.NOT_FOUND);
         addErrorResponse(operation, "409", "版本、库存、引用或幂等冲突（40900）", CommonErrorCode.CONFLICT);
         addErrorResponse(operation, "500", "服务内部错误（50000），不暴露内部异常", CommonErrorCode.INTERNAL_ERROR);
