@@ -377,3 +377,9 @@ AccountCredentialQuery以固定一页一条的QuerySpec精确绑定用户名，�
 ## 凭据端口装配（NODE-D01.4d2）
 
 QueryAccountCredentialsAdapterImpl实现Domain的AccountCredentials端口，应用只依赖端口即可经QueryGateway读取精确凭据；认证前使用无身份上下文传递服务器traceId。没有HTTP凭据端点，也不绕过网关事务检查。4项真实MariaDB查询组合测试重新通过，包含端口装配、未知账号、非法traceId及活动事务拒绝。
+
+## 初始账号工作单元（NODE-D01.4e1）
+
+BootstrapAccountApplicationService首次创建初始化账号；重复调用忽略新的凭据，保留原用户名、散列和启用状态。BCrypt计算在事务外，写入由Application工作单元完成；唯一冲突回滚后以新的工作单元读取并发胜者，普通账号同名冲突不会升级为管理员。入口禁止嵌套调用方事务，消费后擦除密码数组，启动调用方也须保证外层清理。初始化标记不替代RBAC授权。
+
+5项真实MariaDB测试通过，覆盖首次创建、缺失/非法输入拒绝、重复不覆盖、普通账号占名、并发收敛及外层事务拒绝。环境变量启动装配待D01.4e2。
