@@ -34,6 +34,8 @@ dependencies {
     testImplementation 'jakarta.validation:jakarta.validation-api'
     testImplementation 'org.springframework:spring-jdbc'
     testImplementation 'org.springframework:spring-tx'
+    testImplementation 'org.springframework.security:spring-security-core'
+    testImplementation 'org.springframework.security:spring-security-web'
     testImplementation 'org.flywaydb:flyway-core'
     testImplementation 'com.easy-query:sql-springboot4-starter'
     testImplementation 'org.springframework.data:spring-data-redis'

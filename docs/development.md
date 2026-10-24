@@ -415,3 +415,9 @@ AuthSessionApplicationService在本地身份成功后读取权威用户版本、
 Interface显式接入BOM管理的spring-security-web/config 7.0.4，沿用Spring Security Apache 2.0许可；不引入默认账号或自动登录页。Application的CurrentIdentity端口返回不含令牌的账号/会话/版本快照，安全适配器只接受本项目专用VerifiedAccessAuthentication且状态已认证；用户名认证对象、匿名对象和失效对象均返回401。身份本身不表示已通过RBAC，当前权限集合为空。
 
 4项单元测试通过，覆盖可信类型、错误类型拒绝、不可用setter提升认证、元数据边界及新线程默认隔离；依赖解析确认7.0.4。上下文使用依据[Spring Security认证架构](https://docs.spring.io/spring-security/reference/servlet/authentication/architecture.html)。过滤器、链装配和ERP身份替换仍待后续节点，不能将本节点视为HTTP鉴权完成。
+
+## Bearer验证与安全错误（NODE-D01.5c2）
+
+BearerAuthenticationFilter只接受单个Authorization头及有界紧凑JWT，不从查询参数或Cookie读取令牌；完整Access密码学与Redis校验后建立专用认证对象。缺失头暂交安全链决定是否公开；重复/畸形/错误用途/未配置认证服务返回401，认证存储和内部故障返回脱敏500。过滤器在成功、拒绝及下游异常后清理身份，支持异步和错误再分派；仍需后续无状态链装配才能保护业务端点。
+
+SecurityErrorWriter提供带traceId、国际化文案和no-store的401/403/500标准响应，401增加WWW-Authenticate: Bearer。5项真实RSA/Redis过滤器集成测试通过，覆盖头解析、可信主体、用途、版本失效、Redis错误类型与服务故障失败关闭、上下文清理和403语义。
