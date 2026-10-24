@@ -2,16 +2,18 @@
 
 ## 交接报告（2026-10-24）
 
-- completedNode: NODE-D02.2d3a（实现管理员目录与首次成员绑定的原子初始化用例）。
+- completedNode: NODE-D02.2d3b（启动时接通环境账号与管理员角色授权并隔离测试夹具）。
 - changedFiles:
+  - `README.md`
   - `docs/CONTEXT.md`
   - `docs/development.md`
   - `docs/entropy/SESSION-HANDOFF.md`
-  - `stratum-application/src/main/java/com/patrick/stratum/application/auth/BootstrapAuthorizationApplicationService.java`
-  - `stratum-starter/src/test/java/com/patrick/stratum/starter/integration/BootstrapAuthorizationIntegrationTest.java`
+  - `stratum-starter/src/main/java/com/patrick/stratum/starter/auth/BootstrapAccountConfiguration.java`
+  - `stratum-starter/src/test/java/com/patrick/stratum/starter/integration/AuthenticatedHttpIntegrationTest.java`
+  - `stratum-starter/src/test/java/com/patrick/stratum/starter/integration/BootstrapAccountConfigurationIntegrationTest.java`
 
-- validations: 16项真实MariaDB组合测试通过，0失败、错误或跳过；覆盖首次授权、幂等、转交后不恢复、标记后故障回滚及3并发收敛。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
+- validations: 17项真实MariaDB/Redis/HTTP组合测试通过，0失败、错误或跳过；包含启动全目录授权和角色初始化失败阻止就绪。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
 - unresolved: 部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
-- nextNode: NODE-D02.2d3b。
+- nextNode: NODE-D02.2d3c。
 - 当前节点验收后审查、提交、推送；完成后继续下一节点，不重复请求授权。
 - CONTEXT 已更新。共享 Docker 容器保持运行，仅清理本轮创建的测试资源；测试 JVM 已退出；独立测试容器 stratum-integration-mariadb / stratum-integration-redis 暂留供连续验证，会话结束前清理。连接状态在本机临时目录 stratum-integration-state.json，不提交凭据。

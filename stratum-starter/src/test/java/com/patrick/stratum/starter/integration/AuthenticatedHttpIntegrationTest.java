@@ -74,12 +74,14 @@ abstract class AuthenticatedHttpIntegrationTest extends MariaDbIntegrationTest {
     void cleanAuthenticationSessions() { if (!authenticationKeys.isEmpty()) { authenticationRedis.delete(authenticationKeys); } }
 
     /**
-     * 当前测试类完成后清理其初始化账号，让其他启动初始化测试保持隔离。
+     * 当前测试类完成后清理其初始化账号与角色关系，并复位本测试初始化标记；仅供独立测试库隔离。
      * @param jdbc 仍存活上下文的清理客户端
      */
     @AfterAll
     static void cleanInitialAccount(@Autowired JdbcTemplate jdbc) {
-        jdbc.update("DELETE FROM auth_user WHERE username = ? AND bootstrap_slot = 1", INITIAL_USERNAME);
+        jdbc.update("DELETE FROM auth_user_role WHERE user_id IN (SELECT id FROM auth_user WHERE username=? AND bootstrap_slot=1)", INITIAL_USERNAME);
+        int removed = jdbc.update("DELETE FROM auth_user WHERE username = ? AND bootstrap_slot = 1", INITIAL_USERNAME);
+        if (removed == 1) jdbc.update("UPDATE auth_administration_guard SET initialized=0 WHERE singleton_id=1");
     }
 
     /**

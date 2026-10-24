@@ -6,6 +6,9 @@ import java.util.Map;
 import java.util.UUID;
 
 import com.patrick.stratum.application.auth.BootstrapAccountApplicationService;
+import com.patrick.stratum.application.auth.BootstrapAuthorizationApplicationService;
+import com.patrick.stratum.domain.auth.AccountPermissions;
+import com.patrick.stratum.domain.auth.PermissionCatalog;
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.domain.auth.AccountCredentials;
 import com.patrick.stratum.domain.auth.LocalAccountRepository;
@@ -39,6 +42,8 @@ class BootstrapAccountConfigurationIntegrationTest extends MariaDbIntegrationTes
     private final UnitOfWork unitOfWork;
     private final JdbcTemplate jdbc;
     private final AccountCredentials credentials;
+    private final BootstrapAuthorizationApplicationService authorization;
+    private final AccountPermissions permissions;
     private final String username = "environment" + UUID.randomUUID();
 
     /**
@@ -49,13 +54,16 @@ class BootstrapAccountConfigurationIntegrationTest extends MariaDbIntegrationTes
      * @param unitOfWork 事务门面
      * @param jdbc 测试清理客户端
      * @param credentials 查询端口，用于验证开启SQL日志时也不会泄漏登录标识
+     * @param authorization 角色初始化应用入口
+     * @param permissions 权限查询端口
      */
     @Autowired
     BootstrapAccountConfigurationIntegrationTest(BootstrapAccountApplicationService bootstrap, LocalAccountRepository accounts,
-            PasswordHasher passwords, UnitOfWork unitOfWork, JdbcTemplate jdbc, AccountCredentials credentials) {
+            PasswordHasher passwords, UnitOfWork unitOfWork, JdbcTemplate jdbc, AccountCredentials credentials,
+            BootstrapAuthorizationApplicationService authorization, AccountPermissions permissions) {
         this.bootstrap = bootstrap; this.accounts = accounts; this.passwords = passwords;
         this.unitOfWork = unitOfWork; this.jdbc = jdbc;
-        this.credentials = credentials;
+        this.credentials = credentials; this.authorization = authorization; this.permissions = permissions;
     }
 
     /**
@@ -65,9 +73,13 @@ class BootstrapAccountConfigurationIntegrationTest extends MariaDbIntegrationTes
     @DynamicPropertySource
     static void enableSqlLogging(DynamicPropertyRegistry registry) { registry.add("easy-query.print-sql", () -> "true"); }
 
-    /** 只清理本用例创建的随机用户名。 */
+    /** 只清理本用例账号及角色绑定，复位独立测试库的初始化标记。 */
     @AfterEach
-    void cleanUp() { jdbc.update("DELETE FROM auth_user WHERE username = ?", username); }
+    void cleanUp() {
+        jdbc.update("DELETE FROM auth_user_role WHERE user_id IN (SELECT id FROM auth_user WHERE username=?)", username);
+        int removed = jdbc.update("DELETE FROM auth_user WHERE username = ?", username);
+        if (removed == 1) jdbc.update("UPDATE auth_administration_guard SET initialized=0 WHERE singleton_id=1");
+    }
 
     /**
      * 环境密码保持字面值，首次启动存散列，日志不输出环境凭据。
@@ -80,6 +92,8 @@ class BootstrapAccountConfigurationIntegrationTest extends MariaDbIntegrationTes
             assertNotNull(context.getBean("bootstrapAccountRunner"));
             var account = unitOfWork.execute(accounts::findBootstrapAdministrator).orElseThrow();
             assertTrue(credentials.findByUsername(username, "bootstrap-log-test").isPresent());
+            assertEquals(PermissionCatalog.permissions(), permissions.findByUserId(UUID.fromString(account.getId()), "bootstrap-grants-test")
+                    .orElseThrow().permissions());
             char[] password = raw.toCharArray();
             try { assertTrue(passwords.matches(password, account.getPasswordHash())); }
             finally { Arrays.fill(password, '\0'); }
@@ -126,6 +140,22 @@ class BootstrapAccountConfigurationIntegrationTest extends MariaDbIntegrationTes
         assertFalse(output.getAll().contains(secret));
     }
 
+    /**
+     * 账号创建已完成但角色初始化失败时，真实启动拒绝就绪且不暴露凭据。
+     * @param output 启动日志
+     */
+    @Test
+    void authorizationFailurePreventsStartup(CapturedOutput output) {
+        String secret = UUID.randomUUID().toString();
+        var id = bootstrap.initialize(username, secret.toCharArray());
+        jdbc.update("UPDATE auth_user SET enabled=0 WHERE id=?", id.toString());
+        var failure = assertThrows(IllegalStateException.class, () -> start(true, Map.of(), Map.of()));
+        assertFalse(output.getAll().contains(secret));
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) assertFalse(String.valueOf(cause.getMessage()).contains(secret));
+        assertEquals(0, jdbc.queryForObject("SELECT initialized FROM auth_administration_guard WHERE singleton_id=1", Integer.class));
+        assertTrue(permissions.findByUserId(id, "bootstrap-failed").orElseThrow().permissions().isEmpty());
+    }
+
     /** 未启用JWT组件时不装配初始化；普通属性不能替代环境变量提供密码。 */
     @Test
     void requiresExplicitEnableAndEnvironmentSource() {
@@ -154,6 +184,9 @@ class BootstrapAccountConfigurationIntegrationTest extends MariaDbIntegrationTes
         environment.getPropertySources().addFirst(new MapPropertySource("bootstrap-test-settings", settings));
         return new SpringApplicationBuilder(BootstrapAccountConfiguration.class)
                 .environment(environment).web(WebApplicationType.NONE).bannerMode(Banner.Mode.OFF).logStartupInfo(false)
-                .initializers(context -> context.getBeanFactory().registerSingleton("bootstrapAccountApplicationService", bootstrap)).run();
+                .initializers(context -> {
+                    context.getBeanFactory().registerSingleton("bootstrapAccountApplicationService", bootstrap);
+                    context.getBeanFactory().registerSingleton("bootstrapAuthorizationApplicationService", authorization);
+                }).run();
     }
 }
