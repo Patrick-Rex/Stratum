@@ -101,6 +101,13 @@ abstract class AuthenticatedHttpIntegrationTest extends MariaDbIntegrationTest {
     protected String subjectId() { return defaultSession.subjectId(); }
 
     /**
+     * 经真实登录为默认账号创建另一个独立会话。
+     * @return 由夹具统一清理的会话
+     * @throws Exception HTTP登录失败
+     */
+    protected Session additionalSession() throws Exception { return login(INITIAL_USERNAME, INITIAL_PASSWORD); }
+
+    /**
      * 从生产HTTP端点登录任意本用例账号，记录会话键供清理。
      * @param username 已创建的测试用户名
      * @param password 只在测试进程中保留的随机凭据
