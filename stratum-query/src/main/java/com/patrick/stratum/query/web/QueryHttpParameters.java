@@ -6,9 +6,11 @@ import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
+import com.patrick.stratum.application.auth.CurrentIdentity;
 import com.patrick.stratum.common.error.CommonErrorCode;
 import com.patrick.stratum.common.error.StratumException;
 import com.patrick.stratum.common.trace.TraceIdContext;
@@ -123,12 +125,15 @@ public final class QueryHttpParameters {
     }
 
     /**
-     * 从HTTP过滤器上下文获取可信trace，身份能力仍待Phase D。
-     * @return 当前请求匿名查询上下文
-     * @apiNote 示例：gateway.execute(query, QueryHttpParameters.context())。
+     * 从服务器过滤器上下文取得trace及已验证账号，不接受客户端自报身份或权限。
+     * @param identities 服务器可信身份端口
+     * @return 包含当前账号的不可变查询上下文，权限待RBAC解析
+     * @apiNote 示例：gateway.execute(query, QueryHttpParameters.context(identities))。
      */
-    public static QueryContext context() {
-        return QueryContext.anonymous(TraceIdContext.getTraceId().orElseThrow(() -> new IllegalStateException("缺少请求关联上下文")));
+    public static QueryContext context(CurrentIdentity identities) {
+        var identity = identities.require();
+        return new QueryContext.Snapshot(TraceIdContext.getTraceId().orElseThrow(() -> new IllegalStateException("缺少请求关联上下文")),
+                Optional.of(identity.getName()), Set.of());
     }
 
     /**

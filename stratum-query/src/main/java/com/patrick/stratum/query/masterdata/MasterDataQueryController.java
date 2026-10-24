@@ -2,6 +2,7 @@ package com.patrick.stratum.query.masterdata;
 
 import java.util.List;
 import java.util.UUID;
+import com.patrick.stratum.application.auth.CurrentIdentity;
 import com.patrick.stratum.common.error.CommonErrorCode;
 import com.patrick.stratum.common.error.StratumException;
 import com.patrick.stratum.domain.masterdata.MasterData;
@@ -25,6 +26,7 @@ import org.springframework.web.bind.annotation.*;
 @RequiredArgsConstructor
 public class MasterDataQueryController {
     private final QueryGateway queries;
+    private final CurrentIdentity identities;
 
     /**
      * 解析明确白名单参数并查询主数据分页。
@@ -52,7 +54,7 @@ public class MasterDataQueryController {
                     .exact("name", String.class).contains("code").contains("name").finish();
             return MasterDataQuery.create(kind, parsed.page(), parsed.pageSize(), parsed.sorts(), parsed.filters());
         });
-        return queries.execute(query, QueryHttpParameters.context());
+        return queries.execute(query, QueryHttpParameters.context(identities));
     }
 
     /**
@@ -66,7 +68,7 @@ public class MasterDataQueryController {
     @Operation(summary = "查询主数据详情", description = "不存在或类别不匹配返回404；queryCode=erp.master.list")
     public MasterDataQuery.Row detail(@PathVariable("kind") MasterData.Kind kind, @PathVariable("id") UUID id) {
         var query = MasterDataQuery.create(kind, 1, 1, List.of(), List.of(new QuerySpec.FilterInput("id", QuerySpec.Operator.EQ, id, null)));
-        var result = queries.execute(query, QueryHttpParameters.context());
+        var result = queries.execute(query, QueryHttpParameters.context(identities));
         return result.getItems().stream().findFirst().orElseThrow(() -> new StratumException(CommonErrorCode.NOT_FOUND));
     }
 }

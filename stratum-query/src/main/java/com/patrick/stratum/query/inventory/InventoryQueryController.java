@@ -3,6 +3,7 @@ package com.patrick.stratum.query.inventory;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
+import com.patrick.stratum.application.auth.CurrentIdentity;
 import com.patrick.stratum.query.QueryGateway;
 import com.patrick.stratum.query.dto.QueryResult;
 import com.patrick.stratum.query.web.QueryHttpParameters;
@@ -22,6 +23,7 @@ import org.springframework.web.bind.annotation.*;
 @RequiredArgsConstructor
 public class InventoryQueryController {
     private final QueryGateway queries;
+    private final CurrentIdentity identities;
 
     /**
      * 按物料、仓库及精确数量条件读取余额。
@@ -48,7 +50,7 @@ public class InventoryQueryController {
                     .exact("warehouseId", UUID.class).exact("quantity", BigDecimal.class).range("quantity", BigDecimal.class).finish();
             return StockBalanceQuery.create(parsed.page(), parsed.pageSize(), parsed.sorts(), parsed.filters());
         });
-        return queries.execute(query, QueryHttpParameters.context());
+        return queries.execute(query, QueryHttpParameters.context(identities));
     }
 
     /**
@@ -84,6 +86,6 @@ public class InventoryQueryController {
                     .exact("occurredAt", Instant.class).range("occurredAt", Instant.class).finish();
             return StockMovementQuery.create(parsed.page(), parsed.pageSize(), parsed.sorts(), parsed.filters());
         });
-        return queries.execute(query, QueryHttpParameters.context());
+        return queries.execute(query, QueryHttpParameters.context(identities));
     }
 }

@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import com.patrick.stratum.application.auth.CurrentIdentity;
 import com.patrick.stratum.common.error.CommonErrorCode;
 import com.patrick.stratum.common.error.StratumException;
 import com.patrick.stratum.domain.trade.TradeOrder;
@@ -27,6 +28,7 @@ import org.springframework.web.bind.annotation.*;
 @RequiredArgsConstructor
 public class TradeOrderQueryController {
     private final QueryGateway queries;
+    private final CurrentIdentity identities;
 
     /**
      * 按类别和白名单条件读取不含明细的订单分页。
@@ -62,7 +64,7 @@ public class TradeOrderQueryController {
                     .exact("createdAt", Instant.class).range("createdAt", Instant.class).finish();
             return TradeOrderQuery.create(kind, parsed.page(), parsed.pageSize(), parsed.sorts(), parsed.filters());
         });
-        return queries.execute(query, QueryHttpParameters.context());
+        return queries.execute(query, QueryHttpParameters.context(identities));
     }
 
     /**
@@ -75,7 +77,7 @@ public class TradeOrderQueryController {
     @GetMapping("/{id}")
     @Operation(summary = "查询采购销售订单详情", description = "queryCode=erp.order.detail；含order摘要及最多100条lines，明细按原行号返回；缺失或类别不符404。")
     public TradeOrderDetailQuery.Row detail(@PathVariable("kind") TradeOrder.Kind kind, @PathVariable("id") UUID id) {
-        return queries.execute(TradeOrderDetailQuery.create(kind, id), QueryHttpParameters.context()).getItems()
+        return queries.execute(TradeOrderDetailQuery.create(kind, id), QueryHttpParameters.context(identities)).getItems()
                 .stream().findFirst().orElseThrow(() -> new StratumException(CommonErrorCode.NOT_FOUND));
     }
 
@@ -108,7 +110,7 @@ public class TradeOrderQueryController {
                     .range("orderVersion", Long.class).exact("createdAt", Instant.class).range("createdAt", Instant.class).finish();
             return FulfillmentQuery.create(kind, id, parsed.page(), parsed.pageSize(), parsed.sorts(), parsed.filters());
         });
-        var context = QueryHttpParameters.context();
+        var context = QueryHttpParameters.context(identities);
         var parent = TradeOrderQuery.create(kind, 1, 1, List.of(), List.of(new QuerySpec.FilterInput("id", QuerySpec.Operator.EQ, id, null)));
         if (queries.execute(parent, context).getItems().isEmpty()) throw new StratumException(CommonErrorCode.NOT_FOUND);
         return queries.execute(query, context);
