@@ -453,3 +453,9 @@ D01.5e1完成23项测试，审查发现独立InventoryQueryIntegrationTest仍包
 实际安全链回归发现旧Content-Length清除会触发Security 7.0.4空值解析异常，包装201响应变为500。ApiResponseAdvice现通过Servlet长度API清除旧长度，保持状态、Location及完整JSON；未更换当前依赖基线。对应上游问题见[Spring Security #18970](https://github.com/spring-projects/spring-security/issues/18970)，并已核对本地Spring 7.0.6响应头适配器实现。
 
 6项响应包装单元测试及10项真实HTTP文档/安全链/认证网络集成测试全部通过，0失败/错误/跳过。覆盖生成安全声明、公开认证入口、401/403标准模型、受保护业务匿名拒绝、未授权路径403、201响应包装以及Knife4j脚本加载。D01.5完成，D01.6继续全工程组合验收；RBAC、撤销管理入口和仓库过滤尚未交付。
+
+## 认证基础整体验收（NODE-D01.6）
+
+2026-10-24执行 `./gradlew.bat --no-daemon test :stratum-starter:integrationTest --rerun-tasks`，33个任务实际执行；119项单元与234项真实MariaDB/Redis/HTTP集成测试全部通过，0失败/错误/跳过。测试覆盖认证、环境初始化、Redis会话旋转、ERP身份隔离、完整进销存、OpenAPI及响应包装；分层静态检查未发现Domain框架导入、Application依赖Infrastructure实现、Query写操作或Infrastructure端点。
+
+D01认证基础完成。D02继续实现注销/撤销管理和RBAC，D03接入仓库授权；当前不能将已登录视为已完成业务权限检查。测试上下文和JVM已退出，独立测试容器继续用于下一节点；不执行部署。

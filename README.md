@@ -8,6 +8,8 @@ Phase A/B、查询基架与接口基架已完成验收：包含 Domain/命令与
 
 Phase C 的 ERP 整体验收已完成：2026-10-24 重新执行93项单元测试和175项真实MariaDB/Redis集成测试，全部通过；消息投递与消费、认证与数据权限、网关、后台任务及完整可观测性尚未完成；部署相关节点本轮暂缓。设计文档中的目标不代表当前已交付。
 
+2026-10-24 的 NODE-D01.6 全工程验收重新运行119项单元测试与234项真实集成测试，全部通过。当前具备本地账号、环境初始化、BCrypt、RS256登录/刷新、Redis会话验证和ERP可信身份；此结果不代表RBAC或仓库授权完成。
+
 ## 文档入口
 
 | 目的 | 入口 |
@@ -28,6 +30,6 @@ Phase C 的 ERP 整体验收已完成：2026-10-24 重新执行93项单元测试
 .\gradlew.bat --no-daemon :stratum-starter:bootRun
 ```
 
-当前使用环境变量配置本地依赖，Nacos 尚未接入。HTTP安全链已接入，未配置JWT时ERP业务端点返回401。按开发文档启用外部RSA密钥并通过环境变量初始化本地账号后，可调用/auth/login与/auth/refresh；业务请求携带Authorization: Bearer。ERP写入与查询已使用登录身份，并通过真实HTTP闭环回归；OpenAPI已声明Bearer及401/403契约。RBAC与仓库权限仍在推进，认证基础整体验收在D01.6执行。启动成功后可检查 `http://localhost:8080/actuator/health`，结束时按 `Ctrl+C` 退出。
+当前使用环境变量配置本地依赖，Nacos 尚未接入。HTTP安全链已接入，未配置JWT时ERP业务端点返回401。按开发文档启用外部RSA密钥并通过环境变量初始化本地账号后，可调用/auth/login与/auth/refresh；业务请求携带Authorization: Bearer。ERP写入与查询已使用登录身份，并通过真实HTTP闭环回归；OpenAPI已声明Bearer及401/403契约。认证基础D01已完成全工程验收；RBAC、撤销管理入口与仓库权限仍待D02/D03。启动成功后可检查 `http://localhost:8080/actuator/health`，结束时按 `Ctrl+C` 退出。
 
 启动后可访问 `/v3/api-docs` 获取生成文档、`/doc.html` 查看 Knife4j。当前未提供 Docker Compose 文件或 Prometheus 指标端点。完整的操作说明、验证边界与后续设计见 [开发与迭代](docs/development.md)。
