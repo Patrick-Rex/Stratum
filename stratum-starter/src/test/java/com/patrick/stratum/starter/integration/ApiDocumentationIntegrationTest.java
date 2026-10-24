@@ -183,6 +183,18 @@ class ApiDocumentationIntegrationTest extends AuthenticatedHttpIntegrationTest {
                 assertEquals(0, operation.path("security").size());
                 assertTrue(operation.path("responses").has("401"));
             }
+            for (String path : List.of("/auth/logout", "/auth/logout-all")) {
+                var operation = document.path("paths").path(path).path("post");
+                assertFalse(operation.isMissingNode());
+                assertTrue(operation.path("security").get(0).has("bearerAuth"));
+                assertTrue(operation.path("responses").has("401"));
+                assertTrue(operation.path("responses").path("401").path("headers").has("WWW-Authenticate"));
+                var success = resolveSchema(document, operation.path("responses").path("200")
+                        .path("content").path("application/json").path("schema"));
+                assertTrue(success.path("properties").has("traceId"));
+                assertTrue(success.path("properties").has("data"));
+                assertFalse(operation.has("requestBody"));
+            }
             for (var entry : document.path("paths").properties()) {
                 if (!entry.getKey().startsWith("/api/")) continue;
                 for (String method : List.of("get", "post", "patch", "delete")) {

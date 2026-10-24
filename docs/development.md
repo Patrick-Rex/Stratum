@@ -471,3 +471,9 @@ AuthRevocations端口只接受服务器身份中的账号UUID、会话UUID和版
 启用JWT后提供POST /auth/logout与POST /auth/logout-all；必须携带有效Access，API版本仍为1。前者注销当前会话，后者注销当前账号所有既有会话。接口不接收身份参数，应用从CurrentIdentity取账号、会话和版本后调用原子撤销；客户端请求体或X-User-Id不能改变目标。成功返回200标准ApiResponse（data为null、含traceId），携带no-store/no-cache；旧Access再请求为401，全部退出后可重新凭据登录。
 
 3项真实HTTP注销和6项Redis撤销回归通过，0失败/错误/跳过。覆盖其他会话隔离、全量Access/Refresh失效、重新登录、伪造身份无效、匿名/Refresh拒绝、不支持版本不撤销和无Session Cookie。该节点未包含他人强制下线、改密、账号启停或安全事件持久化；权限管理及审计按后续节点交付。
+
+## 注销组合验收（NODE-D02.1c）
+
+OpenAPI真实HTTP测试已核对两个注销端点均要求Bearer、没有身份请求体、保留标准成功模型及401 challenge。2026-10-24重新运行全工程 `test :stratum-starter:integrationTest --rerun-tasks`，119项单元与243项集成测试通过，0失败/错误/跳过；包括完整认证、注销、文档与ERP回归，D02.1完成。
+
+RBAC账号/角色管理的产品范围仍待用户选择；规范已确定的API/FEAT权限契约及只读存储基础可独立推进。管理员初始授权、账号启停、角色管理端点等依赖该选择的行为保持待定，不以默认方案替用户决定。
