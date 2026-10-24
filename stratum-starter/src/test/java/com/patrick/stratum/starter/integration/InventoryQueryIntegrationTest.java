@@ -39,7 +39,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 真实数据库验证库存读取的维度隔离、精确范围、排序及事务边界。 */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "server.address=127.0.0.1")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
-class InventoryQueryIntegrationTest extends MariaDbIntegrationTest {
+class InventoryQueryIntegrationTest extends AuthenticatedHttpIntegrationTest {
     @LocalServerPort private int port;
     private final JsonMapper json = JsonMapper.builder().build();
     private final QueryGateway gateway;
@@ -241,7 +241,7 @@ class InventoryQueryIntegrationTest extends MariaDbIntegrationTest {
      */
     private JsonNode http(String path, int status) throws Exception {
         var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path)).timeout(Duration.ofSeconds(15))
-                .header("X-Trace-Id", context.traceId()).GET().build();
+                .header("Authorization", "Bearer " + accessToken()).header("X-Trace-Id", context.traceId()).GET().build();
         try (var client = HttpClient.newHttpClient()) {
             var response = client.send(request, HttpResponse.BodyHandlers.ofString());
             assertEquals(status, response.statusCode(), response.body());

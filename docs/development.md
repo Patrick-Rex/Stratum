@@ -439,3 +439,9 @@ HttpSecurityConfiguration显式注册安全代理，执行顺序在trace过滤�
 主数据、库存余额/流水、采购销售摘要/详情/履约历史的HTTP查询均通过CurrentIdentity构造QueryContext，传递服务器验证的账号ID与trace；不再回退匿名。上下文权限暂为空，RBAC与仓库范围过滤仍由D02/D03接入。内部凭据查询在登录前继续使用匿名上下文，且无HTTP暴露。
 
 query模块21项单元测试重新通过，新增2项验证可信账号/trace不可变传递、缺失身份或trace时拒绝，其余19项查询契约/规范/网关回归通过。D01.5d完成，真实已认证ERP全套回归在D01.5e继续。
+
+## 已认证ERP真实HTTP回归（NODE-D01.5e）
+
+主数据、采购销售、库存查询及完整进销存闭环测试通过生产登录端点取得Access，再调用真实HTTP业务端点；幂等回执断言和清理使用真实账号ID。网络测试覆盖Refresh旋转、重放与用途混用拒绝，匿名/畸形Access拒绝，以及权威用户版本变化后的Access/Refresh失效；响应检查trace传播和无Session Cookie。权威版本由测试直接改变，撤销管理HTTP入口仍待D02。
+
+D01.5e1完成23项测试，审查发现独立InventoryQueryIntegrationTest仍包含未迁移的HTTP用例，因此登记e2并补齐。e2重新执行上述测试及库存查询，共33项真实HTTP/MariaDB/Redis集成测试通过，0失败/错误/跳过，父节点D01.5e完成。OpenAPI安全声明仍待D01.5f。
