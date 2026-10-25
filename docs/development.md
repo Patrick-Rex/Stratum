@@ -735,3 +735,9 @@ WarehouseAccessQuery经QueryGateway以固定userId/warehouseId条件返回单个
 AccountWarehouseAccess无框架端口由查询模块适配至WarehouseAccessQuery；CurrentWarehouseAuthorizationApplicationService从当前授权入口确认可信启用账号，再检查目标仓库。失效身份401、范围不允许403，读取故障保持失败；不接收外部操作者，不默认授予范围，不替代API鉴权或资源存在性检查，写事务内仍由QueryGateway拒绝。
 
 12项真实MariaDB/Redis/HTTP夹具组合测试通过，0失败/错误/跳过，包括3项新应用、5项目标访问和4项原实时API授权。带初始化管理员的HTTP夹具补足多账号同时存在场景，发现目标查询嵌套SQL引用未带别名账号列的歧义，现将主体UUID直接参数绑定，防止内层解析扩大访问。修正后验证普通账号默认403、指定/ALL/撤回实时变化、其他管理员不影响当前范围、停用401、事务拒绝、故障顺序与trace传递。生产ERP目标检查仍待D03.4绑定。
+
+## 管理员角色仓库配置查询（NODE-D03.2c3）
+
+RoleWarehouseScopeQuery通过当前启用管理员资格检查后，以单条SQL读取角色固定身份、独立配置版本、scopeType及完整warehouseIds。专用只读视图不含凭据。未知角色为空结果，已存在空配置为一条空集合记录；已存在角色缺失配置、管理员不符合ALL不变量或集合超界均失败关闭。最多读取1025行识别超量，不返回截断集合。
+
+14项真实MariaDB/Redis/HTTP夹具测试通过，0失败/错误/跳过，包括4项新配置详情、5项管理员资格和5项原管理关系回归。覆盖独立版本、ALL/指定/空快照、不可变、角色名称/API版本不影响配置、管理员ALL、1024完整/1025拒绝、匿名/普通/自报权限/已移除或停用管理员拒绝、事务边界与存储故障。角色配置HTTP尚待D03.2d。
