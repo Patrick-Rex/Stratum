@@ -2,9 +2,18 @@
 
 ## 交接报告（2026-10-25）
 
-- completedNode: 无新增开发节点；记录已接受的角色仓库范围规则并细分D03.2。
-- changedFiles: ADR-005、ADR索引、安全认证设计、开发计划、CONTEXT及本交接。
-- validations: 纯文档核对决策、链接及文本格式；本次不重跑业务测试。历史D02.4为130单元及367集成通过，D03.1为9项范围/权限单元通过。
-- unresolved: 仓库过滤及后续消息、任务、网关和观测仍待实现，部署暂缓。
-- nextNode: NODE-D03.2a，规则已确认，无产品阻塞。
-- CONTEXT已更新；本次尚未启动服务，前次独立测试MariaDB/Redis已停止，用户原有服务保留。每节点验收、审查、提交并推送后继续。
+- completedNode: NODE-D03.2a（建立角色仓库配置领域模型与写端口）。
+- changedFiles:
+  - `docs/AI可执行开发计划.md`
+  - `docs/CONTEXT.md`
+  - `docs/development.md`
+  - `docs/entropy/SESSION-HANDOFF.md`
+  - `stratum-domain/src/main/java/com/patrick/stratum/domain/auth/RoleWarehouseScope.java`
+  - `stratum-domain/src/main/java/com/patrick/stratum/domain/auth/RoleWarehouseScopeRepository.java`
+  - `stratum-domain/src/test/java/com/patrick/stratum/domain/auth/RoleWarehouseScopeTest.java`
+
+- validations: 14项领域测试通过，0失败/错误/跳过；默认空范围、管理员固定ALL、不可变及独立版本。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
+- unresolved: 部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
+- nextNode: NODE-D03.2b1。
+- 当前节点验收后审查、提交、推送；完成后继续下一节点，不重复请求授权。
+- CONTEXT已更新。本次未启动服务；独立测试MariaDB/Redis仍处于停止状态，进入真实库验证时启动，用户原有容器保留。
