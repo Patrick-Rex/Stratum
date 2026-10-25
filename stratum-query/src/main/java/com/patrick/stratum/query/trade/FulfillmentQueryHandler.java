@@ -10,6 +10,10 @@ import java.util.List;
 import java.util.UUID;
 import com.easy.query.api.proxy.client.EasyEntityQuery;
 import com.easy.query.core.proxy.sql.Select;
+import com.easy.query.core.exception.EasyQueryException;
+import com.patrick.stratum.common.error.CommonErrorCode;
+import com.patrick.stratum.common.error.StratumException;
+import com.patrick.stratum.query.auth.WarehouseScopePredicate;
 import com.patrick.stratum.common.enums.SortDirection;
 import com.patrick.stratum.domain.trade.TradeOrder;
 import com.patrick.stratum.query.QueryContext;
@@ -38,40 +42,50 @@ public class FulfillmentQueryHandler implements QueryHandler<FulfillmentQuery, F
     /** {@inheritDoc} */
     @Override
     public QueryResult<FulfillmentQuery.Row> handle(FulfillmentQuery query, QueryContext context) {
-        var selection = database.queryable(FulfillmentView.class).where(row -> {
-            row.orderId().eq(query.getOrderId().toString()); row.kind().eq(query.getKind().name());
-        });
-        for (var filter : query.spec().getFilters()) selection.where(row -> {
-            switch (filter.field()) {
-                case ID -> row.id().eq(filter.value().toString());
-                case ORDER_VERSION -> {
-                    if (filter.operator() == QuerySpec.Operator.EQ) row.orderVersion().eq((Long) filter.value());
-                    else { row.orderVersion().ge((Long) filter.value()); row.orderVersion().le((Long) filter.upper()); }
+        String actor = WarehouseScopePredicate.requireActor(context);
+        try {
+            var selection = database.queryable(FulfillmentView.class).asAlias("scope_fulfillment")
+                    .configure(options -> options.setPrintSQL(false))
+                    .innerJoin(TradeOrderView.class, (posting, order) -> {
+                        posting.orderId().eq(order.id()); posting.kind().eq(order.kind());
+                    }).where((posting, order) -> {
+                        posting.orderId().eq(query.getOrderId().toString()); posting.kind().eq(query.getKind().name());
+                        posting.expression().sql(WarehouseScopePredicate.SQL, parameters -> {
+                            parameters.expression(order.warehouseId()); parameters.value(actor);
+                        });
+                    }).select((posting, order) -> posting);
+            for (var filter : query.spec().getFilters()) selection.where(row -> {
+                switch (filter.field()) {
+                    case ID -> row.id().eq(filter.value().toString());
+                    case ORDER_VERSION -> {
+                        if (filter.operator() == QuerySpec.Operator.EQ) row.orderVersion().eq((Long) filter.value());
+                        else { row.orderVersion().ge((Long) filter.value()); row.orderVersion().le((Long) filter.upper()); }
+                    }
+                    case CREATED_AT -> {
+                        var lower = LocalDateTime.ofInstant((Instant) filter.value(), ZoneOffset.UTC);
+                        if (filter.operator() == QuerySpec.Operator.EQ) row.createdAt().eq(lower);
+                        else { row.createdAt().ge(lower); row.createdAt().le(LocalDateTime.ofInstant((Instant) filter.upper(), ZoneOffset.UTC)); }
+                    }
                 }
-                case CREATED_AT -> {
-                    var lower = LocalDateTime.ofInstant((Instant) filter.value(), ZoneOffset.UTC);
-                    if (filter.operator() == QuerySpec.Operator.EQ) row.createdAt().eq(lower);
-                    else { row.createdAt().ge(lower); row.createdAt().le(LocalDateTime.ofInstant((Instant) filter.upper(), ZoneOffset.UTC)); }
+            });
+            for (var sort : query.spec().getSorts()) selection.orderBy(row -> {
+                boolean ascending = sort.direction() == SortDirection.ASC;
+                switch (sort.field()) {
+                    case ID -> row.id().orderBy(ascending); case ORDER_VERSION -> row.orderVersion().orderBy(ascending); case CREATED_AT -> row.createdAt().orderBy(ascending);
                 }
-            }
-        });
-        for (var sort : query.spec().getSorts()) selection.orderBy(row -> {
-            boolean ascending = sort.direction() == SortDirection.ASC;
-            switch (sort.field()) {
-                case ID -> row.id().orderBy(ascending); case ORDER_VERSION -> row.orderVersion().orderBy(ascending); case CREATED_AT -> row.createdAt().orderBy(ascending);
-            }
-        });
-        if (query.spec().getSorts().isEmpty()) selection.orderBy(row -> row.orderVersion().desc());
-        if (query.spec().getSorts().stream().noneMatch(sort -> sort.field() == FulfillmentQuery.Field.ID)) selection.orderBy(row -> row.id().asc());
-        var page = query.spec().getPageRequest();
-        var result = selection.toPageResult(page.getPage(), page.getPageSize());
-        if (result.getData().isEmpty()) return new QueryResult<>(page.getPage(), page.getPageSize(), result.getTotal(), List.of());
-        var ids = result.getData().stream().map(FulfillmentView::getId).toList();
-        var details = readLines(query.getOrderId(), ids);
-        var rows = result.getData().stream().map(row -> new FulfillmentQuery.Row(UUID.fromString(row.getId()),
-                UUID.fromString(row.getOrderId()), TradeOrder.Kind.valueOf(row.getKind()), row.getOrderVersion(),
-                row.getCreatedAt().toInstant(ZoneOffset.UTC), details.getOrDefault(row.getId(), List.of()))).toList();
-        return new QueryResult<>(page.getPage(), page.getPageSize(), result.getTotal(), rows);
+            });
+            if (query.spec().getSorts().isEmpty()) selection.orderBy(row -> row.orderVersion().desc());
+            if (query.spec().getSorts().stream().noneMatch(sort -> sort.field() == FulfillmentQuery.Field.ID)) selection.orderBy(row -> row.id().asc());
+            var page = query.spec().getPageRequest();
+            var result = selection.toPageResult(page.getPage(), page.getPageSize());
+            if (result.getData().isEmpty()) return new QueryResult<>(page.getPage(), page.getPageSize(), result.getTotal(), List.of());
+            var ids = result.getData().stream().map(FulfillmentView::getId).toList();
+            var details = readLines(query.getOrderId(), ids);
+            var rows = result.getData().stream().map(row -> new FulfillmentQuery.Row(UUID.fromString(row.getId()),
+                    UUID.fromString(row.getOrderId()), TradeOrder.Kind.valueOf(row.getKind()), row.getOrderVersion(),
+                    row.getCreatedAt().toInstant(ZoneOffset.UTC), details.getOrDefault(row.getId(), List.of()))).toList();
+            return new QueryResult<>(page.getPage(), page.getPageSize(), result.getTotal(), rows);
+        } catch (EasyQueryException failure) { throw new StratumException(CommonErrorCode.INTERNAL_ERROR); }
     }
 
     /**
@@ -82,7 +96,7 @@ public class FulfillmentQueryHandler implements QueryHandler<FulfillmentQuery, F
      */
     private HashMap<String, List<FulfillmentQuery.Line>> readLines(UUID orderId, List<String> ids) {
         int maximum = ids.size() * TradeOrder.MAX_LINES;
-        var lines = database.queryable(FulfillmentLineView.class)
+        var lines = database.queryable(FulfillmentLineView.class).configure(options -> options.setPrintSQL(false))
                 .leftJoin(OrderLineView.class, (posting, line) -> { posting.orderLineId().eq(line.id()); posting.orderId().eq(line.orderId()); })
                 .where((posting, line) -> { posting.postingId().in(ids); posting.orderId().eq(orderId.toString()); })
                 .orderBy((posting, line) -> { posting.postingId().asc(); line.lineNumber().asc(); })

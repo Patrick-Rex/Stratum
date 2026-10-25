@@ -41,7 +41,7 @@ public class TradeOrderQueryController {
      * @apiNote 示例：GET /api/erp/orders/PURCHASE?status=PARTIAL&sort=createdAt,desc。
      */
     @GetMapping
-    @Operation(summary = "查询采购销售订单摘要", description = "需对应erp.purchase.read或erp.sales.read权限；queryCode=erp.order.list；默认创建时间倒序；ID/单号/金额/时间可排序，多个条件按AND组合，From/To须成对。")
+    @Operation(summary = "查询采购销售订单摘要", description = "需对应erp.purchase.read或erp.sales.read权限；同时要求当前角色仓库范围；queryCode=erp.order.list；默认创建时间倒序；ID/单号/金额/时间可排序，多个条件按AND组合，From/To须成对。")
     @Parameters({
         @Parameter(name = "page", in = ParameterIn.QUERY, schema = @Schema(type = "integer", defaultValue = "1", minimum = "1")),
         @Parameter(name = "pageSize", in = ParameterIn.QUERY, schema = @Schema(type = "integer", defaultValue = "20", minimum = "1", maximum = "200")),
@@ -95,7 +95,7 @@ public class TradeOrderQueryController {
      * @apiNote 示例：GET /api/erp/orders/PURCHASE/{id}/fulfillments?orderVersion=1。
      */
     @GetMapping("/{id}/fulfillments")
-    @Operation(summary = "查询订单分批履约历史", description = "需对应erp.purchase.read或erp.sales.read权限；queryCode=erp.fulfillment.list；默认订单版本倒序，ID/当时版本/时间可排序；缺失或类别不符404，已存在未履约订单返回空分页。From/To成对，每批最多100行。")
+    @Operation(summary = "查询订单分批履约历史", description = "需对应erp.purchase.read或erp.sales.read权限；同时要求所属订单仓库范围；queryCode=erp.fulfillment.list；默认订单版本倒序，ID/当时版本/时间可排序；缺失、无仓库范围或类别不符404，已存在未履约订单返回空分页。From/To成对，每批最多100行。")
     @Parameters({
         @Parameter(name = "page", in = ParameterIn.QUERY, schema = @Schema(type = "integer", defaultValue = "1", minimum = "1")),
         @Parameter(name = "pageSize", in = ParameterIn.QUERY, schema = @Schema(type = "integer", defaultValue = "20", minimum = "1", maximum = "200")),
