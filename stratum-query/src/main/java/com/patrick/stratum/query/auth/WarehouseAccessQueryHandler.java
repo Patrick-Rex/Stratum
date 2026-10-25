@@ -35,7 +35,7 @@ public class WarehouseAccessQueryHandler implements QueryHandler<WarehouseAccess
             long count = database.queryable(AccountManagementView.class).where(user -> {
                 user.id().eq(userId.toString());
                 user.expression().sql(WarehouseScopePredicate.SQL, parameters -> {
-                    parameters.value(warehouseId.toString()); parameters.expression(user.id());
+                    parameters.value(warehouseId.toString()); parameters.value(userId.toString());
                 });
             }).configure(options -> options.setPrintSQL(false)).count();
             return new QueryResult<>(1, 1, 1, List.of(count > 0));
