@@ -4,6 +4,8 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 import com.patrick.stratum.application.auth.CurrentIdentity;
+import com.patrick.stratum.application.auth.CurrentAuthorizationApplicationService;
+import com.patrick.stratum.domain.auth.PermissionCatalog;
 import com.patrick.stratum.query.QueryGateway;
 import com.patrick.stratum.query.dto.QueryResult;
 import com.patrick.stratum.query.web.QueryHttpParameters;
@@ -24,6 +26,7 @@ import org.springframework.web.bind.annotation.*;
 public class InventoryQueryController {
     private final QueryGateway queries;
     private final CurrentIdentity identities;
+    private final CurrentAuthorizationApplicationService authorization;
 
     /**
      * 按物料、仓库及精确数量条件读取余额。
@@ -32,7 +35,7 @@ public class InventoryQueryController {
      * @apiNote 示例：GET /api/erp/stock-balances?materialId={uuid}&quantityFrom=0&quantityTo=10。
      */
     @GetMapping("/stock-balances")
-    @Operation(summary = "查询库存余额", description = "queryCode=erp.stock.balance.list；ID/物料/仓库/数量可排序，默认ID；条件按AND组合。")
+    @Operation(summary = "查询库存余额", description = "需erp.inventory.read权限；queryCode=erp.stock.balance.list；ID/物料/仓库/数量可排序，默认ID；条件按AND组合。")
     @Parameters({
         @Parameter(name = "page", in = ParameterIn.QUERY, schema = @Schema(type = "integer", defaultValue = "1", minimum = "1")),
         @Parameter(name = "pageSize", in = ParameterIn.QUERY, schema = @Schema(type = "integer", defaultValue = "20", minimum = "1", maximum = "200")),
@@ -45,6 +48,7 @@ public class InventoryQueryController {
         @Parameter(name = "warehouseId", in = ParameterIn.QUERY, schema = @Schema(type = "string", format = "uuid"))
     })
     public QueryResult<StockBalanceQuery.Row> balances(@Parameter(hidden = true) @RequestParam MultiValueMap<String, String> parameters) {
+        authorization.requireApi(PermissionCatalog.INVENTORY_READ);
         var query = QueryHttpParameters.input(() -> {
             var parsed = new QueryHttpParameters(parameters).exact("id", UUID.class).exact("materialId", UUID.class)
                     .exact("warehouseId", UUID.class).exact("quantity", BigDecimal.class).range("quantity", BigDecimal.class).finish();
@@ -60,7 +64,7 @@ public class InventoryQueryController {
      * @apiNote 示例：GET /api/erp/stock-movements?orderId={uuid}&direction=RECEIPT。
      */
     @GetMapping("/stock-movements")
-    @Operation(summary = "查询库存流水", description = "queryCode=erp.stock.movement.list；ID/数量/发生时间可排序，默认时间倒序；时间仅支持UTC可表示的微秒精度，范围1000至9999年。")
+    @Operation(summary = "查询库存流水", description = "需erp.inventory.read权限；queryCode=erp.stock.movement.list；ID/数量/发生时间可排序，默认时间倒序；时间仅支持UTC可表示的微秒精度，范围1000至9999年。")
     @Parameters({
         @Parameter(name = "page", in = ParameterIn.QUERY, schema = @Schema(type = "integer", defaultValue = "1", minimum = "1")),
         @Parameter(name = "pageSize", in = ParameterIn.QUERY, schema = @Schema(type = "integer", defaultValue = "20", minimum = "1", maximum = "200")),
@@ -79,6 +83,7 @@ public class InventoryQueryController {
         @Parameter(name = "occurredAtTo", in = ParameterIn.QUERY, description = "闭区间上界，须同时提供occurredAtFrom", schema = @Schema(type = "string", format = "date-time"))
     })
     public QueryResult<StockMovementQuery.Row> movements(@Parameter(hidden = true) @RequestParam MultiValueMap<String, String> parameters) {
+        authorization.requireApi(PermissionCatalog.INVENTORY_READ);
         var query = QueryHttpParameters.input(() -> {
             var parsed = new QueryHttpParameters(parameters).exact("id", UUID.class).exact("balanceId", UUID.class)
                     .exact("orderId", UUID.class).exact("postingId", UUID.class).exact("orderLineId", UUID.class)
