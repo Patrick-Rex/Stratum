@@ -1,5 +1,11 @@
 package com.patrick.stratum.query.auth;
 
+import java.util.UUID;
+
+import com.patrick.stratum.common.error.CommonErrorCode;
+import com.patrick.stratum.common.error.StratumException;
+import com.patrick.stratum.query.QueryContext;
+
 /** 数据库范围谓词：以当前启用账号的角色关系计算ALL或指定仓库并集，不物化或截断集合。 */
 public final class WarehouseScopePredicate {
     /**
@@ -18,6 +24,21 @@ public final class WarehouseScopePredicate {
                         OR (scope_config.scope_type = 'CUSTOM' AND scope_warehouse.warehouse_id IS NOT NULL))
             )
             """;
+
+    /**
+     * 取得服务器查询上下文的规范UUID主体，忽略自报权限字符串。
+     * @param context 服务器构造的查询上下文
+     * @return 规范UUID文本
+     * @throws StratumException 匿名401或非规范主体403
+     * @apiNote 示例：{@code String actor = WarehouseScopePredicate.requireActor(context)}。
+     */
+    public static String requireActor(QueryContext context) {
+        String actor = context.operatorId().orElseThrow(() -> new StratumException(CommonErrorCode.UNAUTHORIZED));
+        try {
+            if (UUID.fromString(actor).toString().equals(actor)) return actor;
+        } catch (IllegalArgumentException invalid) { /* 非UUID主体统一拒绝，不回显输入。 */ }
+        throw new StratumException(CommonErrorCode.FORBIDDEN);
+    }
 
     /** 仅提供固定参数化谓词，不创建实例。 */
     private WarehouseScopePredicate() { }

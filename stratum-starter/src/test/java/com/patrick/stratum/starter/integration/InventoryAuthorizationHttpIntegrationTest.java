@@ -100,7 +100,7 @@ class InventoryAuthorizationHttpIntegrationTest extends AdministrationHttpIntegr
     }
 
     /**
-     * 准备真实一单位库存及关系来源，并给普通账号绑定空角色。
+     * 准备真实一单位库存及关系来源，并给普通账号绑定空API权限、显式ALL仓库范围角色。
      * @throws Exception HTTP失败
      */
     private void prepare() throws Exception {
@@ -118,6 +118,8 @@ class InventoryAuthorizationHttpIntegrationTest extends AdministrationHttpIntegr
         String username = "stock-rbac-" + UUID.randomUUID(), password = UUID.randomUUID().toString();
         UUID user = createAccount(username, password); role = createRole("stock-rbac-" + UUID.randomUUID(), "库存权限");
         data(request("PUT", "/api/auth/accounts/" + user + "/roles", accessToken(), Map.of("version", 0, "roleIds", Set.of(role))), 200);
+        data(request("PUT", "/api/auth/roles/" + role + "/warehouse-scope", accessToken(),
+                Map.of("version", 0, "scopeType", "ALL", "warehouseIds", Set.of())), 200);
         token = login(username, password).accessToken();
     }
 
