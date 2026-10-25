@@ -45,7 +45,7 @@
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
 
-Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；RabbitMQ、Nacos、Quartz、ShedLock、认证、网关路由和观测组件仍为后续目标设计。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
+Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ、Nacos、Quartz、ShedLock、网关路由和观测组件仍为后续目标设计。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
 
 以下目标基线沿用原项目入口的既有约定，尚未接入时不作为当前依赖版本：
 
@@ -152,7 +152,7 @@ Application 的 CacheUpdateCoordinator 必须在已有工作单元中调用。�
 
 ## 查询条件基架
 
-QuerySpec.create 接收服务端字段白名单，将外部字段名转换成枚举，再由具体 QueryHandler 映射至 ORM 列。分页复用 BasePageRequest（默认 20，最大 200）；最多 3 个排序、20 个条件，文本参数最多 512 字符。支持精确、包含及同类型闭区间，未知字段、非法操作、类型不符或倒置区间均被拒绝。集合与参数类型保持不可变；包含查询的字面通配符转义和 SQL 参数绑定已由主数据真实库测试验证，Query / QueryHandler 已定义类型契约，QueryResult 复用 common 的 page、pageSize、total、items 并拒绝超量或不一致的结果；QueryContext 显式携带不可变身份与权限快照，必须由服务器构造，不能从 HTTP 请求体采信。QueryGateway 已按请求精确类型统一路由，启动时拒绝重复类型与 queryCode；执行时核对结果分页、显式传递并恢复 traceId，拒绝隐式加入活动事务。`stratum.query.duration` 按注册的 queryCode 与 success/error 记录耗时；`observability.query.slow-threshold-ms` 默认 300，慢查询及失败输出警告。当前已提供主数据HTTP查询，库存HTTP查询也已接通，订单HTTP查询已于C03.6f接通，身份认证与数据权限仍待 Phase D。
+QuerySpec.create 接收服务端字段白名单，将外部字段名转换成枚举，再由具体 QueryHandler 映射至 ORM 列。分页复用 BasePageRequest（默认 20，最大 200）；最多 3 个排序、20 个条件，文本参数最多 512 字符。支持精确、包含及同类型闭区间，未知字段、非法操作、类型不符或倒置区间均被拒绝。集合与参数类型保持不可变；包含查询的字面通配符转义和 SQL 参数绑定已由主数据真实库测试验证，Query / QueryHandler 已定义类型契约，QueryResult 复用 common 的 page、pageSize、total、items 并拒绝超量或不一致的结果；QueryContext 显式携带不可变身份与权限快照，必须由服务器构造，不能从 HTTP 请求体采信。QueryGateway 已按请求精确类型统一路由，启动时拒绝重复类型与 queryCode；执行时核对结果分页、显式传递并恢复 traceId，拒绝隐式加入活动事务。`stratum.query.duration` 按注册的 queryCode 与 success/error 记录耗时；`observability.query.slow-threshold-ms` 默认 300，慢查询及失败输出警告。当前已提供主数据HTTP查询，库存HTTP查询也已接通，订单HTTP查询已于C03.6f接通，身份认证已接入，业务RBAC与仓库数据权限仍待Phase D后续节点。
 
 ## 实现与验证
 
@@ -605,3 +605,9 @@ RoleManagementQuery通过既有RoleView提供ID、code、name、version分页及
 AccountRolesQuery和RolePermissionsQuery分别返回目标版本及完整角色ID/精确权限集合；先检查当前启用管理员，再以单条SQL读取目标和关系，避免混合不同查询时刻的版本。账号最多64角色、角色最多1024权限，多读一项识别超界并拒绝，不能返回截断集合。未知目标返回空结果，已有目标的空关系返回一条空集合快照；集合防御性复制，不加载凭据。
 
 14项真实库测试通过，0失败/错误/跳过，包括5项关系详情、4项角色查询与5项账号查询回归。验证同事务版本/关系变化、空集合与未知目标区分、历史快照不可变、两类精确上界及超界失败、匿名/普通账号拒绝、事务边界及ORM故障脱敏。目录查询和管理读侧整体验收继续由d6e完成。
+
+## 权限目录与管理读侧组合验收（NODE-D02.2d6e）
+
+PermissionCatalogQuery经QueryGateway提供后端已登记的可授予权限，code/type/name来自与角色配置相同的PermissionCatalog，避免数据库残留未知项成为可授予选项；它表示目录，不代表当前账号授权。支持精确API/FEAT、编码/名称字面过滤与有界稳定分页，每次仍查询当前管理员资格，不能因目录为静态注册项而绕过授权。
+
+2026-10-25重新执行全工程 `test :stratum-starter:integrationTest --rerun-tasks`，33任务全部实际执行；130项单元和334项真实MariaDB/Redis/HTTP集成测试通过，0失败/错误/跳过。新增3项目录测试验证分页完整、类型/名称与领域目录和初始化管理员授权一致、最大页码安全、字面过滤及授权/事务边界；包含全部管理应用、查询、认证和ERP回归。D02.2d6完成，管理HTTP按d7a至d7e接续，业务RBAC仍待D02.3。
