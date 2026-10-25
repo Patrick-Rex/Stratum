@@ -663,3 +663,9 @@ D02.2d和D02.2完成；本节点完成依据为上述整体行为回归，不将
 CurrentAuthorizationApplicationService仅从CurrentIdentity取得已验证账号，每次通过AccountPermissions/QueryGateway读取当前状态和有界不可变权限。requireApi只接受服务端PermissionCatalog的API条目，精确检查类型与编码；无API授权为403，身份缺失、账号停用/不存在或查询主体不一致为401。没有JWT权限声明、权限缓存或管理员绕过；查询失败关闭，写事务内读取继续由QueryGateway拒绝。
 
 10项真实数据库/Redis/HTTP夹具组合测试通过，0失败/错误/跳过，包括4项入口测试与6项权限查询回归。验证同一身份授权/撤回即时可见、普通账号无权限、FEAT隔离、不可变快照、停用/未知/匿名账号、事务边界、错误主体、读取故障与trace传递。当前仅提供应用入口，/auth/me及ERP接口绑定按后续节点实施。
+
+## 本人功能权限HTTP（NODE-D02.3b）
+
+API版本1的 `GET /auth/me` 返回当前账号userId和按编码排序的featurePermissions，普通账号可得到空集合。功能编码仅用于展示，最多1024项且不包含API权限、角色、凭据、会话或内部版本；身份来自已验证Access，自报用户参数不参与判定。每次复用实时权限入口，返回Cache-Control: no-store与Pragma: no-cache，OpenAPI描述相同模型及Bearer要求。
+
+13项真实数据库/Redis/HTTP测试通过，0失败/错误/跳过，包括3项本人端点、4项实时授权入口与6项文档回归。验证管理员全目录功能、普通账号空集合、同一Access看到功能增删、API/FEAT隔离、账号角色变更后的旧令牌撤销、伪造身份无效、匿名/Refresh/停用/注销401、重启用不复活旧令牌及版本错误。ERP业务API仍按下一节点绑定权限。
