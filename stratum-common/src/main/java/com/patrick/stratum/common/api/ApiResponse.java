@@ -4,6 +4,7 @@ import java.util.List;
 
 import com.patrick.stratum.common.error.ErrorCode;
 import com.patrick.stratum.common.trace.TraceIdContext;
+import com.patrick.stratum.common.trace.CorrelationIdPolicy;
 
 /**
  * 统一 API 响应对象，负责承载成功与失败场景下的标准化响应结构。
@@ -84,6 +85,24 @@ public final class ApiResponse<T> {
                 details == null ? List.of() : details,
                 TraceIdContext.getRequiredTraceId()
         );
+    }
+
+    /**
+     * 使用显式安全关联标识构建失败外壳，适用于响应式及非线程绑定调用，不读写ThreadLocal。
+     * @param errorCode 统一错误码，不可为空
+     * @param message 覆盖文案，空白时使用错误码默认文案
+     * @param details 可空错误明细，构造时防御性复制
+     * @param traceId 已确定的安全关联标识，1至64个ASCII安全字符
+     * @param <T> 统一响应的数据类型，失败时数据始终为空
+     * @return code/message/data/details/traceId统一失败响应
+     * @throws IllegalArgumentException 错误码或关联标识无效
+     * @apiNote 示例：{@code ApiResponse.failure(CommonErrorCode.INTERNAL_ERROR, "上游暂不可用", List.of(), traceId)}。
+     */
+    public static <T> ApiResponse<T> failure(ErrorCode errorCode, String message, List<String> details, String traceId) {
+        if (errorCode == null) throw new IllegalArgumentException("errorCode cannot be null");
+        if (!CorrelationIdPolicy.isValid(traceId)) throw new IllegalArgumentException("traceId格式无效");
+        String resolvedMessage = message == null || message.isBlank() ? errorCode.getDefaultMessage() : message;
+        return new ApiResponse<>(errorCode.getCode(), resolvedMessage, null, details, traceId);
     }
 
     /**

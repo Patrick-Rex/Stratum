@@ -874,3 +874,9 @@ GatewayCorrelationFilter复用Common关联策略，在所有请求中补齐X-Tra
 W3C traceparent按[Trace Context](https://www.w3.org/TR/trace-context/)校验格式、非零标识及版本长度，代理原样透传可识别前缀和未来版本扩展，总长度上限1024；非法/重复/缺失时移除traceparent及孤立tracestate，有效时不改写tracestate。这里只做代理透传与关联，未生成跨度或宣称OTel已接入。Bearer、X-API-Version与Idempotency-Key继续原样转发。
 
 Gateway build和12项测试通过，0失败/错误/跳过，包括4项新增协议、原路由/启动/运行时回归。覆盖有效及未来版本W3C、业务协议头、缺失/超长/重复标识、非法W3C与孤立状态清理、错误上游关联响应覆盖、16个并发请求隔离和Reactor上下文/线程状态边界。真实本机HTTP夹具已提取共用，服务、上下文、客户端和执行器全部关闭；c2继续实现上游超时及安全统一错误。
+
+## 显式关联失败工厂（NODE-D04.1c2a）
+
+ApiResponse增加failure(errorCode,message,details,traceId)重载，显式校验安全关联标识并构造统一五字段失败外壳，不读取或建立线程上下文。失败data始终为空，details继续由原构造器防御性复制；空白文案回退默认。原成功及两类失败工厂保持原有线程上下文行为，不改变已上线响应契约。
+
+19项单元测试通过，0失败/错误/跳过，包括Common9项（新增3项工厂契约）及Interface10项回归。验证错误码/文案/数据/明细/trace语义、不可变集合、缺省明细与文案、非法trace及空错误码拒绝、无线程状态副作用和原工厂兼容。c2已细分为显式工厂与代理超时/错误；Gateway错误处理继续由c2b接入。
