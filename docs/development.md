@@ -651,3 +651,9 @@ API版本1提供 `GET /api/auth/roles`、`GET /api/auth/roles/{id}`、`GET /api/
 管理OpenAPI的12个操作均声明Bearer、版本头与标准成功/错误外壳，包含PUT；成功响应补齐Cache-Control: no-store和Pragma: no-cache，创建201另声明Location相对资源地址，401声明WWW-Authenticate。版本1、1.0和1.0.0等价，生成文档可使用规范化的1.0.0表示默认值。
 
 30项真实MariaDB/Redis/HTTP测试通过，0失败/错误/跳过：覆盖管理写入/读取、模型和协议文档、原文档、真实网络登录、注销及ERP主体隔离。实际HTTP验证401/403、版本/输入错误、创建位置、trace、无Cookie、缓存保护、旧令牌撤销与实时管理资格。D02.2d7e及D02.2d7完成；下一d8执行管理能力整体回归，业务方法RBAC仍待D02.3。
+
+## 管理能力整体回归（NODE-D02.2d8）
+
+2026-10-25执行全工程 `test :stratum-starter:integrationTest --rerun-tasks`，33任务全部实际执行；130项单元与352项真实MariaDB/Redis/HTTP集成测试通过，0失败/错误/跳过。验证管理员初始化、账号/角色管理及其HTTP和查询、并发保护、跨存储故障、认证撤销、OpenAPI及原ERP闭环。
+
+D02.2d和D02.2完成；本节点完成依据为上述整体行为回归，不将文档维护计为实现。D02.3已细分为实时权限入口、本人功能权限、主数据、订单和库存方法授权；当前普通ERP接口尚未实施RBAC，仓库数据权限和后续消息/任务/观测仍待后续节点。
