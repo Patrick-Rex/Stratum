@@ -6,8 +6,12 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.UUID;
 import com.easy.query.api.proxy.client.EasyEntityQuery;
+import com.easy.query.core.exception.EasyQueryException;
 import com.easy.query.core.proxy.columns.types.SQLStringTypeColumn;
 import com.patrick.stratum.common.enums.SortDirection;
+import com.patrick.stratum.common.error.CommonErrorCode;
+import com.patrick.stratum.common.error.StratumException;
+import com.patrick.stratum.query.auth.WarehouseScopePredicate;
 import com.patrick.stratum.domain.inventory.StockMovement;
 import com.patrick.stratum.query.QueryContext;
 import com.patrick.stratum.query.QueryHandler;
@@ -34,26 +38,34 @@ public class StockMovementQueryHandler implements QueryHandler<StockMovementQuer
     /** {@inheritDoc} */
     @Override
     public QueryResult<StockMovementQuery.Row> handle(StockMovementQuery query, QueryContext context) {
-        var selection = database.queryable(StockMovementView.class);
-        for (var filter : query.spec().getFilters()) selection.where(row -> filter(row, filter));
-        for (var sort : query.spec().getSorts()) selection.orderBy(row -> {
-            boolean ascending = sort.direction() == SortDirection.ASC;
-            switch (sort.field()) {
-                case ID -> row.id().orderBy(ascending);
-                case QUANTITY -> row.quantity().orderBy(ascending);
-                case OCCURRED_AT -> row.occurredAt().orderBy(ascending);
-                default -> throw new IllegalArgumentException("流水排序字段不允许");
-            }
-        });
-        if (query.spec().getSorts().isEmpty()) selection.orderBy(row -> row.occurredAt().desc());
-        if (query.spec().getSorts().stream().noneMatch(sort -> sort.field() == StockMovementQuery.Field.ID)) selection.orderBy(row -> row.id().asc());
-        var page = query.spec().getPageRequest();
-        var result = selection.toPageResult(page.getPage(), page.getPageSize());
-        var rows = result.getData().stream().map(row -> new StockMovementQuery.Row(UUID.fromString(row.getId()),
-                UUID.fromString(row.getBalanceId()), UUID.fromString(row.getOrderId()), UUID.fromString(row.getPostingId()),
-                UUID.fromString(row.getOrderLineId()), StockMovement.Direction.valueOf(row.getDirection()), row.getQuantity(),
-                row.getBalanceAfter(), row.getBalanceVersion(), row.getOccurredAt().toInstant(ZoneOffset.UTC))).toList();
-        return new QueryResult<>(page.getPage(), page.getPageSize(), result.getTotal(), rows);
+        String actor = WarehouseScopePredicate.requireActor(context);
+        try {
+            var selection = database.queryable(StockMovementView.class).asAlias("scope_movement")
+                    .configure(options -> options.setPrintSQL(false))
+                    .innerJoin(StockBalanceView.class, (movement, balance) -> movement.balanceId().eq(balance.id()))
+                    .where((movement, balance) -> movement.expression().sql(WarehouseScopePredicate.SQL, parameters -> {
+                        parameters.expression(balance.warehouseId()); parameters.value(actor);
+                    })).select((movement, balance) -> movement);
+            for (var filter : query.spec().getFilters()) selection.where(row -> filter(row, filter));
+            for (var sort : query.spec().getSorts()) selection.orderBy(row -> {
+                boolean ascending = sort.direction() == SortDirection.ASC;
+                switch (sort.field()) {
+                    case ID -> row.id().orderBy(ascending);
+                    case QUANTITY -> row.quantity().orderBy(ascending);
+                    case OCCURRED_AT -> row.occurredAt().orderBy(ascending);
+                    default -> throw new IllegalArgumentException("流水排序字段不允许");
+                }
+            });
+            if (query.spec().getSorts().isEmpty()) selection.orderBy(row -> row.occurredAt().desc());
+            if (query.spec().getSorts().stream().noneMatch(sort -> sort.field() == StockMovementQuery.Field.ID)) selection.orderBy(row -> row.id().asc());
+            var page = query.spec().getPageRequest();
+            var result = selection.toPageResult(page.getPage(), page.getPageSize());
+            var rows = result.getData().stream().map(row -> new StockMovementQuery.Row(UUID.fromString(row.getId()),
+                    UUID.fromString(row.getBalanceId()), UUID.fromString(row.getOrderId()), UUID.fromString(row.getPostingId()),
+                    UUID.fromString(row.getOrderLineId()), StockMovement.Direction.valueOf(row.getDirection()), row.getQuantity(),
+                    row.getBalanceAfter(), row.getBalanceVersion(), row.getOccurredAt().toInstant(ZoneOffset.UTC))).toList();
+            return new QueryResult<>(page.getPage(), page.getPageSize(), result.getTotal(), rows);
+        } catch (EasyQueryException failure) { throw new StratumException(CommonErrorCode.INTERNAL_ERROR); }
     }
 
     /**
