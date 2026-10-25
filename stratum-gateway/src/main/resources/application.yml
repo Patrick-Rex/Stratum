@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: stratum-gateway
+  main:
+    web-application-type: reactive
+  lifecycle:
+    timeout-per-shutdown-phase: 10s
+
+server:
+  address: ${STRATUM_GATEWAY_ADDRESS:127.0.0.1}
+  port: ${STRATUM_GATEWAY_PORT:8081}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
