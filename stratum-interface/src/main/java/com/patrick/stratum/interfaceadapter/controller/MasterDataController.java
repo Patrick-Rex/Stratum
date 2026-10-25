@@ -3,6 +3,8 @@ package com.patrick.stratum.interfaceadapter.controller;
 import java.net.URI;
 import java.util.UUID;
 import com.patrick.stratum.application.auth.CurrentIdentity;
+import com.patrick.stratum.application.auth.CurrentAuthorizationApplicationService;
+import com.patrick.stratum.domain.masterdata.MasterDataPermissions;
 import com.patrick.stratum.application.command.CommandGateway;
 import com.patrick.stratum.application.masterdata.CreateMasterDataCommand;
 import com.patrick.stratum.application.masterdata.DeleteMasterDataCommand;
@@ -30,6 +32,7 @@ public class MasterDataController {
     private static final String IDEMPOTENCY_PATTERN = "[A-Za-z0-9._:-]{1,128}";
     private final CommandGateway commands;
     private final CurrentIdentity identities;
+    private final CurrentAuthorizationApplicationService authorization;
 
     /**
      * 创建输入，不开放类别和主体字段。
@@ -62,11 +65,12 @@ public class MasterDataController {
      * @apiNote 示例：POST /api/erp/masters/MATERIAL，携带Idempotency-Key与创建JSON。
      */
     @PostMapping
-    @Operation(summary = "创建主数据", description = "物料须提供baseUnit，其他类别不提供；主体来自服务器验证的Access身份。")
+    @Operation(summary = "创建主数据", description = "需对应类别的erp.{material/customer/supplier/warehouse}.write权限；物料须提供baseUnit，其他类别不提供；主体来自服务器验证的Access身份。")
     @ApiResponse(responseCode = "201", description = "创建或重放成功，Location指向资源")
     public ResponseEntity<MasterDataResult> create(@PathVariable("kind") MasterData.Kind kind,
             @RequestHeader("Idempotency-Key") @Pattern(regexp = IDEMPOTENCY_PATTERN) String key,
             @Valid @RequestBody CreateRequest request) {
+        authorization.requireApi(MasterDataPermissions.write(kind));
         var result = commands.execute(CreateMasterDataCommand.builder().subjectId(identities.require().getName()).idempotencyKey(key)
                 .kind(kind).code(request.code()).name(request.name()).baseUnit(request.baseUnit()).build()).data();
         return ResponseEntity.created(URI.create("/api/erp/masters/" + kind + "/" + result.getId())).body(result);
@@ -82,10 +86,11 @@ public class MasterDataController {
      * @apiNote 示例：PATCH /api/erp/masters/MATERIAL/{id}，请求包含name和version。
      */
     @PatchMapping("/{id}")
-    @Operation(summary = "修改主数据名称", description = "编码、类别及基本单位固定；版本冲突返回409。")
+    @Operation(summary = "修改主数据名称", description = "需对应类别的erp.{material/customer/supplier/warehouse}.write权限；编码、类别及基本单位固定；版本冲突返回409。")
     public MasterDataResult rename(@PathVariable("kind") MasterData.Kind kind, @PathVariable("id") UUID id,
             @RequestHeader("Idempotency-Key") @Pattern(regexp = IDEMPOTENCY_PATTERN) String key,
             @Valid @RequestBody RenameRequest request) {
+        authorization.requireApi(MasterDataPermissions.write(kind));
         return commands.execute(RenameMasterDataCommand.builder().subjectId(identities.require().getName()).idempotencyKey(key)
                 .kind(kind).id(id.toString()).version(request.version()).name(request.name()).build()).data();
     }
@@ -100,11 +105,12 @@ public class MasterDataController {
      * @apiNote 示例：DELETE /api/erp/masters/MATERIAL/{id}?version=1。
      */
     @DeleteMapping("/{id}")
-    @Operation(summary = "删除未引用主数据", description = "须传观察版本，存在业务引用或版本过期返回409。")
+    @Operation(summary = "删除未引用主数据", description = "需对应类别的erp.{material/customer/supplier/warehouse}.write权限；须传观察版本，存在业务引用或版本过期返回409。")
     @ApiResponse(responseCode = "204", description = "删除或重放成功，无响应体")
     public ResponseEntity<Void> delete(@PathVariable("kind") MasterData.Kind kind, @PathVariable("id") UUID id,
             @RequestHeader("Idempotency-Key") @Pattern(regexp = IDEMPOTENCY_PATTERN) String key,
             @RequestParam("version") @PositiveOrZero long version) {
+        authorization.requireApi(MasterDataPermissions.write(kind));
         commands.execute(DeleteMasterDataCommand.builder().subjectId(identities.require().getName()).idempotencyKey(key)
                 .kind(kind).id(id.toString()).version(version).build());
         return ResponseEntity.noContent().build();

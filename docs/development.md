@@ -669,3 +669,9 @@ CurrentAuthorizationApplicationService仅从CurrentIdentity取得已验证账号
 API版本1的 `GET /auth/me` 返回当前账号userId和按编码排序的featurePermissions，普通账号可得到空集合。功能编码仅用于展示，最多1024项且不包含API权限、角色、凭据、会话或内部版本；身份来自已验证Access，自报用户参数不参与判定。每次复用实时权限入口，返回Cache-Control: no-store与Pragma: no-cache，OpenAPI描述相同模型及Bearer要求。
 
 13项真实数据库/Redis/HTTP测试通过，0失败/错误/跳过，包括3项本人端点、4项实时授权入口与6项文档回归。验证管理员全目录功能、普通账号空集合、同一Access看到功能增删、API/FEAT隔离、账号角色变更后的旧令牌撤销、伪造身份无效、匿名/Refresh/停用/注销401、重启用不复活旧令牌及版本错误。ERP业务API仍按下一节点绑定权限。
+
+## 主数据API读写鉴权（NODE-D02.3c）
+
+四类主数据列表/详情要求各自的erp.{material/customer/supplier/warehouse}.read，创建/改名/删除要求各自.write，读写权限互不隐含。类别映射由无框架MasterDataPermissions提供，HTTP方法在QueryGateway、CommandGateway及幂等回执读取前调用实时权限入口；FEAT和自报主体不能放行。普通账号默认403，匿名401；初始化管理员通过真实角色权限保持既有能力。
+
+15项真实数据库/Redis/HTTP测试通过，0失败/错误/跳过，包含3项完整主数据权限矩阵、7项原主数据HTTP、1项双账号幂等身份隔离及4项管理/ERP文档。新增覆盖四类分别授权、读写隔离、同Access撤权、无权详情及跨类别写拒绝、创建与删除旧回执拒绝、拒绝无主数据/Outbox/回执副作用。原双账号测试为第二账号显式配置仅客户维护权限并清理自身关系；订单和库存API仍待后续绑定。

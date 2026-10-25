@@ -42,6 +42,7 @@ class AuthenticatedErpIdentityHttpIntegrationTest extends AuthenticatedHttpInteg
     private final String trace = UUID.randomUUID().toString();
     private final String key = UUID.randomUUID().toString();
     private String secondAccount;
+    private final String secondRole = UUID.randomUUID().toString();
 
     /**
      * 注入独立断言、账号夹具与清理工具。
@@ -70,7 +71,12 @@ class AuthenticatedErpIdentityHttpIntegrationTest extends AuthenticatedHttpInteg
             cache.invalidate(cacheKey, 100, MasterDataApplicationService.CACHE_POLICY);
             redis.delete(List.of(cacheKey, "null:" + cacheKey.substring(4), "version:" + cacheKey.substring(4)));
         }
-        if (secondAccount != null) { jdbc.update("DELETE FROM auth_user WHERE id = ?", secondAccount); }
+        if (secondAccount != null) {
+            jdbc.update("DELETE FROM auth_user_role WHERE user_id = ?", secondAccount);
+            jdbc.update("DELETE FROM auth_user WHERE id = ?", secondAccount);
+        }
+        jdbc.update("DELETE FROM auth_role_permission WHERE role_id = ?", secondRole);
+        jdbc.update("DELETE FROM auth_role WHERE id = ?", secondRole);
     }
 
     /**
@@ -83,7 +89,13 @@ class AuthenticatedErpIdentityHttpIntegrationTest extends AuthenticatedHttpInteg
         char[] raw = secret.toCharArray();
         try {
             var account = LocalAccount.create(secondUsername, passwords.hash(raw), false); secondAccount = account.getId();
-            unitOfWork.execute(() -> { accounts.insert(account); return null; });
+            unitOfWork.execute(() -> {
+                accounts.insert(account);
+                jdbc.update("INSERT INTO auth_role(id,code,name,version) VALUES (?,?,?,0)", secondRole, "identity-" + secondRole, "客户维护测试");
+                jdbc.update("INSERT INTO auth_role_permission(role_id,permission_id) SELECT ?,id FROM auth_permission WHERE code=? AND type='API'", secondRole, "erp.customer.write");
+                jdbc.update("INSERT INTO auth_user_role(user_id,role_id) VALUES (?,?)", secondAccount, secondRole);
+                return null;
+            });
         } finally { Arrays.fill(raw, '\0'); }
         var other = login(secondUsername, secret);
         var firstPayload = Map.of("code", UUID.randomUUID().toString(), "name", "主体甲", "subjectId", other.subjectId());
