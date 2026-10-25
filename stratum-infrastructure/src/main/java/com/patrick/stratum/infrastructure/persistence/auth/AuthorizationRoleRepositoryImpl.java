@@ -20,6 +20,7 @@ import com.patrick.stratum.domain.auth.AuthorizationRole;
 import com.patrick.stratum.domain.auth.AuthorizationRoleRepository;
 import com.patrick.stratum.domain.auth.Permission;
 import com.patrick.stratum.domain.auth.PermissionCatalog;
+import com.patrick.stratum.domain.auth.RoleWarehouseScope;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -58,6 +59,10 @@ public class AuthorizationRoleRepositoryImpl implements AuthorizationRoleReposit
             if (role.getVersion() == null) {
                 row.setVersion(0L);
                 requireOne(database.insertable(row).configure(options -> options.setPrintSQL(false)).executeRows());
+                var initial = RoleWarehouseScope.initial(role.getId(), role.getCode());
+                var scope = new RoleWarehouseScopeRecord(); scope.setRoleId(role.getId());
+                scope.setScopeType(initial.getScope().type().name()); scope.setVersion(initial.getVersion());
+                requireOne(database.insertable(scope).configure(options -> options.setPrintSQL(false)).executeRows());
             } else {
                 row.setVersion(role.getVersion());
                 requireOne(database.updatable(row).configure(options -> options.setPrintSQL(false)).executeRows());
