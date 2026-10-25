@@ -813,3 +813,9 @@ FulfillmentQueryHandler先关联真实订单及类别，从明确外层订单列
 TradeOrderController.create在对应创建API鉴权后、命令构造和CommandGateway前调用CurrentWarehouseAuthorizationApplicationService检查请求目标仓库。范围不允许403，幂等回执不提供例外；仓库范围和API权限分别检查，有创建权限及范围即可创建，不要求读取API。创建OpenAPI同步说明双重授权和重放前检查。
 
 23项真实MariaDB/Redis/HTTP集成测试通过，0失败/错误/跳过，包括2项新创建范围、原订单API/HTTP、当前仓库应用与文档回归。覆盖采购销售默认空范围、指定/ALL、其他仓库拒绝、同键固定结果重放、撤回后原键拒绝及恢复后原结果可重放；拒绝不新增订单、Outbox或回执，ALL不能替代API，匿名/Refresh401。原订单HTTP及权限矩阵继续通过；履约目标范围待b1/b2接入。
+
+## 当前原订单仓库访问入口（NODE-D03.4b1）
+
+AccountOrderWarehouseAccess无框架端口经查询适配器调用已有TradeOrderQuery，固定类别/ID和当前账号上下文，只判断范围内目标存在，不新增无范围查询或HTTP读取。CurrentOrderWarehouseAuthorizationApplicationService先确认当前可信启用账号，再检查数据库原订单范围；缺失、类别不符或无范围目标404，失效身份401，故障保持失败。该入口不检查或授予API权限，调用方须单独检查履约API，并在写事务/幂等回执之前使用。
+
+11项真实MariaDB/Redis/HTTP夹具集成测试通过，0失败/错误/跳过，包括3项新原订单入口、3项当前仓库入口、3项摘要范围和2项创建范围回归。验证双类型实际仓库、指定/ALL/即时撤回、移除全部读取API后范围检查仍独立有效、停用/未知/错误类别、事务拒绝、可信主体及trace传递、状态或目标查询故障关闭。生产履约绑定继续由b2实施。
