@@ -581,3 +581,9 @@ AccountRoleApplicationService只接受服务器当前管理员身份，在协调
 2026-10-25重新执行全工程 `test :stratum-starter:integrationTest --rerun-tasks`，33个任务全部实际执行，130项单元测试和312项真实数据库/Redis/HTTP集成测试通过，0失败/错误/跳过。新增生命周期测试串联管理员创建账号、创建/配置角色、分配/移除成员与启停；使用真实HTTP登录并确认旧Access/Refresh撤销、角色授权即时读取以及重新启用后旧令牌不复活。
 
 D02.2d5管理应用用例完成。管理查询已在计划中细分为资格检查、账号、角色、关系和目录验收，下一D02.2d6a；管理HTTP、运行时RBAC、仓库范围及后续消息/任务/观测仍未完成，不将应用验收记为整个计划完成。
+
+## 管理查询资格检查（NODE-D02.2d6a）
+
+AdministratorQuery经QueryGateway以固定账号QuerySpec单条SQL核对当前启用状态与administrator成员关系，只返回布尔资格，不加载用户名或密码。AdministrationQueryAccess从服务器QueryContext取得操作者，执行该查询并委托AdministrationPolicy判断；不采信权限字符串、初始化槽或先前资格。处理器将复用此组件；ObjectProvider仅延迟解析网关，避免处理器注册期间的构造循环，不缓存查询结果。
+
+11项真实库测试通过，0失败/错误/跳过，包括5项管理员资格与6项原权限读取回归。覆盖角色绑定/移除、启停即时读取、伪造权限与初始化标记拒绝、匿名/身份不一致/畸形ID、写事务拒绝和ORM故障脱敏。当前只提供管理查询资格基础，账号/角色读模型和HTTP端点继续按后续子节点实现。
