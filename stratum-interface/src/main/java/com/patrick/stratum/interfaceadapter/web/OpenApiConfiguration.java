@@ -1,5 +1,7 @@
 package com.patrick.stratum.interfaceadapter.web;
 
+import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -93,14 +95,15 @@ public class OpenApiConfiguration {
         return document -> {
             if (document.getPaths() == null) return;
             if (document.getComponents() == null) document.setComponents(new Components());
-            document.getPaths().values().forEach(path -> path.readOperations().forEach(operation ->
+            document.getPaths().forEach((route, path) -> path.readOperationsMap().forEach((method, operation) ->
                     operation.getResponses().forEach((status, response) -> {
                         if (response.getContent() == null) return;
                         response.getContent().forEach((mediaType, media) -> {
                             Schema<?> schema = media.getSchema();
                             if (schema == null || schema.get$ref() != null || schema.getProperties() == null) return;
-                            String name = "StratumEnvelope_" + operation.getOperationId() + "_" + status + "_"
-                                    + mediaType.replaceAll("[^A-Za-z0-9]", "_");
+                            // operationId可能在定制器执行后才消歧，使用稳定的路由、方法和响应契约标识。
+                            String identity = method + " " + route + " " + status + " " + mediaType;
+                            String name = "StratumEnvelope_" + UUID.nameUUIDFromBytes(identity.getBytes(StandardCharsets.UTF_8));
                             document.getComponents().addSchemas(name, schema);
                             media.setSchema(new Schema<>().$ref("#/components/schemas/" + name));
                         });

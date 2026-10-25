@@ -49,6 +49,8 @@ management:
       show-details: when_authorized
 
 springdoc:
+  # 嵌套Row等同名DTO使用完整类型标识，避免文档模型相互覆盖。
+  use-fqn: true
   api-docs:
     version: OPENAPI_3_0
   packages-to-scan:
