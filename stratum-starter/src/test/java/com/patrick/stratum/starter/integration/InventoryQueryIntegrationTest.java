@@ -9,6 +9,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.domain.inventory.Quantity;
@@ -25,6 +27,7 @@ import com.patrick.stratum.query.inventory.StockBalanceQuery;
 import com.patrick.stratum.query.inventory.StockMovementQuery;
 import com.patrick.stratum.query.spec.QuerySpec;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -51,7 +54,13 @@ class InventoryQueryIntegrationTest extends AuthenticatedHttpIntegrationTest {
     private final InventorySourceFixture sources;
     private final List<String> masterIds = new ArrayList<>();
     private final List<UUID> balanceIds = new ArrayList<>();
-    private final QueryContext context = QueryContext.anonymous(UUID.randomUUID().toString());
+    private QueryContext context;
+
+    /** 复用父夹具真实登录账号及管理员ALL范围，不依赖匿名读取。 */
+    @BeforeEach
+    void prepareTrustedQueryContext() {
+        context = new QueryContext.Snapshot(UUID.randomUUID().toString(), Optional.of(subjectId()), Set.of());
+    }
 
     /**
      * 装配只读入口及测试夹具依赖。

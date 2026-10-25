@@ -20,7 +20,6 @@ import com.patrick.stratum.domain.trade.FulfillmentRepository;
 import com.patrick.stratum.domain.trade.TradeOrder;
 import com.patrick.stratum.domain.trade.TradeOrderRepository;
 import com.patrick.stratum.domain.trade.UnitPrice;
-import com.patrick.stratum.query.QueryContext;
 import com.patrick.stratum.query.QueryGateway;
 import com.patrick.stratum.query.dto.QueryResult;
 import com.patrick.stratum.query.spec.QuerySpec;
@@ -35,7 +34,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** 真实数据库验证采购销售摘要查询的类别、状态、金额、时间和分页。 */
-class TradeOrderQueryIntegrationTest extends MariaDbIntegrationTest {
+class TradeOrderQueryIntegrationTest extends WarehouseAuthorizedQueryIntegrationTest {
     private final QueryGateway gateway;
     private final MasterDataRepository masters;
     private final TradeOrderRepository orders;
@@ -44,7 +43,6 @@ class TradeOrderQueryIntegrationTest extends MariaDbIntegrationTest {
     private final FulfillmentRepository postings;
     private final List<String> masterIds = new ArrayList<>();
     private final List<UUID> orderIds = new ArrayList<>();
-    private final QueryContext context = QueryContext.anonymous(UUID.randomUUID().toString());
 
     /**
      * 装配查询入口与写入夹具。

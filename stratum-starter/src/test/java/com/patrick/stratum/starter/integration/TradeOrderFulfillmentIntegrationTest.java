@@ -23,7 +23,6 @@ import com.patrick.stratum.domain.masterdata.MasterDataRepository;
 import com.patrick.stratum.domain.trade.TradeOrder;
 import com.patrick.stratum.domain.trade.TradeOrderRepository;
 import com.patrick.stratum.query.QueryGateway;
-import com.patrick.stratum.query.QueryContext;
 import com.patrick.stratum.query.inventory.StockBalanceQuery;
 import com.patrick.stratum.query.inventory.StockMovementQuery;
 import com.patrick.stratum.query.masterdata.MasterDataQuery;
@@ -41,7 +40,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** 完整命令链验证分批采购收货、销售出库和并发下的跨聚合原子性。 */
-class TradeOrderFulfillmentIntegrationTest extends MariaDbIntegrationTest {
+class TradeOrderFulfillmentIntegrationTest extends WarehouseAuthorizedQueryIntegrationTest {
     /**
      * 值对象：本测试的独立业务维度。
      * @param material 物料
@@ -134,7 +133,7 @@ class TradeOrderFulfillmentIntegrationTest extends MariaDbIntegrationTest {
     /** 真实命令提交后六类查询一致，历史批次与当前进度分离，重放不产生新流水。 */
     @Test
     void queriesReflectCommittedPurchaseAndSaleWithoutDuplicatingReplay() {
-        var fixture = fixture(); var context = QueryContext.anonymous(subject);
+        var fixture = fixture();
         var purchase = create(TradeOrder.Kind.PURCHASE, fixture, "2");
         post(command(purchase, "2"));
         var sale = create(TradeOrder.Kind.SALE, fixture, "1");
@@ -170,7 +169,6 @@ class TradeOrderFulfillmentIntegrationTest extends MariaDbIntegrationTest {
     @Test
     void queriesExcludeRolledBackFulfillmentAndRejectActiveTransaction() {
         var fixture = fixture(); var order = create(TradeOrder.Kind.PURCHASE, fixture, "1");
-        var context = QueryContext.anonymous(subject);
         var detailQuery = TradeOrderDetailQuery.create(order.getKind(), order.getId());
         assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
             post(command(order, "1"));
