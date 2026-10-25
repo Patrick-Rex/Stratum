@@ -31,7 +31,7 @@ public class RoleManagementApplicationService {
      * @param code 固定角色编码
      * @param name 展示名称
      * @return 新角色UUID
-     * @throws StratumException 当前操作者非管理员或编码冲突
+     * @throws StratumException 当前操作者非管理员、输入非法或编码冲突
      * @apiNote 示例：{@code management.create("purchaser", "采购员")}；权限随后显式配置。
      */
     @Transactional(propagation = Propagation.NEVER)
@@ -39,7 +39,9 @@ public class RoleManagementApplicationService {
         UUID actor = identity.require().userId();
         return work.execute(() -> {
             requireAdministrator(actor);
-            var role = AuthorizationRole.create(code, name);
+            AuthorizationRole role;
+            try { role = AuthorizationRole.create(code, name); }
+            catch (IllegalArgumentException invalidInput) { throw new StratumException(CommonErrorCode.BAD_REQUEST); }
             roles.save(role);
             return UUID.fromString(role.getId());
         });
@@ -52,8 +54,7 @@ public class RoleManagementApplicationService {
      * @param name 新名称
      * @param permissions 完整权限集合，只允许目录已登记项
      * @return 保存后的角色版本
-     * @throws StratumException 当前操作者非管理员、角色缺失或版本冲突
-     * @throws IllegalArgumentException 试图配置保留角色或权限不合法
+     * @throws StratumException 当前操作者非管理员、角色缺失、输入非法或版本冲突
      * @apiNote 示例：{@code management.configure(roleId, version, name, grants)}；清空集合即移除普通角色全部授权。
      */
     @Transactional(propagation = Propagation.NEVER)
@@ -65,8 +66,8 @@ public class RoleManagementApplicationService {
             requireAdministrator(actor);
             var role = roles.findById(roleId.toString()).orElseThrow(() -> new StratumException(CommonErrorCode.NOT_FOUND));
             if (role.getVersion() != expectedVersion) throw new StratumException(CommonErrorCode.CONFLICT);
-            role.replacePermissions(permissions);
-            role.rename(name);
+            try { role.replacePermissions(permissions); role.rename(name); }
+            catch (IllegalArgumentException invalidInput) { throw new StratumException(CommonErrorCode.BAD_REQUEST); }
             roles.save(role);
             return role.getVersion();
         });

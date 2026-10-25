@@ -80,7 +80,7 @@ class RoleManagementApplicationIntegrationTest extends MariaDbIntegrationTest {
         assertEquals(code, role.getCode()); assertEquals("采购员", role.getName());
         assertEquals(0L, role.getVersion()); assertTrue(role.getPermissions().isEmpty());
         error(CommonErrorCode.CONFLICT, () -> service.create(code, "重复角色"));
-        assertThrows(IllegalArgumentException.class, () -> service.create(AuthorizationRole.ADMINISTRATOR_CODE, "覆盖管理员"));
+        error(CommonErrorCode.BAD_REQUEST, () -> service.create(AuthorizationRole.ADMINISTRATOR_CODE, "覆盖管理员"));
     }
 
     /** 角色授权通过真实查询即时可见，精确区分API与FEAT，清空后旧权限消失。 */
@@ -103,11 +103,11 @@ class RoleManagementApplicationIntegrationTest extends MariaDbIntegrationTest {
     @Test
     void rejectsInvalidConfigurationWithoutChangingState() {
         var service = service(administrator, work); UUID role = service.create(code(), "原名称");
-        assertThrows(IllegalArgumentException.class, () -> service.configure(role, 0, "非法授权",
+        error(CommonErrorCode.BAD_REQUEST, () -> service.configure(role, 0, "非法授权",
                 Set.of(new Permission("unregistered.permission", Permission.Type.API))));
-        assertThrows(IllegalArgumentException.class, () -> service.configure(role, 0, " ", Set.of()));
+        error(CommonErrorCode.BAD_REQUEST, () -> service.configure(role, 0, " ", Set.of()));
         var adminBefore = load(administratorRole);
-        assertThrows(IllegalArgumentException.class, () -> service.configure(administratorRole, adminBefore.getVersion(), "改写管理员", Set.of()));
+        error(CommonErrorCode.BAD_REQUEST, () -> service.configure(administratorRole, adminBefore.getVersion(), "改写管理员", Set.of()));
         assertEquals(PermissionCatalog.permissions(), load(administratorRole).getPermissions());
         assertEquals(adminBefore.getVersion(), load(administratorRole).getVersion());
         assertEquals("原名称", load(role).getName()); assertEquals(0L, load(role).getVersion());

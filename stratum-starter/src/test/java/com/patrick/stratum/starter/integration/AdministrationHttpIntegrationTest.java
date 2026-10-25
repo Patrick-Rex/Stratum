@@ -27,10 +27,10 @@ abstract class AdministrationHttpIntegrationTest extends AuthenticatedHttpIntegr
     @Autowired private StringRedisTemplate redis;
     protected final JsonMapper json = JsonMapper.builder().build();
     private final List<String> ownedUsernames = new ArrayList<>();
+    private final List<String> ownedRoleCodes = new ArrayList<>();
 
     /** 只按本用例已登记随机用户名清理关系、版本键和账号，父夹具清理登录会话。 */
-    @AfterEach
-    void cleanManagedAccounts() {
+    private void cleanManagedAccounts() {
         for (String username : ownedUsernames) {
             for (String id : jdbc.queryForList("SELECT id FROM auth_user WHERE username=?", String.class, username)) {
                 jdbc.update("DELETE FROM auth_user_role WHERE user_id=?", id);
@@ -38,6 +38,34 @@ abstract class AdministrationHttpIntegrationTest extends AuthenticatedHttpIntegr
                 redis.delete("auth:user:" + id + ":ver");
             }
         }
+    }
+
+    /** 清理本用例角色的权限关系及角色；账号关系已由账号清理方法移除。 */
+    @AfterEach
+    void cleanManagedRoles() {
+        cleanManagedAccounts();
+        for (String code : ownedRoleCodes) {
+            for (String id : jdbc.queryForList("SELECT id FROM auth_role WHERE code=?", String.class, code)) {
+                jdbc.update("DELETE FROM auth_role_permission WHERE role_id=?", id);
+                jdbc.update("DELETE FROM auth_role WHERE id=?", id);
+            }
+        }
+    }
+
+    /**
+     * 经管理HTTP创建普通空权限角色并登记清理范围。
+     * @param code 随机测试编码
+     * @param name 测试名称
+     * @return 角色UUID
+     * @throws Exception HTTP失败
+     */
+    protected UUID createRole(String code, String name) throws Exception {
+        ownedRoleCodes.add(code);
+        var response = request("POST", "/api/auth/roles", accessToken(), Map.of("code", code, "name", name));
+        var result = data(response, 201); UUID id = UUID.fromString(result.path("id").asText());
+        assertEquals(0, result.path("version").asLong());
+        assertEquals("/api/auth/roles/" + id, response.headers().firstValue("Location").orElseThrow());
+        assertTrue(response.headers().firstValue("Cache-Control").orElseThrow().contains("no-store")); return id;
     }
 
     /**
