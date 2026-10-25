@@ -5,6 +5,7 @@ import java.net.URI;
 import java.util.List;
 import java.util.UUID;
 import com.patrick.stratum.application.auth.CurrentIdentity;
+import com.patrick.stratum.application.auth.CurrentWarehouseAuthorizationApplicationService;
 import com.patrick.stratum.application.auth.CurrentAuthorizationApplicationService;
 import com.patrick.stratum.domain.trade.TradeOrderPermissions;
 import com.patrick.stratum.application.command.CommandGateway;
@@ -31,6 +32,7 @@ public class TradeOrderController {
     private final CommandGateway commands;
     private final CurrentIdentity identities;
     private final CurrentAuthorizationApplicationService authorization;
+    private final CurrentWarehouseAuthorizationApplicationService warehouses;
 
     /**
      * 固定订单头及有界明细输入。
@@ -83,12 +85,13 @@ public class TradeOrderController {
      * @apiNote 示例：POST /api/erp/orders/PURCHASE，包含partyId、warehouseId、lines并携带Idempotency-Key。
      */
     @PostMapping
-    @Operation(summary = "创建采购或销售订单", description = "需对应erp.purchase.create或erp.sales.create权限；自动单号；明细创建后固定；人民币金额按精确乘积汇总后四舍五入到分。主体来自服务器验证的Access身份。")
+    @Operation(summary = "创建采购或销售订单", description = "需对应erp.purchase.create或erp.sales.create权限及目标仓库范围，均在幂等重放前检查；自动单号；明细创建后固定；人民币金额按精确乘积汇总后四舍五入到分。主体来自服务器验证的Access身份。")
     @ApiResponse(responseCode = "201", description = "创建或原请求重放成功，Location指向订单")
     public ResponseEntity<OrderResult> create(@PathVariable("kind") TradeOrder.Kind kind,
             @RequestHeader("Idempotency-Key") @Pattern(regexp = IDEMPOTENCY_PATTERN) String key,
             @Valid @RequestBody CreateRequest request) {
         authorization.requireApi(TradeOrderPermissions.create(kind));
+        warehouses.require(request.warehouseId());
         var lines = request.lines().stream().map(line -> CreateOrderCommand.Line.builder().materialId(line.materialId())
                 .quantity(line.quantity()).unitPrice(line.unitPrice()).build()).toList();
         var result = commands.execute(CreateOrderCommand.builder().subjectId(identities.require().getName()).idempotencyKey(key).kind(kind)

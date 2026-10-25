@@ -807,3 +807,9 @@ FulfillmentQueryHandler先关联真实订单及类别，从明确外层订单列
 2026-10-25执行全工程 `test :stratum-starter:integrationTest --rerun-tasks`，33任务全部实际重新执行；140项单元和418项真实MariaDB/Redis/HTTP集成测试通过，0失败/错误/跳过。D03.3完成，库存余额/流水、采购销售摘要/详情/履约历史的范围均在数据库中先于计数/分页及记录读取生效，覆盖当前账号、角色并集、实时变更、故障关闭和原ERP闭环。
 
 下一D03.4已细分为创建绑定、原订单仓库访问应用/查询适配、履约绑定及组合验收。当前HTTP创建/履约仍只检查API权限，不能将读取范围完成等同于写入范围完成；写入检查将在命令及幂等重放之前执行。README已更新当前能力与本次验收口径，部署及后续消息/任务/网关/观测仍按计划推进。
+
+## 订单创建目标仓库检查（NODE-D03.4a）
+
+TradeOrderController.create在对应创建API鉴权后、命令构造和CommandGateway前调用CurrentWarehouseAuthorizationApplicationService检查请求目标仓库。范围不允许403，幂等回执不提供例外；仓库范围和API权限分别检查，有创建权限及范围即可创建，不要求读取API。创建OpenAPI同步说明双重授权和重放前检查。
+
+23项真实MariaDB/Redis/HTTP集成测试通过，0失败/错误/跳过，包括2项新创建范围、原订单API/HTTP、当前仓库应用与文档回归。覆盖采购销售默认空范围、指定/ALL、其他仓库拒绝、同键固定结果重放、撤回后原键拒绝及恢复后原结果可重放；拒绝不新增订单、Outbox或回执，ALL不能替代API，匿名/Refresh401。原订单HTTP及权限矩阵继续通过；履约目标范围待b1/b2接入。
