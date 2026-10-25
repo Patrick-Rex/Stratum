@@ -5,6 +5,8 @@ import java.net.URI;
 import java.util.List;
 import java.util.UUID;
 import com.patrick.stratum.application.auth.CurrentIdentity;
+import com.patrick.stratum.application.auth.CurrentAuthorizationApplicationService;
+import com.patrick.stratum.domain.trade.TradeOrderPermissions;
 import com.patrick.stratum.application.command.CommandGateway;
 import com.patrick.stratum.application.trade.CreateOrderCommand;
 import com.patrick.stratum.application.trade.FulfillOrderCommand;
@@ -28,6 +30,7 @@ public class TradeOrderController {
     private static final String IDEMPOTENCY_PATTERN = "[A-Za-z0-9._:-]{1,128}";
     private final CommandGateway commands;
     private final CurrentIdentity identities;
+    private final CurrentAuthorizationApplicationService authorization;
 
     /**
      * 固定订单头及有界明细输入。
@@ -80,11 +83,12 @@ public class TradeOrderController {
      * @apiNote 示例：POST /api/erp/orders/PURCHASE，包含partyId、warehouseId、lines并携带Idempotency-Key。
      */
     @PostMapping
-    @Operation(summary = "创建采购或销售订单", description = "自动单号；明细创建后固定；人民币金额按精确乘积汇总后四舍五入到分。主体来自服务器验证的Access身份。")
+    @Operation(summary = "创建采购或销售订单", description = "需对应erp.purchase.create或erp.sales.create权限；自动单号；明细创建后固定；人民币金额按精确乘积汇总后四舍五入到分。主体来自服务器验证的Access身份。")
     @ApiResponse(responseCode = "201", description = "创建或原请求重放成功，Location指向订单")
     public ResponseEntity<OrderResult> create(@PathVariable("kind") TradeOrder.Kind kind,
             @RequestHeader("Idempotency-Key") @Pattern(regexp = IDEMPOTENCY_PATTERN) String key,
             @Valid @RequestBody CreateRequest request) {
+        authorization.requireApi(TradeOrderPermissions.create(kind));
         var lines = request.lines().stream().map(line -> CreateOrderCommand.Line.builder().materialId(line.materialId())
                 .quantity(line.quantity()).unitPrice(line.unitPrice()).build()).toList();
         var result = commands.execute(CreateOrderCommand.builder().subjectId(identities.require().getName()).idempotencyKey(key).kind(kind)
@@ -102,11 +106,12 @@ public class TradeOrderController {
      * @apiNote 示例：POST /api/erp/orders/PURCHASE/{id}/fulfillments，含version和lines。
      */
     @PostMapping("/{id}/fulfillments")
-    @Operation(summary = "分批收货或出库", description = "采购增加库存，销售扣减库存；不允许负库存或超订单数量。同键重放原批次及当时订单快照，观察版本过期返回409。")
+    @Operation(summary = "分批收货或出库", description = "需对应erp.purchase.fulfill或erp.sales.fulfill权限；采购增加库存，销售扣减库存；不允许负库存或超订单数量。同键重放原批次及当时订单快照，观察版本过期返回409。")
     @ApiResponse(responseCode = "201", description = "履约或原请求重放成功，Location按postingId过滤本批履约历史")
     public ResponseEntity<FulfillmentResult> fulfill(@PathVariable("kind") TradeOrder.Kind kind, @PathVariable("id") UUID id,
             @RequestHeader("Idempotency-Key") @Pattern(regexp = IDEMPOTENCY_PATTERN) String key,
             @Valid @RequestBody FulfillRequest request) {
+        authorization.requireApi(TradeOrderPermissions.fulfill(kind));
         var lines = request.lines().stream().map(line -> FulfillOrderCommand.Line.builder()
                 .orderLineId(line.orderLineId()).quantity(line.quantity()).build()).toList();
         var result = commands.execute(FulfillOrderCommand.builder().subjectId(identities.require().getName()).idempotencyKey(key).kind(kind)

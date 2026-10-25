@@ -675,3 +675,9 @@ API版本1的 `GET /auth/me` 返回当前账号userId和按编码排序的featur
 四类主数据列表/详情要求各自的erp.{material/customer/supplier/warehouse}.read，创建/改名/删除要求各自.write，读写权限互不隐含。类别映射由无框架MasterDataPermissions提供，HTTP方法在QueryGateway、CommandGateway及幂等回执读取前调用实时权限入口；FEAT和自报主体不能放行。普通账号默认403，匿名401；初始化管理员通过真实角色权限保持既有能力。
 
 15项真实数据库/Redis/HTTP测试通过，0失败/错误/跳过，包含3项完整主数据权限矩阵、7项原主数据HTTP、1项双账号幂等身份隔离及4项管理/ERP文档。新增覆盖四类分别授权、读写隔离、同Access撤权、无权详情及跨类别写拒绝、创建与删除旧回执拒绝、拒绝无主数据/Outbox/回执副作用。原双账号测试为第二账号显式配置仅客户维护权限并清理自身关系；订单和库存API仍待后续绑定。
+
+## 采购销售API实时鉴权（NODE-D02.3d）
+
+采购使用erp.purchase.read/create/fulfill，销售使用erp.sales.read/create/fulfill；读取涵盖摘要、详情及履约历史。TradeOrderPermissions明确映射两类和三种动作，HTTP方法在业务读取、命令构造与幂等回执访问之前检查当前API授权。创建、读取、履约互不隐含，FEAT不放行业务；仓库范围仍待D03。
+
+28项真实数据库/Redis/HTTP测试通过，0失败/错误/跳过，包括3项权限矩阵、11项原订单HTTP、10项查询及4项管理/ERP文档回归。验证普通/功能账号拒绝、采购销售隔离、三种动作隔离、相同Access看到授权撤回、创建及履约回执撤权后拒绝。单独履约授权完成采购收货及销售出库；拒绝和重复请求不增加流水、事件、回执或改变既有订单版本与余额。库存查询API继续由下一节点绑定。

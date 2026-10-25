@@ -5,6 +5,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import com.patrick.stratum.application.auth.CurrentIdentity;
+import com.patrick.stratum.application.auth.CurrentAuthorizationApplicationService;
+import com.patrick.stratum.domain.trade.TradeOrderPermissions;
 import com.patrick.stratum.common.error.CommonErrorCode;
 import com.patrick.stratum.common.error.StratumException;
 import com.patrick.stratum.domain.trade.TradeOrder;
@@ -29,6 +31,7 @@ import org.springframework.web.bind.annotation.*;
 public class TradeOrderQueryController {
     private final QueryGateway queries;
     private final CurrentIdentity identities;
+    private final CurrentAuthorizationApplicationService authorization;
 
     /**
      * 按类别和白名单条件读取不含明细的订单分页。
@@ -38,7 +41,7 @@ public class TradeOrderQueryController {
      * @apiNote 示例：GET /api/erp/orders/PURCHASE?status=PARTIAL&sort=createdAt,desc。
      */
     @GetMapping
-    @Operation(summary = "查询采购销售订单摘要", description = "queryCode=erp.order.list；默认创建时间倒序；ID/单号/金额/时间可排序，多个条件按AND组合，From/To须成对。")
+    @Operation(summary = "查询采购销售订单摘要", description = "需对应erp.purchase.read或erp.sales.read权限；queryCode=erp.order.list；默认创建时间倒序；ID/单号/金额/时间可排序，多个条件按AND组合，From/To须成对。")
     @Parameters({
         @Parameter(name = "page", in = ParameterIn.QUERY, schema = @Schema(type = "integer", defaultValue = "1", minimum = "1")),
         @Parameter(name = "pageSize", in = ParameterIn.QUERY, schema = @Schema(type = "integer", defaultValue = "20", minimum = "1", maximum = "200")),
@@ -57,6 +60,7 @@ public class TradeOrderQueryController {
     })
     public QueryResult<TradeOrderQuery.Row> list(@PathVariable("kind") TradeOrder.Kind kind,
             @Parameter(hidden = true) @RequestParam MultiValueMap<String, String> parameters) {
+        authorization.requireApi(TradeOrderPermissions.read(kind));
         var query = QueryHttpParameters.input(() -> {
             var parsed = new QueryHttpParameters(parameters).exact("id", UUID.class).exact("orderNumber", String.class)
                     .exact("partyId", UUID.class).exact("warehouseId", UUID.class).exact("status", String.class)
@@ -75,8 +79,9 @@ public class TradeOrderQueryController {
      * @apiNote 示例：GET /api/erp/orders/PURCHASE/{id}。
      */
     @GetMapping("/{id}")
-    @Operation(summary = "查询采购销售订单详情", description = "queryCode=erp.order.detail；含order摘要及最多100条lines，明细按原行号返回；缺失或类别不符404。")
+    @Operation(summary = "查询采购销售订单详情", description = "需对应erp.purchase.read或erp.sales.read权限；queryCode=erp.order.detail；含order摘要及最多100条lines，明细按原行号返回；缺失或类别不符404。")
     public TradeOrderDetailQuery.Row detail(@PathVariable("kind") TradeOrder.Kind kind, @PathVariable("id") UUID id) {
+        authorization.requireApi(TradeOrderPermissions.read(kind));
         return queries.execute(TradeOrderDetailQuery.create(kind, id), QueryHttpParameters.context(identities)).getItems()
                 .stream().findFirst().orElseThrow(() -> new StratumException(CommonErrorCode.NOT_FOUND));
     }
@@ -90,7 +95,7 @@ public class TradeOrderQueryController {
      * @apiNote 示例：GET /api/erp/orders/PURCHASE/{id}/fulfillments?orderVersion=1。
      */
     @GetMapping("/{id}/fulfillments")
-    @Operation(summary = "查询订单分批履约历史", description = "queryCode=erp.fulfillment.list；默认订单版本倒序，ID/当时版本/时间可排序；缺失或类别不符404，已存在未履约订单返回空分页。From/To成对，每批最多100行。")
+    @Operation(summary = "查询订单分批履约历史", description = "需对应erp.purchase.read或erp.sales.read权限；queryCode=erp.fulfillment.list；默认订单版本倒序，ID/当时版本/时间可排序；缺失或类别不符404，已存在未履约订单返回空分页。From/To成对，每批最多100行。")
     @Parameters({
         @Parameter(name = "page", in = ParameterIn.QUERY, schema = @Schema(type = "integer", defaultValue = "1", minimum = "1")),
         @Parameter(name = "pageSize", in = ParameterIn.QUERY, schema = @Schema(type = "integer", defaultValue = "20", minimum = "1", maximum = "200")),
@@ -105,6 +110,7 @@ public class TradeOrderQueryController {
     })
     public QueryResult<FulfillmentQuery.Row> fulfillments(@PathVariable("kind") TradeOrder.Kind kind, @PathVariable("id") UUID id,
             @Parameter(hidden = true) @RequestParam MultiValueMap<String, String> parameters) {
+        authorization.requireApi(TradeOrderPermissions.read(kind));
         var query = QueryHttpParameters.input(() -> {
             var parsed = new QueryHttpParameters(parameters).exact("postingId", "id", UUID.class).exact("orderVersion", Long.class)
                     .range("orderVersion", Long.class).exact("createdAt", Instant.class).range("createdAt", Instant.class).finish();
