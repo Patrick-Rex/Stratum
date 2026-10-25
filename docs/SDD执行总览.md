@@ -34,7 +34,7 @@
 | API 版本管理 | Header: X-API-Version |
 | JWT 签名算法 | RS256 |
 | 后台任务调度 | Quartz + ShedLock |
-| 网关策略 | Spring Boot Gateway 统一入口，负载均衡由项目外组件提供 |
+| 网关策略 | 独立Spring Cloud Gateway进程统一入口，Starter承载ERP；负载均衡由项目外组件提供，见[ADR-006](adr/ADR-006-独立网关进程.md) |
 | 消息总线模式 | RabbitMQ Topic + Outbox |
 | 工作单元 | Application 事务 + UoW + Outbox |
 
