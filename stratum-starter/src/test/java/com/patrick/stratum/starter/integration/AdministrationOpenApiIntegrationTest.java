@@ -84,6 +84,50 @@ class AdministrationOpenApiIntegrationTest extends AuthenticatedHttpIntegrationT
     }
 
     /**
+     * 所有管理操作包括PUT均声明Bearer、版本、状态与响应头，错误外壳不泄露内部结构。
+     * @throws Exception HTTP失败
+     */
+    @Test
+    void documentsEveryManagementOperationProtocol() throws Exception {
+        var document = document();
+        int checked = 0;
+        for (var path : document.path("paths").properties()) {
+            if (!path.getKey().startsWith("/api/auth/")) continue;
+            for (var method : path.getValue().properties()) {
+                if (!Set.of("get", "post", "put", "patch", "delete").contains(method.getKey())) continue;
+                var operation = method.getValue();
+                assertTrue(operation.path("security").get(0).has("bearerAuth"));
+                var versions = operation.path("parameters").valueStream().filter(parameter ->
+                        parameter.path("name").asText().equals("X-API-Version")).toList();
+                assertEquals(1, versions.size());
+                assertEquals("header", versions.getFirst().path("in").asText());
+                assertFalse(versions.getFirst().path("required").asBoolean());
+                assertTrue(Set.of("1", "1.0", "1.0.0").contains(versions.getFirst().path("schema").path("default").asText()));
+                String success = method.getKey().equals("post") ? "201" : "200";
+                var response = operation.path("responses").path(success);
+                assertEquals("no-store", response.path("headers").path("Cache-Control").path("schema").path("example").asText());
+                assertEquals("no-cache", response.path("headers").path("Pragma").path("schema").path("example").asText());
+                assertTrue(response.path("headers").has("X-Trace-Id"));
+                if (success.equals("201")) assertEquals("uri-reference", response.path("headers").path("Location").path("schema").path("format").asText());
+                var envelope = resolve(document, response.path("content").path("application/json").path("schema"));
+                fields(envelope, Set.of("code", "message", "data", "details", "traceId"));
+                assertEquals(0, envelope.path("properties").path("code").path("example").asInt());
+                for (String status : List.of("400", "401", "403", "404", "409", "500")) {
+                    var error = operation.path("responses").path(status);
+                    assertTrue(error.path("headers").has("X-Trace-Id"));
+                    var errorSchema = resolve(document, error.path("content").path("application/json").path("schema"));
+                    fields(errorSchema, Set.of("code", "message", "data", "details", "traceId"));
+                    assertEquals(Integer.parseInt(status) * 100, errorSchema.path("properties").path("code").path("example").asInt());
+                }
+                assertEquals("Bearer", operation.path("responses").path("401").path("headers")
+                        .path("WWW-Authenticate").path("schema").path("example").asText());
+                checked++;
+            }
+        }
+        assertEquals(12, checked);
+    }
+
+    /**
      * 获取不经过业务响应包装的真实OpenAPI文档。
      * @return 生成文档
      * @throws Exception HTTP失败

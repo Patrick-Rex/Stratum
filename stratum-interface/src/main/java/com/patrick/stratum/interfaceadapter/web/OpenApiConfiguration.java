@@ -76,6 +76,30 @@ public class OpenApiConfiguration {
     }
 
     /**
+     * 补齐管理成功响应的缓存保护和创建资源位置，与控制器的响应头保持一致。
+     * @return 管理接口响应头定制器
+     * @apiNote 使用示例：管理客户端从201的Location读取新资源地址。
+     */
+    @Bean
+    public OpenApiCustomizer stratumManagementHeaders() {
+        return document -> {
+            if (document.getPaths() == null) return;
+            document.getPaths().forEach((path, item) -> {
+                if (!path.startsWith("/api/auth/")) return;
+                item.readOperationsMap().forEach((method, operation) -> operation.getResponses().forEach((status, response) -> {
+                    if (!status.matches("2[0-9]{2}")) return;
+                    response.addHeaderObject("Cache-Control", new Header().schema(new StringSchema().example("no-store")));
+                    response.addHeaderObject("Pragma", new Header().schema(new StringSchema().example("no-cache")));
+                    if (method == PathItem.HttpMethod.POST && status.equals("201")) {
+                        response.addHeaderObject("Location", new Header().description("新建资源的相对地址")
+                                .schema(new StringSchema().format("uri-reference").example(path + "/{id}")));
+                    }
+                }));
+            });
+        };
+    }
+
+    /**
      * 为生成的操作补齐响应外壳、版本头和通用错误。
      * @return 业务接口文档定制器
      * @apiNote 使用示例：新增业务Controller自动获得统一契约描述。
