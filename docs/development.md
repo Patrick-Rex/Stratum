@@ -759,3 +759,9 @@ RoleWarehouseManagementApplicationService仅从CurrentIdentity取得操作者，
 API版本1的 `GET/PUT /api/auth/roles/{id}/warehouse-scope` 已接入。GET经QueryGateway返回id/version/scopeType/warehouseIds，PUT接受version/scopeType/warehouseIds并返回id/version；版本独立于角色API权限。成功响应no-store/no-cache，身份只来自有效Access。输入只接受精确ALL/CUSTOM、非负版本和最多1024个非空仓库UUID；ALL带指定集合400，未知角色404，旧版本或无效仓库引用409，administrator固定ALL不可改写。配置立即生效且保持已有会话有效。
 
 23项真实MariaDB/Redis/HTTP测试通过，0失败/错误/跳过，包括4项新范围HTTP、6项管理应用、4项文档、4项原角色写HTTP、3项原角色读HTTP及2项网络认证。覆盖输入/身份/引用/版本边界、当前管理员资格撤回、完整配置和独立版本、无变化请求、同观察版本真实HTTP竞争及实时访问效果。生成文档核对14个管理操作的Bearer、缓存/trace/版本/错误外壳，范围模型精确ALL/CUSTOM与集合上界；D03.2d完成，下一e执行整体管理验收。
+
+## 角色仓库范围管理整体验收（NODE-D03.2e）
+
+2026-10-25执行 `test :stratum-starter:integrationTest --rerun-tasks`，33任务全部重新执行；140项单元测试和402项真实MariaDB/Redis/HTTP集成测试通过，0失败/错误/跳过。覆盖角色范围领域/迁移/存储、跨账号与完整角色并集、可信当前应用、管理员配置HTTP与文档，以及全部认证、RBAC、管理能力和ERP业务回归。
+
+D03.2完成。D03.3先迁移原匿名查询验收夹具至真实账号和显式ALL范围，再按库存余额、流水、订单摘要、详情、履约历史及整体回归细分；业务QueryHandler将强制可信主体并在计数/分页/记录读取前附加仓库谓词。当前生产ERP查询尚未附加该过滤，写入目标检查也待D03.4，不能将范围管理完成等同于整个数据权限完成。
