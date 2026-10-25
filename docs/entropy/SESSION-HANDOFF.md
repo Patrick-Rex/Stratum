@@ -2,18 +2,19 @@
 
 ## 交接报告（2026-10-25）
 
-- completedNode: 无新增开发节点；上次完成NODE-D03.5。本次记录用户确认的独立网关决定，不将文档维护计为开发完成。
+- completedNode: NODE-D04.1a1（接入兼容Gateway依赖并解除Starter聚合）。
 - changedFiles:
-  - `docs/AI可执行开发计划.md`
+  - `build.gradle`
   - `docs/CONTEXT.md`
-  - `docs/SDD执行总览.md`
-  - `docs/adr/ADR-001.md`
-  - `docs/adr/ADR-006-独立网关进程.md`
+  - `docs/development.md`
   - `docs/entropy/SESSION-HANDOFF.md`
-  - `docs/技术架构.md`
-  - `docs/项目结构.md`
+  - `docs/网关与负载均衡设计.md`
+  - `stratum-gateway/build.gradle`
+  - `stratum-gateway/src/test/java/com/patrick/stratum/gateway/GatewayDependencyTest.java`
+  - `stratum-starter/build.gradle`
 
-- validations: 核对用户已确认范围、ADR索引、技术架构/SDD/目标依赖与D04.1节点前置及8文件约束；提交前检查本地链接和UTF-8/CRLF格式。本次纯文档不运行构建；上次全工程140单元+427集成通过属NODE-D03.5记录。
-- unresolved: 网关依赖、启动及治理仍未实现；部署、Compose和外部负载均衡验收暂缓，无待确认产品阻塞。
-- nextNode: NODE-D04.1a1。先审查并提交推送本次规范，再接入依赖，不跳过节点验收。
-- CONTEXT已更新。独立测试MariaDB/Redis容器暂留供连续验证，用户既有服务保持运行；会话结束前停止本次资源。凭据仅在本机临时目录，不提交仓库。
+- validations: Gateway build/Starter bootJar通过；2项网关运行时边界单元及2项真实ERP HTTP测试通过，0失败/错误/跳过；运行时版本与隔离已核对。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
+- unresolved: 部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
+- nextNode: NODE-D04.1a2。
+- 当前节点验收后审查、提交、推送；完成后继续下一节点，不重复请求授权。
+- CONTEXT 已更新。共享 Docker 容器保持运行，仅清理本轮创建的测试资源；测试 JVM 已退出；独立测试容器 stratum-integration-mariadb / stratum-integration-redis 暂留供连续验证，会话结束前清理。连接状态在本机临时目录 stratum-integration-state.json，不提交凭据。

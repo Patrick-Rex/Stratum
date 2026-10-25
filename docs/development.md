@@ -41,7 +41,8 @@
 | stratum-query | QuerySpec、Query/Handler/Result/Context、QueryGateway 与 Spring 装配；统一路由及查询指标日志 |
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
 | stratum-infrastructure | 已引入 Easy-Query 3.3.1（Boot 4 starter / MySQL 方言 / 处理器）、MariaDB JDBC、Flyway、Redis、Caffeine；已配置数据源与 Flyway；NODE-B03.2b 已验证真实 MariaDB 提交、回滚和嵌套事务 |
-| stratum-gateway / stratum-job | Gradle 模块骨架 |
+| stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，启动入口与路由待后续节点 |
+| stratum-job | Gradle 模块骨架 |
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
 
@@ -56,7 +57,7 @@ Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完�
 | Redis | 开发单节点，生产 Sentinel |
 | RabbitMQ | 4.2.0+ |
 | Nacos | 3.2.0+ |
-| 网关 | Spring Boot Gateway 4.0.5+；项目外负载均衡 |
+| 网关 | Spring Cloud Gateway Server WebFlux 5.0.4 / Cloud 2025.1.4，独立进程；项目外负载均衡 |
 | 后台任务 | Spring Scheduler + Quartz + ShedLock |
 | 认证 | Spring Security + JWT + RBAC，启用 token 撤销 |
 | 可观测性 | OpenTelemetry + Prometheus + Loki + Grafana + Jaeger |
@@ -837,3 +838,11 @@ TradeOrderController.fulfill在履约API鉴权后、命令及幂等回执之前�
 2026-10-25执行 `test :stratum-starter:integrationTest --rerun-tasks`，33任务全部实际重新执行；140项单元和427项真实MariaDB/Redis/HTTP集成测试通过，0失败/错误/跳过。D03完成：角色范围管理、完整角色并集、订单与库存数据库过滤、创建/履约前检查、授权实时变更及重放目标替换均通过，同时覆盖认证撤销、RBAC、最后管理员保护、并发库存、幂等、Outbox落盘、缓存和ERP闭环。
 
 用户已确认后续采用独立Spring Cloud Gateway进程，Starter继续承载ERP；先记录架构决定及细分实施计划，再接入网关依赖并本地联调。Gateway只处理入口治理，业务鉴权留在App；本次全工程验收未包含尚未实现的网关、消息投递、后台任务或完整观测。部署、Compose及外部负载均衡验收继续暂缓。
+
+## Gateway依赖隔离（NODE-D04.1a1）
+
+根工程仅为Gateway引入Spring Cloud 2025.1.4 BOM，Gateway使用官方Server WebFlux starter 5.0.4及Actuator，Starter移除Gateway运行时聚合。Boot继续由既有4.0.5强制平台约束，实际解析Framework/WebFlux 7.0.6、Reactor Netty 1.3.4和Cloud Commons 5.0.4；Starter运行时无Gateway/Cloud依赖。
+
+依据官方[兼容表](https://spring.io/projects/spring-cloud/)，2025.1.x对应Boot 4.0.x；[2025.1.4清单](https://github.com/spring-cloud/spring-cloud-release/releases/tag/v2025.1.4)包含Gateway 5.0.4。官方[许可证](https://github.com/spring-cloud/spring-cloud-gateway/blob/main/LICENSE.txt)为Apache 2.0，持续发布维护，无库授权或按量费用；本地进程仍消耗正常运行资源。
+
+Gateway build与Starter bootJar退出码0；2项运行时边界单元测试通过，验证WebFlux自动识别、Gateway/Netty类加载及无MVC/ERP/JDBC；另2项真实ERP HTTP闭环通过，均0失败/错误/跳过。生产Gateway尚无启动类，未把NO-SOURCE计为生产源码编译或网关路由验收；独立启动和健康检查由a2实现。已同步目标网关规范和当前模块能力。

@@ -7,6 +7,7 @@ plugins {
 ext {
     lombokVersion = '1.18.44'
     springBootVersion = '4.0.5'
+    springCloudVersion = '2025.1.4'
     easyQueryVersion = '3.3.1'
     springdocVersion = '3.0.3'
     knife4jUiVersion = '4.5.0'
@@ -33,6 +34,9 @@ subprojects {
     dependencies {
         if (project.name !in ['stratum-domain', 'stratum-common']) {
             implementation enforcedPlatform("org.springframework.boot:spring-boot-dependencies:${springBootVersion}")
+        }
+        if (project.name == 'stratum-gateway') {
+            implementation platform("org.springframework.cloud:spring-cloud-dependencies:${springCloudVersion}")
         }
         compileOnly "org.projectlombok:lombok:${lombokVersion}"
         annotationProcessor "org.projectlombok:lombok:${lombokVersion}"

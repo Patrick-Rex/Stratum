@@ -20,7 +20,6 @@ tasks.register('integrationTest', Test) {
 description = 'Stratum Starter'
 
 dependencies {
-    implementation project(':stratum-gateway')
     implementation project(':stratum-interface')
     implementation project(':stratum-query')
     implementation project(':stratum-application')
