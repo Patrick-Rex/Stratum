@@ -15,6 +15,7 @@ import com.patrick.stratum.application.auth.CurrentIdentity;
 import com.patrick.stratum.application.auth.LocalIdentityApplicationService;
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.domain.auth.AuthSessions;
+import com.patrick.stratum.domain.auth.AccountPermissions;
 import com.patrick.stratum.domain.auth.LocalAccount;
 import com.patrick.stratum.domain.auth.LocalAccountRepository;
 import com.patrick.stratum.domain.auth.PasswordHasher;
@@ -80,6 +81,7 @@ class AuthHttpProtocolIntegrationTest extends MariaDbIntegrationTest {
      * 注入真实端口，构造被HTTP控制器调用的应用服务。
      * @param identities 本地身份
      * @param sessions Redis会话
+     * @param permissions 真实账号状态查询
      * @param accounts 账号夹具仓储
      * @param passwords BCrypt散列
      * @param unitOfWork 事务门面
@@ -87,9 +89,9 @@ class AuthHttpProtocolIntegrationTest extends MariaDbIntegrationTest {
      * @param redis 会话清理
      */
     @Autowired
-    AuthHttpProtocolIntegrationTest(LocalIdentityApplicationService identities, AuthSessions sessions,
+    AuthHttpProtocolIntegrationTest(LocalIdentityApplicationService identities, AuthSessions sessions, AccountPermissions permissions,
             LocalAccountRepository accounts, PasswordHasher passwords, UnitOfWork unitOfWork, JdbcTemplate jdbc, StringRedisTemplate redis) {
-        this.authentication = new AuthSessionApplicationService(identities, codec, sessions);
+        this.authentication = new AuthSessionApplicationService(identities, codec, sessions, permissions);
         this.accounts = accounts; this.passwords = passwords; this.unitOfWork = unitOfWork; this.jdbc = jdbc; this.redis = redis;
     }
 

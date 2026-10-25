@@ -3,6 +3,7 @@ package com.patrick.stratum.starter.auth;
 import com.patrick.stratum.application.auth.AuthSessionApplicationService;
 import com.patrick.stratum.application.auth.LocalIdentityApplicationService;
 import com.patrick.stratum.domain.auth.AuthSessions;
+import com.patrick.stratum.domain.auth.AccountPermissions;
 import com.patrick.stratum.domain.auth.TokenCodec;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -17,12 +18,13 @@ public class AuthSessionConfiguration {
      * @param identities 身份入口
      * @param tokens 由密钥配置产生的Token端口
      * @param sessions 权威会话端口
+     * @param permissions 权威账号状态与权限端口
      * @return Application会话编排
      * @apiNote 由Spring装配，HTTP入口注入返回的应用服务。
      */
     @Bean
     public AuthSessionApplicationService authSessionApplicationService(LocalIdentityApplicationService identities,
-            TokenCodec tokens, AuthSessions sessions) {
-        return new AuthSessionApplicationService(identities, tokens, sessions);
+            TokenCodec tokens, AuthSessions sessions, AccountPermissions permissions) {
+        return new AuthSessionApplicationService(identities, tokens, sessions, permissions);
     }
 }

@@ -20,6 +20,7 @@ import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.common.error.CommonErrorCode;
 import com.patrick.stratum.common.error.StratumException;
 import com.patrick.stratum.domain.auth.AuthSessions;
+import com.patrick.stratum.domain.auth.AccountPermissions;
 import com.patrick.stratum.domain.auth.LocalAccount;
 import com.patrick.stratum.domain.auth.LocalAccountRepository;
 import com.patrick.stratum.domain.auth.PasswordHasher;
@@ -44,6 +45,7 @@ class AuthSessionApplicationIntegrationTest extends MariaDbIntegrationTest {
     private static TokenCodec codec;
     private final LocalIdentityApplicationService identities;
     private final AuthSessions sessions;
+    private final AccountPermissions permissions;
     private final LocalAccountRepository accounts;
     private final PasswordHasher passwords;
     private final UnitOfWork unitOfWork;
@@ -59,6 +61,7 @@ class AuthSessionApplicationIntegrationTest extends MariaDbIntegrationTest {
      * 注入真实端口与夹具工具。
      * @param identities 身份入口
      * @param sessions Redis会话
+     * @param permissions 真实账号状态查询
      * @param accounts 账号仓储
      * @param passwords BCrypt散列
      * @param unitOfWork 事务门面
@@ -66,9 +69,9 @@ class AuthSessionApplicationIntegrationTest extends MariaDbIntegrationTest {
      * @param redis Redis清理
      */
     @Autowired
-    AuthSessionApplicationIntegrationTest(LocalIdentityApplicationService identities, AuthSessions sessions,
+    AuthSessionApplicationIntegrationTest(LocalIdentityApplicationService identities, AuthSessions sessions, AccountPermissions permissions,
             LocalAccountRepository accounts, PasswordHasher passwords, UnitOfWork unitOfWork, JdbcTemplate jdbc, StringRedisTemplate redis) {
-        this.identities = identities; this.sessions = sessions; this.accounts = accounts; this.passwords = passwords;
+        this.identities = identities; this.sessions = sessions; this.permissions = permissions; this.accounts = accounts; this.passwords = passwords;
         this.unitOfWork = unitOfWork; this.jdbc = jdbc; this.redis = redis;
     }
 
@@ -90,7 +93,7 @@ class AuthSessionApplicationIntegrationTest extends MariaDbIntegrationTest {
         account = LocalAccount.create(username, passwords.hash(password), false);
         unitOfWork.execute(() -> { accounts.insert(account); return null; });
         keys.add("auth:user:" + account.getId() + ":ver");
-        service = new AuthSessionApplicationService(identities, codec, sessions);
+        service = new AuthSessionApplicationService(identities, codec, sessions, permissions);
     }
 
     /** 清理已知测试资源，不扫描其他会话。 */
@@ -176,7 +179,7 @@ class AuthSessionApplicationIntegrationTest extends MariaDbIntegrationTest {
             /** {@inheritDoc} */
             @Override public void rotate(TokenCodec.Claims previous, TokenCodec.Claims replacement) { throw new StratumException(CommonErrorCode.INTERNAL_ERROR); }
         };
-        var unavailable = new AuthSessionApplicationService(identities, codec, failing);
+        var unavailable = new AuthSessionApplicationService(identities, codec, failing, permissions);
         assertEquals(CommonErrorCode.INTERNAL_ERROR, assertThrows(StratumException.class,
                 () -> unavailable.login(username, password.clone(), "session-app-test")).getErrorCode());
         var first = track(service.login(username, password.clone(), "session-app-test"));
@@ -184,6 +187,41 @@ class AuthSessionApplicationIntegrationTest extends MariaDbIntegrationTest {
                 () -> unavailable.refresh(first.refreshToken())).getErrorCode());
         assertEquals(CommonErrorCode.INTERNAL_ERROR, assertThrows(StratumException.class,
                 () -> unavailable.authenticateAccess(first.accessToken())).getErrorCode());
+        track(service.refresh(first.refreshToken()));
+    }
+
+    /** 不依赖Redis版本变化，禁用或删除账号本身也立即拒绝已有Access及Refresh。 */
+    @Test
+    void rejectsDisabledAndMissingAccountsBeforeRotation() {
+        var first = track(service.login(username, password.clone(), "account-state-test"));
+        jdbc.update("UPDATE auth_user SET enabled = 0 WHERE id = ?", account.getId());
+        unauthorized(() -> service.authenticateAccess(first.accessToken()));
+        unauthorized(() -> service.refresh(first.refreshToken()));
+        var previous = codec.verify(first.refreshToken(), Purpose.REFRESH);
+        assertTrue(redis.hasKey("auth:rt:" + previous.tokenId()));
+        jdbc.update("DELETE FROM auth_user WHERE id = ?", account.getId());
+        unauthorized(() -> service.authenticateAccess(first.accessToken()));
+        unauthorized(() -> service.refresh(first.refreshToken()));
+    }
+
+    /** 状态查询失败关闭，不消费Refresh；无效JWT在任何状态查询前被拒绝。 */
+    @Test
+    void failsClosedWhenAccountLookupFailsAndVerifiesJwtFirst() {
+        var reads = new java.util.concurrent.atomic.AtomicInteger();
+        AccountPermissions failing = (id, traceId) -> {
+            reads.incrementAndGet();
+            throw new StratumException(CommonErrorCode.INTERNAL_ERROR);
+        };
+        var unavailable = new AuthSessionApplicationService(identities, codec, sessions, failing);
+        var first = track(service.login(username, password.clone(), "account-state-test"));
+        unauthorized(() -> unavailable.authenticateAccess("invalid"));
+        unauthorized(() -> unavailable.refresh("invalid"));
+        assertEquals(0, reads.get());
+        assertEquals(CommonErrorCode.INTERNAL_ERROR, assertThrows(StratumException.class,
+                () -> unavailable.authenticateAccess(first.accessToken())).getErrorCode());
+        assertEquals(CommonErrorCode.INTERNAL_ERROR, assertThrows(StratumException.class,
+                () -> unavailable.refresh(first.refreshToken())).getErrorCode());
+        assertEquals(2, reads.get());
         track(service.refresh(first.refreshToken()));
     }
 
@@ -196,6 +234,7 @@ class AuthSessionApplicationIntegrationTest extends MariaDbIntegrationTest {
                 context.registerBean(LocalIdentityApplicationService.class, () -> identities);
                 context.registerBean(TokenCodec.class, () -> codec);
                 context.registerBean(AuthSessions.class, () -> sessions);
+                context.registerBean(AccountPermissions.class, () -> permissions);
                 context.register(AuthSessionConfiguration.class); context.refresh();
                 assertEquals(enabled ? 1 : 0, context.getBeansOfType(AuthSessionApplicationService.class).size());
             }

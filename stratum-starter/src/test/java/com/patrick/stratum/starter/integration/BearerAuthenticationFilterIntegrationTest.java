@@ -14,6 +14,7 @@ import com.patrick.stratum.application.auth.CurrentIdentity;
 import com.patrick.stratum.common.error.CommonErrorCode;
 import com.patrick.stratum.common.trace.TraceIdContext;
 import com.patrick.stratum.domain.auth.AuthSessions;
+import com.patrick.stratum.domain.auth.AccountPermissions;
 import com.patrick.stratum.domain.auth.TokenCodec;
 import com.patrick.stratum.domain.auth.TokenCodec.Purpose;
 import com.patrick.stratum.infrastructure.auth.RsaTokenAdapterImpl;
@@ -47,7 +48,7 @@ class BearerAuthenticationFilterIntegrationTest extends MariaDbIntegrationTest {
     private final BearerAuthenticationFilter filter;
 
     /**
-     * 装配真实会话和生产错误输出，不使用伪造认证结果。
+     * 装配真实签名、会话和生产错误输出；账号状态用明确的启用快照隔离过滤器测试。
      * @param sessions 权威会话端口
      * @param redis 测试清理客户端
      */
@@ -56,7 +57,8 @@ class BearerAuthenticationFilterIntegrationTest extends MariaDbIntegrationTest {
         this.sessions = sessions; this.redis = redis;
         var messages = new ResourceBundleMessageSource(); messages.setBasename("messages"); messages.setDefaultEncoding("UTF-8");
         errors = new SecurityErrorWriter(json, messages);
-        filter = new BearerAuthenticationFilter(() -> new AuthSessionApplicationService(null, codec, sessions), errors);
+        filter = new BearerAuthenticationFilter(() -> new AuthSessionApplicationService(null, codec, sessions,
+                (id, trace) -> java.util.Optional.of(new AccountPermissions.Snapshot(id, true, Set.of()))), errors);
     }
 
     /**

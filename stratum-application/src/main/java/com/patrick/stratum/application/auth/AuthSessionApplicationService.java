@@ -3,6 +3,10 @@ package com.patrick.stratum.application.auth;
 import java.util.UUID;
 
 import com.patrick.stratum.domain.auth.AuthSessions;
+import com.patrick.stratum.domain.auth.AccountPermissions;
+import com.patrick.stratum.common.error.CommonErrorCode;
+import com.patrick.stratum.common.error.StratumException;
+import com.patrick.stratum.common.trace.TraceIdContext;
 import com.patrick.stratum.domain.auth.TokenCodec;
 import com.patrick.stratum.domain.auth.TokenCodec.Purpose;
 import lombok.RequiredArgsConstructor;
@@ -13,6 +17,7 @@ public class AuthSessionApplicationService {
     private final LocalIdentityApplicationService identities;
     private final TokenCodec tokens;
     private final AuthSessions sessions;
+    private final AccountPermissions permissions;
 
     /**
      * 验证本地账号后创建独立会话，失败不返回已签发但未登记的令牌。
@@ -38,13 +43,14 @@ public class AuthSessionApplicationService {
      */
     public Tokens refresh(String refreshToken) {
         var previous = tokens.verify(refreshToken, Purpose.REFRESH);
+        requireEnabled(previous.subject());
         var result = issue(previous.subject(), previous.sessionId(), previous.version());
         sessions.rotate(previous, tokens.verify(result.refreshToken(), Purpose.REFRESH));
         return result;
     }
 
     /**
-     * 按Access用途验证JWT，并逐请求校验Redis会话和撤销版本。
+     * 按Access用途验证JWT，并逐请求校验Redis会话、撤销版本和账号启用状态。
      * @param accessToken 敏感Access原文
      * @return 服务器验证的声明，可构造HTTP可信主体，不代表已通过RBAC
      * @apiNote 示例：{@code authentication.authenticateAccess(bearer)}。
@@ -52,7 +58,19 @@ public class AuthSessionApplicationService {
     public TokenCodec.Claims authenticateAccess(String accessToken) {
         var claims = tokens.verify(accessToken, Purpose.ACCESS);
         sessions.requireActive(claims);
+        requireEnabled(claims.subject());
         return claims;
+    }
+
+    /**
+     * 经权威只读端口逐次检查账号状态，不缓存启用结果，不信任客户端主体。
+     * @param subject 已通过密码学验证的标准UUID
+     */
+    private void requireEnabled(String subject) {
+        UUID userId = UUID.fromString(subject);
+        String traceId = TraceIdContext.getTraceId().orElseGet(() -> UUID.randomUUID().toString());
+        permissions.findByUserId(userId, traceId).filter(snapshot -> snapshot.userId().equals(userId) && snapshot.enabled())
+                .orElseThrow(() -> new StratumException(CommonErrorCode.UNAUTHORIZED));
     }
 
     /**
