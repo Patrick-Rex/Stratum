@@ -611,3 +611,11 @@ AccountRolesQuery和RolePermissionsQuery分别返回目标版本及完整角色I
 PermissionCatalogQuery经QueryGateway提供后端已登记的可授予权限，code/type/name来自与角色配置相同的PermissionCatalog，避免数据库残留未知项成为可授予选项；它表示目录，不代表当前账号授权。支持精确API/FEAT、编码/名称字面过滤与有界稳定分页，每次仍查询当前管理员资格，不能因目录为静态注册项而绕过授权。
 
 2026-10-25重新执行全工程 `test :stratum-starter:integrationTest --rerun-tasks`，33任务全部实际执行；130项单元和334项真实MariaDB/Redis/HTTP集成测试通过，0失败/错误/跳过。新增3项目录测试验证分页完整、类型/名称与领域目录和初始化管理员授权一致、最大页码安全、字面过滤及授权/事务边界；包含全部管理应用、查询、认证和ERP回归。D02.2d6完成，管理HTTP按d7a至d7e接续，业务RBAC仍待D02.3。
+
+## 账号管理HTTP写入口（NODE-D02.2d7a）
+
+API版本1提供 `POST /api/auth/accounts`（username、只写password）、`PATCH /api/auth/accounts/{id}/status`（version、enabled）及 `PUT /api/auth/accounts/{id}/roles`（version、完整roleIds）。创建返回201、Location及id/version，状态与角色更新返回200及新版本；成功响应禁止缓存。身份完全来自已验证Access，不接收操作者或初始化字段；账号与角色管理查询HTTP仍待后续节点。
+
+输入Bean Validation拒绝缺失、类型/格式、负版本、超过64角色或空元素。密码端口明确声明的非法输入由创建应用仅在散列调用处映射400，含UTF-8超过72字节和全空白，不吞掉其他存储异常；密码数组在应用和控制器finally清零，DTO序列化和日志描述不输出密码。已获权限检查、目标404、并发/最后管理员409及撤销逻辑复用已验收应用用例。
+
+22项真实数据库/Redis/HTTP测试通过，0失败/错误/跳过，包括4项新HTTP与18项创建账号/角色分配/启停应用回归。覆盖创建无授权、重复用户名、角色提升/清空、启停后旧Access/Refresh拒绝、普通/匿名/Refresh身份与伪造主体拒绝、最后管理员、缺失目标/角色、旧版本、密码编码边界、请求版本及无Cookie/trace/缓存协议。

@@ -115,7 +115,7 @@ class AccountCreationApplicationIntegrationTest extends MariaDbIntegrationTest {
         assertArrayEquals(new char[duplicate.length], duplicate);
         assertEquals(original, work.execute(() -> accounts.findById(id.toString()).orElseThrow()).getPasswordHash());
         String invalidUser = username(); char[] tooLong = "x".repeat(73).toCharArray();
-        assertThrows(IllegalArgumentException.class, () -> service.create(invalidUser, tooLong));
+        error(CommonErrorCode.BAD_REQUEST, () -> service.create(invalidUser, tooLong));
         assertArrayEquals(new char[tooLong.length], tooLong); assertMissing(invalidUser);
     }
 

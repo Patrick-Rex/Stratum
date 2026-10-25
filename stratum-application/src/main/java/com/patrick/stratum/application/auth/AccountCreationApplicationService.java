@@ -4,6 +4,8 @@ import java.util.Arrays;
 import java.util.UUID;
 
 import com.patrick.stratum.application.transaction.UnitOfWork;
+import com.patrick.stratum.common.error.CommonErrorCode;
+import com.patrick.stratum.common.error.StratumException;
 import com.patrick.stratum.domain.auth.AdministrationPolicy;
 import com.patrick.stratum.domain.auth.AuthorizationAdministrationRepository;
 import com.patrick.stratum.domain.auth.LocalAccount;
@@ -29,7 +31,7 @@ public class AccountCreationApplicationService {
      * @param username 精确登录名，沿用账号领域边界
      * @param password 待消费密码数组，执行后清零；外层调用方也须保证清理
      * @return 新账号UUID，不返回凭据
-     * @throws com.patrick.stratum.common.error.StratumException 非当前管理员、用户名冲突或存储失败
+     * @throws com.patrick.stratum.common.error.StratumException 非当前管理员、密码输入非法、用户名冲突或存储失败
      * @apiNote 示例：{@code creation.create(username, password)}从无事务的管理入口调用。
      */
     @Transactional(propagation = Propagation.NEVER)
@@ -38,7 +40,9 @@ public class AccountCreationApplicationService {
             UUID actor = identity.require().userId();
             String validated = LocalAccount.requireUsername(username);
             work.execute(() -> { requireAdministrator(actor); return null; });
-            String hash = passwords.hash(password);
+            String hash;
+            try { hash = passwords.hash(password); }
+            catch (IllegalArgumentException invalidPassword) { throw new StratumException(CommonErrorCode.BAD_REQUEST); }
             return work.execute(() -> {
                 requireAdministrator(actor);
                 var account = LocalAccount.create(validated, hash, false);
