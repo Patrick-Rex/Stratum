@@ -5,6 +5,7 @@ import java.net.URI;
 import java.util.List;
 import java.util.UUID;
 import com.patrick.stratum.application.auth.CurrentIdentity;
+import com.patrick.stratum.application.auth.CurrentOrderWarehouseAuthorizationApplicationService;
 import com.patrick.stratum.application.auth.CurrentWarehouseAuthorizationApplicationService;
 import com.patrick.stratum.application.auth.CurrentAuthorizationApplicationService;
 import com.patrick.stratum.domain.trade.TradeOrderPermissions;
@@ -33,6 +34,7 @@ public class TradeOrderController {
     private final CurrentIdentity identities;
     private final CurrentAuthorizationApplicationService authorization;
     private final CurrentWarehouseAuthorizationApplicationService warehouses;
+    private final CurrentOrderWarehouseAuthorizationApplicationService orderWarehouses;
 
     /**
      * 固定订单头及有界明细输入。
@@ -109,12 +111,13 @@ public class TradeOrderController {
      * @apiNote 示例：POST /api/erp/orders/PURCHASE/{id}/fulfillments，含version和lines。
      */
     @PostMapping("/{id}/fulfillments")
-    @Operation(summary = "分批收货或出库", description = "需对应erp.purchase.fulfill或erp.sales.fulfill权限；采购增加库存，销售扣减库存；不允许负库存或超订单数量。同键重放原批次及当时订单快照，观察版本过期返回409。")
+    @Operation(summary = "分批收货或出库", description = "需对应erp.purchase.fulfill或erp.sales.fulfill权限及原订单仓库范围，均在幂等重放前检查；无范围、缺失或类别不符404；采购增加库存，销售扣减库存；不允许负库存或超订单数量。同键重放原批次及当时订单快照，观察版本过期返回409。")
     @ApiResponse(responseCode = "201", description = "履约或原请求重放成功，Location按postingId过滤本批履约历史")
     public ResponseEntity<FulfillmentResult> fulfill(@PathVariable("kind") TradeOrder.Kind kind, @PathVariable("id") UUID id,
             @RequestHeader("Idempotency-Key") @Pattern(regexp = IDEMPOTENCY_PATTERN) String key,
             @Valid @RequestBody FulfillRequest request) {
         authorization.requireApi(TradeOrderPermissions.fulfill(kind));
+        orderWarehouses.require(kind, id);
         var lines = request.lines().stream().map(line -> FulfillOrderCommand.Line.builder()
                 .orderLineId(line.orderLineId()).quantity(line.quantity()).build()).toList();
         var result = commands.execute(FulfillOrderCommand.builder().subjectId(identities.require().getName()).idempotencyKey(key).kind(kind)

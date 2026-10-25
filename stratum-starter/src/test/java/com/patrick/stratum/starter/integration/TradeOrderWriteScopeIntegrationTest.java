@@ -24,11 +24,15 @@ abstract class TradeOrderWriteScopeIntegrationTest extends TradeOrderScopeIntegr
     private final Set<String> createdOrders = new HashSet<>();
     private long roleVersion = 1;
 
-    /** 在原订单夹具清理前移除本用例HTTP新增订单、事件和回执。 */
+    /** 在原订单夹具清理前移除本用例HTTP库存效果、新增订单、事件和回执。 */
     @AfterEach
     void cleanWrites() {
         for (String key : keys) jdbc.update("DELETE FROM idempotency_receipt WHERE request_key=?", key);
         jdbc.update("DELETE FROM outbox_event WHERE trace_id=?", trace);
+        for (var values : fixtures.values()) for (var order : values) {
+            jdbc.update("DELETE FROM erp_stock_movement WHERE order_id=?", order.getId().toString());
+        }
+        for (UUID warehouse : java.util.List.of(first, second)) jdbc.update("DELETE FROM erp_stock_balance WHERE warehouse_id=?", warehouse.toString());
         for (String id : createdOrders) {
             jdbc.update("DELETE FROM erp_order_line WHERE order_id=?", id);
             jdbc.update("DELETE FROM erp_trade_order WHERE id=?", id);
