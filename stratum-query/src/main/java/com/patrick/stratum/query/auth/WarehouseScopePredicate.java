@@ -1,0 +1,24 @@
+package com.patrick.stratum.query.auth;
+
+/** 数据库范围谓词：以当前启用账号的角色关系计算ALL或指定仓库并集，不物化或截断集合。 */
+public final class WarehouseScopePredicate {
+    /**
+     * 参数0为固定目标列或绑定仓库UUID，参数1为服务端绑定用户UUID；调用方必须关闭SQL参数日志。
+     * 表名与关联均为后端常量，不接收客户端SQL或授权集合。
+     */
+    public static final String SQL = """
+            EXISTS (
+                SELECT 1 FROM auth_user scope_user
+                INNER JOIN auth_user_role scope_member ON scope_member.user_id = scope_user.id
+                INNER JOIN auth_role_warehouse_scope scope_config ON scope_config.role_id = scope_member.role_id
+                LEFT JOIN auth_role_warehouse scope_warehouse
+                    ON scope_warehouse.role_id = scope_config.role_id AND scope_warehouse.warehouse_id = {0}
+                WHERE scope_user.id = {1} AND scope_user.enabled = 1
+                    AND (scope_config.scope_type = 'ALL'
+                        OR (scope_config.scope_type = 'CUSTOM' AND scope_warehouse.warehouse_id IS NOT NULL))
+            )
+            """;
+
+    /** 仅提供固定参数化谓词，不创建实例。 */
+    private WarehouseScopePredicate() { }
+}
