@@ -10,8 +10,8 @@
 
 ```
 阶段：Phase D（认证、权限与网关）
-当前节点：NODE-D04.1c（待开始）
-上次会话日期：2026-10-25（NODE-D04.1b 验收）
+当前节点：NODE-D04.1c1b（待开始）
+上次会话日期：2026-10-25（NODE-D04.1c1a 验收）
 项目状态：NODE-B01 已完成，Domain 核心抽象已建立（AggregateRoot、Entity、ValueObject、Repository、DomainEvent），domain 模块直接声明 common 依赖，源码无框架导入；根构建统一配置 Lombok 编译期依赖；Phase A 与 Phase B 已完成；Phase C 已完成；Phase D 进行中
 ```
 
@@ -187,12 +187,13 @@
 | NODE-D04.1a1 | 接入兼容Gateway依赖并解除Starter聚合 | 2026-10-25 | Gateway build/Starter bootJar通过；2项网关运行时边界单元及2项真实ERP HTTP测试通过，0失败/错误/跳过；运行时版本与隔离已核对 |
 | NODE-D04.1a2 | 建立独立Gateway启动与健康入口 | 2026-10-25 | Gateway build/bootJar通过，4项测试通过且0失败/错误/跳过；可执行JAR实际独立运行健康200/UP，启动进程已停止 |
 | NODE-D04.1b | 建立固定上游路由及精确Header灰度回滚 | 2026-10-25 | Gateway build与8项测试通过，0失败/错误/跳过；真实双上游转发/灰度/回滚及配置边界验证，测试资源已关闭 |
+| NODE-D04.1c1a | 共享关联标识策略并复用Servlet入口 | 2026-10-25 | Common6项及Interface10项单元测试通过，0失败/错误/跳过；关联边界与原分派/线程恢复行为保持有效 |
 
 ---
 
 ## 3. 待执行节点（按顺序）
 
-下一节点为 **NODE-D04.1c**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
+下一节点为 **NODE-D04.1c1b**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
 
 ---
 

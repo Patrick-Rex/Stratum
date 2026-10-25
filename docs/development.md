@@ -860,3 +860,9 @@ GatewayRoutingProperties使用不可变启动配置，最多64个路径模式、
 Header灰度用两条固定路由：启用STRATUM_GATEWAY_GRAY_ENABLED并提供STRATUM_GATEWAY_GRAY_UPSTREAM；默认X-Stratum-Release精确值gray，名称/值可通过STRATUM_GATEWAY_GRAY_HEADER/GRAY_VALUE配置。灰度优先，未精确匹配回到稳定路由；关闭灰度并重启实现回滚，无项目内节点选择或写入重试。STRATUM_GATEWAY_HOST可限定精确入口域名；完整属性前缀为stratum.gateway.routing。
 
 Gateway build通过，8项测试通过，0失败/错误/跳过，包括4项新真实双上游/配置验收及原启动/依赖回归。验证原路径/查询/中文请求体转发、客户端伪造上游无效、未知路径不转发、Header值按字面量/大小写精确匹配及关闭灰度回退、未启用/域名不符不接触上游、非法URI与路径/容量/集合边界。所有测试创建的上游服务、HTTP客户端和网关上下文已关闭；超时/错误协议、请求防护及限流继续按后续节点实施。
+
+## 跨入口关联标识策略（NODE-D04.1c1a）
+
+Common的CorrelationIdPolicy共享X-Trace-Id/X-Request-Id名称、1至64个ASCII安全字符校验及缺失/非法时生成UUID的规则，无框架、线程或全局请求状态。Servlet RequestTraceFilter复用该策略，保持原HEADER常量、分派属性、线程绑定及finally恢复语义；不引入响应式ThreadLocal传播。
+
+16项单元测试通过，0失败/错误/跳过，包括Common原3项及新策略3项、Interface的6项Servlet过滤器及4项当前身份适配回归。覆盖字符和长度边界、UUID替换、不裁剪/不改大小写、无线程状态副作用，以及既有异步/错误分派和线程恢复行为。协议节点已按共享策略、WebFlux透传、超时/错误细分；网关WebFlux接入继续由c1b实施。
