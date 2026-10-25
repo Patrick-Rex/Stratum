@@ -2,17 +2,16 @@
 
 ## 交接报告（2026-10-25）
 
-- completedNode: NODE-D02.2d4e（完成账号启停与认证组合验收，D02.2d4完成）。
+- completedNode: NODE-D02.2d5a（接通可信管理员创建无默认权限普通账号）。
 - changedFiles:
-  - `README.md`
-  - `docs/AI可执行开发计划.md`
   - `docs/CONTEXT.md`
   - `docs/development.md`
   - `docs/entropy/SESSION-HANDOFF.md`
-  - `stratum-starter/src/test/java/com/patrick/stratum/starter/integration/AccountStatusAuthenticationIntegrationTest.java`
+  - `stratum-application/src/main/java/com/patrick/stratum/application/auth/AccountCreationApplicationService.java`
+  - `stratum-starter/src/test/java/com/patrick/stratum/starter/integration/AccountCreationApplicationIntegrationTest.java`
 
-- validations: 全工程33个任务全部重新执行，130项单元及293项真实MariaDB/Redis/HTTP集成测试通过，0失败/错误/跳过；新增3项验证停用/重新启用、提交窗口登录与刷新竞争。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
+- validations: 12项真实数据库/Redis组合测试通过，0失败/错误/跳过；覆盖普通账号无授权、密码认证/清零、鉴权前置及散列后重验、重复/并发创建和提交失败回滚，含6项启停回归。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
 - unresolved: 部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
-- nextNode: NODE-D02.2d5a。
+- nextNode: NODE-D02.2d5b。
 - 当前节点验收后审查、提交、推送；完成后继续下一节点，不重复请求授权。
 - CONTEXT 已更新。共享 Docker 容器保持运行，仅清理本轮创建的测试资源；测试 JVM 已退出；独立测试容器 stratum-integration-mariadb / stratum-integration-redis 暂留供连续验证，会话结束前清理。连接状态在本机临时目录 stratum-integration-state.json，不提交凭据。
