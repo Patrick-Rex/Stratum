@@ -148,7 +148,7 @@ class TradeOrderAuthorizationHttpIntegrationTest extends AdministrationHttpInteg
     }
 
     /**
-     * 准备独立主数据和空授权普通账号，测试会话始终复用以验证实时授权变化。
+     * 准备独立主数据和空API权限、显式ALL仓库范围普通账号，测试会话始终复用以验证实时授权变化。
      * @throws Exception HTTP失败
      */
     private void prepare() throws Exception {
@@ -159,6 +159,8 @@ class TradeOrderAuthorizationHttpIntegrationTest extends AdministrationHttpInteg
         String username = "trade-rbac-" + UUID.randomUUID(), password = UUID.randomUUID().toString();
         UUID user = createAccount(username, password); role = createRole("trade-rbac-" + UUID.randomUUID(), "订单权限");
         data(request("PUT", "/api/auth/accounts/" + user + "/roles", accessToken(), Map.of("version", 0, "roleIds", Set.of(role))), 200);
+        data(request("PUT", "/api/auth/roles/" + role + "/warehouse-scope", accessToken(),
+                Map.of("version", 0, "scopeType", "ALL", "warehouseIds", Set.of())), 200);
         token = login(username, password).accessToken();
     }
 

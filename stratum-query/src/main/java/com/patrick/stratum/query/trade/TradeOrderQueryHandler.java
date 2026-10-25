@@ -6,8 +6,12 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.UUID;
 import com.easy.query.api.proxy.client.EasyEntityQuery;
+import com.easy.query.core.exception.EasyQueryException;
 import com.easy.query.core.proxy.columns.types.SQLStringTypeColumn;
 import com.patrick.stratum.common.enums.SortDirection;
+import com.patrick.stratum.common.error.CommonErrorCode;
+import com.patrick.stratum.common.error.StratumException;
+import com.patrick.stratum.query.auth.WarehouseScopePredicate;
 import com.patrick.stratum.domain.trade.TradeOrder;
 import com.patrick.stratum.query.QueryContext;
 import com.patrick.stratum.query.QueryHandler;
@@ -34,21 +38,30 @@ public class TradeOrderQueryHandler implements QueryHandler<TradeOrderQuery, Tra
     /** {@inheritDoc} */
     @Override
     public QueryResult<TradeOrderQuery.Row> handle(TradeOrderQuery query, QueryContext context) {
-        var selection = database.queryable(TradeOrderView.class).where(row -> row.kind().eq(query.getKind().name()));
-        for (var filter : query.spec().getFilters()) selection.where(row -> filter(row, filter));
-        for (var sort : query.spec().getSorts()) selection.orderBy(row -> {
-            boolean ascending = sort.direction() == SortDirection.ASC;
-            switch (sort.field()) {
-                case ID -> row.id().orderBy(ascending); case ORDER_NUMBER -> row.orderNumber().orderBy(ascending);
-                case TOTAL_AMOUNT -> row.totalAmount().orderBy(ascending); case CREATED_AT -> row.createdAt().orderBy(ascending);
-                default -> throw new IllegalArgumentException("不允许的订单排序字段");
-            }
-        });
-        if (query.spec().getSorts().isEmpty()) selection.orderBy(row -> row.createdAt().desc());
-        if (query.spec().getSorts().stream().noneMatch(sort -> sort.field() == TradeOrderQuery.Field.ID)) selection.orderBy(row -> row.id().asc());
-        var page = query.spec().getPageRequest();
-        var result = selection.toPageResult(page.getPage(), page.getPageSize());
-        return new QueryResult<>(page.getPage(), page.getPageSize(), result.getTotal(), result.getData().stream().map(TradeOrderQueryHandler::toRow).toList());
+        String actor = WarehouseScopePredicate.requireActor(context);
+        try {
+            var selection = database.queryable(TradeOrderView.class).asAlias("scope_order")
+                    .configure(options -> options.setPrintSQL(false)).where(row -> {
+                        row.kind().eq(query.getKind().name());
+                        row.expression().sql(WarehouseScopePredicate.SQL, parameters -> {
+                            parameters.expression(row.warehouseId()); parameters.value(actor);
+                        });
+                    });
+            for (var filter : query.spec().getFilters()) selection.where(row -> filter(row, filter));
+            for (var sort : query.spec().getSorts()) selection.orderBy(row -> {
+                boolean ascending = sort.direction() == SortDirection.ASC;
+                switch (sort.field()) {
+                    case ID -> row.id().orderBy(ascending); case ORDER_NUMBER -> row.orderNumber().orderBy(ascending);
+                    case TOTAL_AMOUNT -> row.totalAmount().orderBy(ascending); case CREATED_AT -> row.createdAt().orderBy(ascending);
+                    default -> throw new IllegalArgumentException("不允许的订单排序字段");
+                }
+            });
+            if (query.spec().getSorts().isEmpty()) selection.orderBy(row -> row.createdAt().desc());
+            if (query.spec().getSorts().stream().noneMatch(sort -> sort.field() == TradeOrderQuery.Field.ID)) selection.orderBy(row -> row.id().asc());
+            var page = query.spec().getPageRequest();
+            var result = selection.toPageResult(page.getPage(), page.getPageSize());
+            return new QueryResult<>(page.getPage(), page.getPageSize(), result.getTotal(), result.getData().stream().map(TradeOrderQueryHandler::toRow).toList());
+        } catch (EasyQueryException failure) { throw new StratumException(CommonErrorCode.INTERNAL_ERROR); }
     }
 
     /**
