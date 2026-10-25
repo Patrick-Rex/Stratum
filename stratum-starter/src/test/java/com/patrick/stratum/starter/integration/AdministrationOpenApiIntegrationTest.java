@@ -22,7 +22,7 @@ class AdministrationOpenApiIntegrationTest extends AuthenticatedHttpIntegrationT
     private final JsonMapper json = JsonMapper.builder().build();
 
     /**
-     * 七种读取契约的数据字段必须与实际DTO一致，不能复用其他同名Row的模型。
+     * 管理读取契约的数据字段必须与实际DTO一致，不能复用其他同名Row的模型。
      * @throws Exception HTTP失败
      */
     @Test
@@ -38,6 +38,10 @@ class AdministrationOpenApiIntegrationTest extends AuthenticatedHttpIntegrationT
                 () -> fields(pageItem(document, "/api/auth/permissions"), Set.of("code", "type", "name")));
         var grant = dataSchema(document, "/api/auth/roles/{id}/permissions", "get", "200").path("properties").path("permissions");
         fields(resolve(document, grant.path("items")), Set.of("code", "type"));
+        var scope = dataSchema(document, "/api/auth/roles/{id}/warehouse-scope", "get", "200");
+        fields(scope, Set.of("id", "version", "scopeType", "warehouseIds"));
+        assertEquals(1024, scope.path("properties").path("warehouseIds").path("maxItems").asInt());
+        assertEquals(Set.of("ALL", "CUSTOM"), scope.path("properties").path("scopeType").path("enum").valueStream().map(JsonNode::asText).collect(Collectors.toSet()));
     }
 
     /**
@@ -78,6 +82,12 @@ class AdministrationOpenApiIntegrationTest extends AuthenticatedHttpIntegrationT
         fields(role, Set.of("version", "name", "permissions")); required(role, "version", "name", "permissions");
         assertEquals(1024, role.path("properties").path("permissions").path("maxItems").asInt());
         fields(resolve(document, role.path("properties").path("permissions").path("items")), Set.of("code", "type"));
+
+        var scope = input(document, "/api/auth/roles/{id}/warehouse-scope", "put");
+        fields(scope, Set.of("version", "scopeType", "warehouseIds")); required(scope, "version", "scopeType", "warehouseIds");
+        assertEquals(1024, scope.path("properties").path("warehouseIds").path("maxItems").asInt());
+        assertEquals(Set.of("ALL", "CUSTOM"), scope.path("properties").path("scopeType").path("enum").valueStream().map(JsonNode::asText).collect(Collectors.toSet()));
+        fields(dataSchema(document, "/api/auth/roles/{id}/warehouse-scope", "put", "200"), Set.of("id", "version"));
         for (String path : List.of("/api/auth/accounts", "/api/auth/roles")) {
             fields(dataSchema(document, path, "post", "201"), Set.of("id", "version"));
         }
@@ -124,7 +134,7 @@ class AdministrationOpenApiIntegrationTest extends AuthenticatedHttpIntegrationT
                 checked++;
             }
         }
-        assertEquals(12, checked);
+        assertEquals(14, checked);
     }
 
     /**

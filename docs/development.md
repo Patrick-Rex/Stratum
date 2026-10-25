@@ -753,3 +753,9 @@ RoleWarehouseScopeQuery通过当前启用管理员资格检查后，以单条SQL
 RoleWarehouseManagementApplicationService仅从CurrentIdentity取得操作者，在独立Application工作单元持管理协调锁后核对当前启用管理员。按独立观察版本替换完整范围，管理员固定ALL配置拒绝普通管理改写；相同配置且版本匹配时不保存，旧版本仍409。范围结构校验限定ALL/CUSTOM与1024项，非法输入400；角色缺失404、引用/版本冲突409，其他存储错误500，不吞掉故障。
 
 17项真实MariaDB/Redis/HTTP夹具测试通过，0失败/错误/跳过，包括6项新管理用例、8项仓储与3项当前范围应用回归。覆盖即时范围变化且现有会话保持有效、独立版本与no-op、当前管理员资格及固定ALL、非法输入与引用回滚、提交前失败整体回滚及同观察版本并发只提交一份。实际管理HTTP接入继续由d2实施。
+
+## 角色仓库配置HTTP（NODE-D03.2d2）
+
+API版本1的 `GET/PUT /api/auth/roles/{id}/warehouse-scope` 已接入。GET经QueryGateway返回id/version/scopeType/warehouseIds，PUT接受version/scopeType/warehouseIds并返回id/version；版本独立于角色API权限。成功响应no-store/no-cache，身份只来自有效Access。输入只接受精确ALL/CUSTOM、非负版本和最多1024个非空仓库UUID；ALL带指定集合400，未知角色404，旧版本或无效仓库引用409，administrator固定ALL不可改写。配置立即生效且保持已有会话有效。
+
+23项真实MariaDB/Redis/HTTP测试通过，0失败/错误/跳过，包括4项新范围HTTP、6项管理应用、4项文档、4项原角色写HTTP、3项原角色读HTTP及2项网络认证。覆盖输入/身份/引用/版本边界、当前管理员资格撤回、完整配置和独立版本、无变化请求、同观察版本真实HTTP竞争及实时访问效果。生成文档核对14个管理操作的Bearer、缓存/trace/版本/错误外壳，范围模型精确ALL/CUSTOM与集合上界；D03.2d完成，下一e执行整体管理验收。

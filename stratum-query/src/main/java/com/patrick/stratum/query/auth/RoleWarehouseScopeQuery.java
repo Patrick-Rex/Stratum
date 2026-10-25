@@ -49,7 +49,7 @@ public final class RoleWarehouseScopeQuery implements Query<RoleWarehouseScopeQu
      * @param warehouseIds 完整指定仓库集合，ALL为空
      */
     public record Row(UUID id, long version,
-            @Schema(allowableValues = {"ALL", "CUSTOM"}) DataScopeType scopeType,
+            @Schema(implementation = String.class, allowableValues = {"ALL", "CUSTOM"}) DataScopeType scopeType,
             @ArraySchema(maxItems = WarehouseScope.MAX_WAREHOUSES, schema = @Schema(type = "string", format = "uuid")) Set<UUID> warehouseIds) {
         /**
          * 验证类型、容量和独立版本并复制集合。
