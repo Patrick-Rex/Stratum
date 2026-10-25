@@ -866,3 +866,11 @@ Gateway build通过，8项测试通过，0失败/错误/跳过，包括4项新�
 Common的CorrelationIdPolicy共享X-Trace-Id/X-Request-Id名称、1至64个ASCII安全字符校验及缺失/非法时生成UUID的规则，无框架、线程或全局请求状态。Servlet RequestTraceFilter复用该策略，保持原HEADER常量、分派属性、线程绑定及finally恢复语义；不引入响应式ThreadLocal传播。
 
 16项单元测试通过，0失败/错误/跳过，包括Common原3项及新策略3项、Interface的6项Servlet过滤器及4项当前身份适配回归。覆盖字符和长度边界、UUID替换、不裁剪/不改大小写、无线程状态副作用，以及既有异步/错误分派和线程恢复行为。协议节点已按共享策略、WebFlux透传、超时/错误细分；网关WebFlux接入继续由c1b实施。
+
+## WebFlux关联与协议透传（NODE-D04.1c1b）
+
+GatewayCorrelationFilter复用Common关联策略，在所有请求中补齐X-Trace-Id/X-Request-Id；唯一合法值保持原样，重复或非法值不采信，缺失请求ID沿用本次traceId。交换属性与Reactor上下文保存请求级traceId，响应提交前固定返回相同关联值，避免上游错误覆盖；不使用ThreadLocal绑定事件线程。
+
+W3C traceparent按[Trace Context](https://www.w3.org/TR/trace-context/)校验格式、非零标识及版本长度，代理原样透传可识别前缀和未来版本扩展，总长度上限1024；非法/重复/缺失时移除traceparent及孤立tracestate，有效时不改写tracestate。这里只做代理透传与关联，未生成跨度或宣称OTel已接入。Bearer、X-API-Version与Idempotency-Key继续原样转发。
+
+Gateway build和12项测试通过，0失败/错误/跳过，包括4项新增协议、原路由/启动/运行时回归。覆盖有效及未来版本W3C、业务协议头、缺失/超长/重复标识、非法W3C与孤立状态清理、错误上游关联响应覆盖、16个并发请求隔离和Reactor上下文/线程状态边界。真实本机HTTP夹具已提取共用，服务、上下文、客户端和执行器全部关闭；c2继续实现上游超时及安全统一错误。

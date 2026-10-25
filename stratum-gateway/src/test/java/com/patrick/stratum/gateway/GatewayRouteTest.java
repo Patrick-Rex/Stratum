@@ -1,41 +1,19 @@
 package com.patrick.stratum.gateway;
 
-import java.net.InetSocketAddress;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
 
-import com.sun.net.httpserver.HttpServer;
 import com.patrick.stratum.gateway.route.GatewayRoutingProperties;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.web.server.context.WebServerApplicationContext;
-import org.springframework.context.ConfigurableApplicationContext;
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /** 用两个独立本机HTTP上游验证固定路由、精确灰度和配置回滚，所有上下文与服务在用例结束关闭。 */
-class GatewayRouteTest {
-    /**
-     * 本机上游夹具，不接受外部目标，使用单个默认HTTP执行线程。
-     * @param server 独立HTTP服务
-     * @param address 随机端口根地址
-     * @param requests 实际收到的请求数
-     */
-    private record Upstream(HttpServer server, URI address, AtomicInteger requests) implements AutoCloseable {
-        /** 停止仅本夹具创建的HTTP服务。 */
-        @Override public void close() { server.stop(0); }
-    }
-
+class GatewayRouteTest extends GatewayHttpIntegrationTest {
     /**
      * 路径、查询与请求体保持原样，客户端目标参数/Header不改变固定上游，未知路径不转发。
      * @throws Exception HTTP或启动失败
@@ -114,69 +92,4 @@ class GatewayRouteTest {
         assertThrows(IllegalArgumentException.class, () -> new GatewayRoutingProperties(true, stable, List.of("/api/**"), false, null, "X-Release", "gray", "example.invalid:80"));
     }
 
-    /**
-     * 创建独立回显服务，输入读取上限4KiB；未指定执行器时使用JDK单线程默认执行器。
-     * @param name 固定上游标识
-     * @return 可关闭上游
-     * @throws Exception 端口或HTTP初始化失败
-     */
-    private Upstream upstream(String name) throws Exception {
-        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0); var requests = new AtomicInteger();
-        server.createContext("/", exchange -> {
-            requests.incrementAndGet();
-            try {
-                byte[] input = exchange.getRequestBody().readNBytes(4097);
-                if (input.length > 4096) { exchange.sendResponseHeaders(413, -1); return; }
-                byte[] output = JsonMapper.builder().build().writeValueAsBytes(Map.of("source", name,
-                        "path", exchange.getRequestURI().toASCIIString(), "method", exchange.getRequestMethod(), "body", new String(input, StandardCharsets.UTF_8)));
-                exchange.getResponseHeaders().set("Content-Type", "application/json"); exchange.sendResponseHeaders(200, output.length);
-                exchange.getResponseBody().write(output);
-            } finally { exchange.close(); }
-        });
-        server.start(); return new Upstream(server, URI.create("http://127.0.0.1:" + server.getAddress().getPort()), requests);
-    }
-
-    /**
-     * 使用CLI配置启动独立随机端口网关，配置变化通过新上下文启动验证。
-     * @param stable 稳定上游
-     * @param gray 灰度上游
-     * @param enabled 是否转发
-     * @param grayEnabled 是否灰度
-     * @param host 可选精确域名
-     * @return 必须由调用方关闭的上下文
-     */
-    private ConfigurableApplicationContext gateway(Upstream stable, Upstream gray, boolean enabled, boolean grayEnabled, String host) {
-        return SpringApplication.run(GatewayApplication.class, "--server.port=0", "--server.address=127.0.0.1", "--spring.main.banner-mode=off",
-                "--logging.level.root=ERROR", "--stratum.gateway.routing.enabled=" + enabled,
-                "--stratum.gateway.routing.upstream=" + stable.address(), "--stratum.gateway.routing.gray-upstream=" + gray.address(),
-                "--stratum.gateway.routing.gray-enabled=" + grayEnabled, "--stratum.gateway.routing.gray-value=v2.0", "--stratum.gateway.routing.host=" + host);
-    }
-
-    /**
-     * 向已启动网关发送有限时长请求，调用后关闭客户端。
-     * @param gateway 随机端口上下文
-     * @param path 固定请求路径
-     * @param headers 测试头
-     * @param body 可空POST体
-     * @return 原始HTTP响应
-     * @throws Exception 请求失败
-     */
-    private HttpResponse<String> request(ConfigurableApplicationContext gateway, String path, Map<String, String> headers, String body) throws Exception {
-        int port = ((WebServerApplicationContext) gateway).getWebServer().getPort();
-        var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path)).timeout(Duration.ofSeconds(10));
-        headers.forEach(request::header);
-        if (body == null) request.GET(); else request.POST(HttpRequest.BodyPublishers.ofString(body));
-        try (var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()) {
-            return client.send(request.build(), HttpResponse.BodyHandlers.ofString());
-        }
-    }
-
-    /**
-     * 检查回显来自预期固定上游。
-     * @param expected 标识
-     * @param response HTTP响应
-     */
-    private void assertSource(String expected, HttpResponse<String> response) {
-        assertEquals(200, response.statusCode()); assertEquals(expected, JsonMapper.builder().build().readTree(response.body()).path("source").asText());
-    }
 }
