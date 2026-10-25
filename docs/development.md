@@ -41,7 +41,7 @@
 | stratum-query | QuerySpec、Query/Handler/Result/Context、QueryGateway 与 Spring 装配；统一路由及查询指标日志 |
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
 | stratum-infrastructure | 已引入 Easy-Query 3.3.1（Boot 4 starter / MySQL 方言 / 处理器）、MariaDB JDBC、Flyway、Redis、Caffeine；已配置数据源与 Flyway；NODE-B03.2b 已验证真实 MariaDB 提交、回滚和嵌套事务 |
-| stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动及健康入口，路由治理待后续节点 |
+| stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由和Header灰度；请求治理与限流待后续节点 |
 | stratum-job | Gradle 模块骨架 |
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
@@ -852,3 +852,11 @@ Gateway build与Starter bootJar退出码0；2项运行时边界单元测试通�
 GatewayApplication只扫描gateway包，使用WebFlux/Netty启动；默认127.0.0.1:8081，通过STRATUM_GATEWAY_ADDRESS/STRATUM_GATEWAY_PORT调整。配置只暴露health且隐藏组件详情，启用graceful shutdown及10秒关闭阶段上界，不装配ERP或业务数据库。运行 `.\gradlew.bat --no-daemon :stratum-gateway:bootRun`，检查/actuator/health，Ctrl+C退出；Starter继续单独启动。
 
 Gateway build及bootJar退出码0，4项测试通过，0失败/错误/跳过，包括2项原依赖边界与2项真实随机端口HTTP启动/健康/敏感端点隔离测试，类结束关闭Netty上下文及HTTP客户端。另用JDK25实际运行独立可执行JAR，直接HTTP探测200/UP后停止自身进程，确认已退出。本节点尚无上游路由，不能将启动成功视为入口治理完成；b继续实现路由与Header灰度。
+
+## 固定上游及Header灰度（NODE-D04.1b）
+
+GatewayRoutingProperties使用不可变启动配置，最多64个路径模式、每个最长512字符；按当前PathPatternParser校验语法。固定上游仅允许无凭据/查询/片段/前缀路径的HTTP(S)根地址，可选精确Host约束；不从请求参数或Header读取目标URI。路由默认关闭，STRATUM_GATEWAY_ENABLED=true后按STRATUM_GATEWAY_UPSTREAM转发，默认路径涵盖/api/**、/auth/**及现有API文档资源。
+
+Header灰度用两条固定路由：启用STRATUM_GATEWAY_GRAY_ENABLED并提供STRATUM_GATEWAY_GRAY_UPSTREAM；默认X-Stratum-Release精确值gray，名称/值可通过STRATUM_GATEWAY_GRAY_HEADER/GRAY_VALUE配置。灰度优先，未精确匹配回到稳定路由；关闭灰度并重启实现回滚，无项目内节点选择或写入重试。STRATUM_GATEWAY_HOST可限定精确入口域名；完整属性前缀为stratum.gateway.routing。
+
+Gateway build通过，8项测试通过，0失败/错误/跳过，包括4项新真实双上游/配置验收及原启动/依赖回归。验证原路径/查询/中文请求体转发、客户端伪造上游无效、未知路径不转发、Header值按字面量/大小写精确匹配及关闭灰度回退、未启用/域名不符不接触上游、非法URI与路径/容量/集合边界。所有测试创建的上游服务、HTTP客户端和网关上下文已关闭；超时/错误协议、请求防护及限流继续按后续节点实施。

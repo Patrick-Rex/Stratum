@@ -19,3 +19,14 @@ management:
   endpoint:
     health:
       show-details: never
+
+stratum:
+  gateway:
+    routing:
+      enabled: ${STRATUM_GATEWAY_ENABLED:false}
+      upstream: ${STRATUM_GATEWAY_UPSTREAM:http://127.0.0.1:8080}
+      gray-enabled: ${STRATUM_GATEWAY_GRAY_ENABLED:false}
+      gray-upstream: ${STRATUM_GATEWAY_GRAY_UPSTREAM:}
+      gray-header: ${STRATUM_GATEWAY_GRAY_HEADER:X-Stratum-Release}
+      gray-value: ${STRATUM_GATEWAY_GRAY_VALUE:gray}
+      host: ${STRATUM_GATEWAY_HOST:}
