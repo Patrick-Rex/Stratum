@@ -46,7 +46,7 @@ public final class QueryHttpParameters {
     /**
      * 声明精确匹配字段，转换只发生在服务器指定类型上。
      * @param field 字段及HTTP参数名
-     * @param type String、UUID、BigDecimal、Instant或Long
+     * @param type String、UUID、BigDecimal、Instant、Long或严格Boolean
      * @return 当前构造器
      * @apiNote 示例：parameters.exact("code", String.class)。
      */
@@ -151,6 +151,13 @@ public final class QueryHttpParameters {
         }
         if (type == BigDecimal.class) return new BigDecimal(value);
         if (type == Long.class) return Long.valueOf(value);
+        if (type == Boolean.class) {
+            return switch (value) {
+                case "true" -> Boolean.TRUE;
+                case "false" -> Boolean.FALSE;
+                default -> throw new IllegalArgumentException("布尔参数仅接受true或false");
+            };
+        }
         if (type == Instant.class) {
             try { return Instant.parse(value); }
             catch (DateTimeParseException invalidTime) { throw new IllegalArgumentException("时间格式非法", invalidTime); }

@@ -627,3 +627,9 @@ API版本1提供 `POST /api/auth/roles`（code、name）和 `PUT /api/auth/roles
 嵌套Bean Validation检查名称、编码、版本、空元素和1024项集合边界；Application只将角色领域创建/变更声明的非法输入映射400，包含目录外权限和保留administrator角色，存储错误保持原有语义。角色权限提交后实时读取，不依赖重新签发JWT。HTTP夹具按本测试账号和角色精确清理，先删除自身账号成员关系再删除角色。
 
 14项真实数据库/Redis/HTTP测试通过，0失败/错误/跳过，包括4项角色HTTP、6项角色应用与4项账号HTTP回归。覆盖空权限创建、重复编码、精确授权与清空、已登录账号权限即时改变、普通/匿名/Refresh与自报身份拒绝、目录类型不匹配、保留角色、旧版本/未知目标、嵌套输入边界和版本头；非法配置保持原名称和版本。
+
+## 账号管理HTTP读入口（NODE-D02.2d7c）
+
+API版本1提供 `GET /api/auth/accounts`、`GET /api/auth/accounts/{id}` 与 `GET /api/auth/accounts/{id}/roles`。列表参数为page/pageSize/sort、id、username/usernameContains、enabled、version及完整versionFrom/versionTo；enabled严格接受小写true或false，其他值和重复参数返回400。全部读请求经可信身份和管理资格查询，成功响应禁止缓存；详情缺失返回404，已有账号无角色返回空集合及观察版本。
+
+12项真实数据库/Redis/HTTP测试通过，0失败/错误/跳过，包括3项账号读HTTP、5项账号查询和4项账号写HTTP回归。验证稳定翻页、布尔状态/版本区间、无凭据或初始化字段、完整角色关系、未知目标、匿名/Refresh/普通账号拒绝、管理员关系移除后即时403、参数白名单/重复/UUID/范围边界及注入文本。角色与目录读HTTP继续由d7d接入。
