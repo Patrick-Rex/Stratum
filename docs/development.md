@@ -633,3 +633,9 @@ API版本1提供 `POST /api/auth/roles`（code、name）和 `PUT /api/auth/roles
 API版本1提供 `GET /api/auth/accounts`、`GET /api/auth/accounts/{id}` 与 `GET /api/auth/accounts/{id}/roles`。列表参数为page/pageSize/sort、id、username/usernameContains、enabled、version及完整versionFrom/versionTo；enabled严格接受小写true或false，其他值和重复参数返回400。全部读请求经可信身份和管理资格查询，成功响应禁止缓存；详情缺失返回404，已有账号无角色返回空集合及观察版本。
 
 12项真实数据库/Redis/HTTP测试通过，0失败/错误/跳过，包括3项账号读HTTP、5项账号查询和4项账号写HTTP回归。验证稳定翻页、布尔状态/版本区间、无凭据或初始化字段、完整角色关系、未知目标、匿名/Refresh/普通账号拒绝、管理员关系移除后即时403、参数白名单/重复/UUID/范围边界及注入文本。角色与目录读HTTP继续由d7d接入。
+
+## 角色和权限目录HTTP读入口（NODE-D02.2d7d）
+
+API版本1提供 `GET /api/auth/roles`、`GET /api/auth/roles/{id}`、`GET /api/auth/roles/{id}/permissions` 及 `GET /api/auth/permissions`。角色列表支持编码/名称精确或字面包含、ID、版本及闭区间和白名单分页排序；权限目录支持code/name过滤与严格API/FEAT类型。关系详情同时返回版本和完整权限，已存在空角色返回空集合，目标不存在返回404；成功响应禁止缓存。
+
+9项真实数据库/Redis/HTTP测试通过，0失败/错误/跳过，包括3项角色/目录HTTP、3项账号读HTTP与3项目录查询回归。覆盖分页、配置后名称和授权即时读取、API/FEAT目录名称及数量一致、全部读路由的匿名/普通/已移除管理员拒绝、未知目标、非法/重复参数、区间/版本及注入文本。D02.2d7e继续核对OpenAPI与组合协议。
