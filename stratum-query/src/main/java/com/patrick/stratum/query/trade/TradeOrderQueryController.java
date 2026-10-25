@@ -75,11 +75,11 @@ public class TradeOrderQueryController {
      * 读取同一数据库语句快照中的订单与有界固定明细。
      * @param kind 路由类别
      * @param id 订单UUID
-     * @return 详情，缺失时404
+     * @return 详情，缺失或不在仓库范围时404
      * @apiNote 示例：GET /api/erp/orders/PURCHASE/{id}。
      */
     @GetMapping("/{id}")
-    @Operation(summary = "查询采购销售订单详情", description = "需对应erp.purchase.read或erp.sales.read权限；queryCode=erp.order.detail；含order摘要及最多100条lines，明细按原行号返回；缺失或类别不符404。")
+    @Operation(summary = "查询采购销售订单详情", description = "需对应erp.purchase.read或erp.sales.read权限；queryCode=erp.order.detail；同时要求当前角色仓库范围；含order摘要及最多100条lines，明细按原行号返回；缺失、无仓库范围或类别不符404。")
     public TradeOrderDetailQuery.Row detail(@PathVariable("kind") TradeOrder.Kind kind, @PathVariable("id") UUID id) {
         authorization.requireApi(TradeOrderPermissions.read(kind));
         return queries.execute(TradeOrderDetailQuery.create(kind, id), QueryHttpParameters.context(identities)).getItems()
