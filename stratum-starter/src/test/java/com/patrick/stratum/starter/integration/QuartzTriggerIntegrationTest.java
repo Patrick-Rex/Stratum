@@ -16,10 +16,12 @@ import com.patrick.stratum.application.job.JobExecutionApplicationService;
 import com.patrick.stratum.application.job.JobHandler;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository.Submission;
+import com.patrick.stratum.domain.job.JobRecoveryRepository.ReplayRequest;
 import com.patrick.stratum.infrastructure.job.SchedulerConfiguration;
 import com.patrick.stratum.job.JobRuntimeConfiguration;
 import com.patrick.stratum.job.QuartzDispatchJob;
 import com.patrick.stratum.job.QuartzTriggerConfiguration;
+import com.patrick.stratumtest.job.JobCrashProcess;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.quartz.JobBuilder;
@@ -172,6 +174,88 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
         assertTrue(probe.threads.stream().noneMatch(Thread::isAlive));
     }
 
+    /** 真实调度连续失败达到死亡，人工原请求幂等恢复同一执行，保留累计尝试并关联解决死亡记录。 */
+    @Test
+    void recoversDeadExecutionThroughOriginalIdentity() throws Exception {
+        probe.failures.set(3);
+        context(); context();
+        var id = register();
+        await().atMost(Duration.ofSeconds(15)).until(() -> "DEAD".equals(state(id)));
+        assertEquals(3, probe.calls.get());
+        var request = replayRequest(id);
+        assertEquals(id, jobs.replay(request));
+        assertEquals(id, jobs.replay(request));
+        await().atMost(Duration.ofSeconds(10)).until(() -> "SUCCEEDED".equals(state(id)));
+        assertEquals(id, jobs.replay(request));
+        assertEquals(4, probe.calls.get());
+        assertEquals(1, probe.maximum.get());
+        assertEquals(List.of("FAILED", "FAILED", "FAILED", "SUCCEEDED"), results(id));
+        assertEquals(List.of("trigger-trace", "trigger-trace", "trigger-trace", "recovered-trigger-trace"),
+                jdbc.queryForList("SELECT trace_id FROM job_attempt WHERE execution_id=? ORDER BY attempt_no", String.class, id.toString()));
+        assertEquals("RESOLVED", jdbc.queryForObject("SELECT state FROM dead_job WHERE execution_id=?", String.class, id.toString()));
+        assertEquals(1L, jdbc.queryForObject("SELECT cycle_no FROM job_execution WHERE execution_id=?", Long.class, id.toString()));
+        assertEquals("{}", jdbc.queryForObject("SELECT arguments FROM job_execution WHERE execution_id=?", String.class, id.toString()));
+        assertEquals("trigger-trace", jdbc.queryForObject("SELECT initial_trace_id FROM job_execution WHERE execution_id=?", String.class, id.toString()));
+        assertThrows(RuntimeException.class, () -> jobs.replay(new ReplayRequest(UUID.randomUUID(), request.deadId(), "new-request")));
+    }
+
+    /** 真实Quartz触发的处理器达到一秒截止后中断并死亡，人工恢复成功而不覆盖原超时历史。 */
+    @Test
+    void replaysActuallyTimedOutExecution() throws Exception {
+        probe.block = true;
+        context(); context();
+        var id = register(1, 1);
+        await().atMost(Duration.ofSeconds(10)).until(() -> "DEAD".equals(state(id)));
+        assertEquals(List.of("TIMED_OUT"), results(id));
+        probe.block = false;
+        jobs.replay(replayRequest(id));
+        await().atMost(Duration.ofSeconds(10)).until(() -> "SUCCEEDED".equals(state(id)));
+        assertEquals(List.of("TIMED_OUT", "SUCCEEDED"), results(id));
+        assertEquals(2, probe.calls.get());
+        assertEquals("RESOLVED", jdbc.queryForObject("SELECT state FROM dead_job WHERE execution_id=?", String.class, id.toString()));
+    }
+
+    /** 强制结束仅由本用例启动的真实JVM，存活节点等待真实ShedLock和执行租约到期后记录遗失并重试。 */
+    @Test
+    void recoversAfterOwnedProcessActuallyDies() throws Exception {
+        var id = register(2, 3);
+        try (var process = JobCrashProcess.start(probe.code, name)) {
+            await().atMost(Duration.ofSeconds(45)).until(() -> {
+                assertTrue(process.isAlive(), "独立任务JVM未能保持运行，检查本次临时进程日志");
+                return process.started(id) && "RUNNING".equals(state(id));
+            });
+            process.crash();
+            assertFalse(process.isAlive());
+            assertEquals("RUNNING", state(id));
+            context(); context();
+            await().pollInterval(Duration.ofMillis(500)).atMost(Duration.ofSeconds(95))
+                    .until(() -> "SUCCEEDED".equals(state(id)));
+            assertEquals(List.of("LEASE_EXPIRED", "SUCCEEDED"), results(id));
+            assertEquals(1, probe.calls.get());
+            assertEquals(1, probe.maximum.get());
+            assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dead_job WHERE execution_id=?", Integer.class, id.toString()));
+        }
+    }
+
+    /**
+     * 读取当前唯一死亡目标，创建独立幂等恢复请求。
+     * @param id 自身执行身份
+     * @return 保留原执行身份的恢复请求
+     */
+    private ReplayRequest replayRequest(UUID id) {
+        return new ReplayRequest(UUID.randomUUID(), UUID.fromString(jdbc.queryForObject(
+                "SELECT dead_id FROM dead_job WHERE execution_id=? AND state='DEAD'", String.class, id.toString())), "recovered-trigger-trace");
+    }
+
+    /**
+     * 按累计尝试顺序查询自身固定技术结果。
+     * @param id 原执行身份
+     * @return 保留历史的结果列表
+     */
+    private List<String> results(UUID id) {
+        return jdbc.queryForList("SELECT result FROM job_attempt WHERE execution_id=? ORDER BY attempt_no", String.class, id.toString());
+    }
+
     /**
      * 构造完整生产Quartz固定触发装配；创建失败同样关闭已建立的实例。
      * @return 由本用例清理的独立上下文
@@ -196,8 +280,21 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
      * @return 随机原执行UUID
      */
     private UUID register() {
+        return register(30, 3);
+    }
+
+    /**
+     * 登记有界超时和失败次数的一次性技术执行。
+     * @param timeout 秒级处理预算
+     * @param attempts 周期尝试上限
+     * @return 原执行UUID
+     */
+    private UUID register(int timeout, int attempts) {
         Instant time = Instant.parse("2026-01-01T00:00:00Z"); UUID id = UUID.randomUUID();
-        return jobs.register(new Submission(id, definition(time), time, id.toString(), "{}", "trigger-trace"));
+        var source = definition(time);
+        var input = new JobDefinition(source.jobCode(), source.jobType(), source.cron(), source.triggerAt(), timeout,
+                new JobDefinition.RetryPolicy(attempts, source.retryPolicy().initialDelay(), source.retryPolicy().maxDelay()), source.idempotencyKeyRule());
+        return jobs.register(new Submission(id, input, time, id.toString(), "{}", "trigger-trace"));
     }
 
     /**
