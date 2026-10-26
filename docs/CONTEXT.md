@@ -10,8 +10,8 @@
 
 ```
 阶段：Phase E（消息与任务）
-当前节点：NODE-E02.2d（待开始）
-上次会话日期：2026-10-26（NODE-E02.2c 验收）
+当前节点：NODE-E02.3a（待开始）
+上次会话日期：2026-10-26（NODE-E02.2d 验收）
 项目状态：NODE-B01 已完成，Domain 核心抽象已建立（AggregateRoot、Entity、ValueObject、Repository、DomainEvent），domain 模块直接声明 common 依赖，源码无框架导入；根构建统一配置 Lombok 编译期依赖；Phase A 与 Phase B 已完成；Phase C 已完成；Phase D 非部署范围已完成，D04.2部署暂缓
 ```
 
@@ -213,12 +213,13 @@
 | NODE-E02.2a | 建立有界Relay领取与租约结果契约 | 2026-10-26 | 67项Domain测试通过，0失败/错误/跳过；新增4项请求/证据/安全摘要/封顶退避验证，源码无框架导入 |
 | NODE-E02.2b | 实现有序头事件领取与租约条件更新 | 2026-10-26 | 25项真实MariaDB测试通过，0失败/错误/跳过；新增9项头资格/租约接管/失败退避/回滚/证据约束及跨实例跳锁，原16项Outbox/序号回归 |
 | NODE-E02.2c | 接通事务外有界Relay批次与结果工作单元 | 2026-10-26 | 12项Application单元测试通过，0失败/错误/跳过；新增6项事务边界/有界尝试/异常分类/本机容量/中断及状态失败恢复验证 |
+| NODE-E02.2d | 完成真实投递故障与租约恢复，E02.2完成 | 2026-10-26 | 5项真实DB/Redis/Broker集成测试通过，0失败/错误/跳过；覆盖有序头、原身份、返回/连接拒绝/否定确认及过期租约恢复 |
 
 ---
 
 ## 3. 待执行节点（按顺序）
 
-下一节点为 **NODE-E02.2d**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
+下一节点为 **NODE-E02.3a**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
 
 ---
 
@@ -304,7 +305,7 @@ Stratum/
 
 专题文档入口见 [文档导航](README.md)，源码模块职责见 [项目结构](项目结构.md)。仓储模板位于 starter 的 `src/test/java/com/patrick/stratum/starter/integration/fixture`，仅用于可运行参考；它实现 Domain Repository 契约，显式映射聚合与 ORM 表，不是已交付 ERP 业务仓储。MariaDB 1020 快照冲突和 ORM 乐观锁冲突均映射为 40900，其他 SQL 错误保持原异常。
 
-当前没有 `docker/compose/`；Infrastructure 已有 Flyway 初始版本和 Outbox 表迁移；Outbox 信封/状态/写入端口、持久化适配与 Application 落盘入口已实现并通过同事务测试；Relay 与消息投递仍待 Phase E，application 已有 6 项命令入口测试。
+当前没有 `docker/compose/`；Infrastructure 已有 Flyway 初始版本和 Outbox 表迁移；Outbox 信封/状态/写入端口、持久化适配与 Application 落盘入口已实现并通过同事务测试；事务外有界Relay已通过真实投递故障组合验收；Application当前12项单元测试通过，消费者与自动调度仍待Phase E后续节点。
 
 ---
 
