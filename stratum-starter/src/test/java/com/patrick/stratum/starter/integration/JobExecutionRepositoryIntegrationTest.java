@@ -1,0 +1,364 @@
+package com.patrick.stratum.starter.integration;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import com.patrick.stratum.application.transaction.UnitOfWork;
+import com.patrick.stratum.common.error.StratumException;
+import com.patrick.stratum.domain.job.JobDefinition;
+import com.patrick.stratum.domain.job.JobExecutionRepository;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/** 真实MariaDB验证生产登记与竞争领取；超时位置只用自身SQL时钟夹具，不伪装真实任务执行。 */
+class JobExecutionRepositoryIntegrationTest extends MariaDbIntegrationTest {
+    private static final Instant TIME = Instant.parse("2026-01-01T00:00:00.123456Z");
+    private final UnitOfWork unitOfWork;
+    private final JobExecutionRepository repository;
+    private final JdbcTemplate jdbc;
+    private final List<UUID> executions = new ArrayList<>();
+    private final String code = "probe." + UUID.randomUUID();
+
+    /**
+     * 注入应用工作单元和实际任务仓储。
+     * @param unitOfWork 真实事务入口
+     * @param repository 生产登记领取端口
+     * @param jdbc 独立断言与自身夹具清理
+     */
+    @Autowired
+    JobExecutionRepositoryIntegrationTest(UnitOfWork unitOfWork, JobExecutionRepository repository, JdbcTemplate jdbc) {
+        this.unitOfWork = unitOfWork; this.repository = repository; this.jdbc = jdbc;
+    }
+
+    /** 仅清理本用例登记的随机执行身份及其技术历史。 */
+    @AfterEach
+    void cleanup() {
+        for (UUID id : executions) {
+            jdbc.update("DELETE FROM job_replay_request WHERE execution_id=?", id.toString());
+            jdbc.update("DELETE FROM dead_job WHERE execution_id=?", id.toString());
+            jdbc.update("DELETE FROM job_attempt WHERE execution_id=?", id.toString());
+            jdbc.update("DELETE FROM job_execution WHERE execution_id=?", id.toString());
+        }
+    }
+
+    /** 真实登记保存原始高精度JSON、定义、首次trace，并在独立事务中可见。 */
+    @Test
+    void persistsOriginalInputWithoutLosingPrecision() {
+        var input = input("{\"quantity\":9999999999999999999999.123456789012}", 3);
+        assertEquals(input.executionId(), register(input));
+        var row = jdbc.queryForMap("SELECT * FROM job_execution WHERE execution_id=?", input.executionId().toString());
+        assertEquals(input.arguments(), row.get("arguments"));
+        assertEquals(input.traceId(), row.get("initial_trace_id"));
+        assertEquals("WAITING", row.get("state"));
+        assertEquals(0L, ((Number) row.get("attempt_no")).longValue());
+        var lease = claim(input.executionId()).orElseThrow();
+        assertEquals(input, lease.submission());
+    }
+
+    /** 同任务/键及同JSON值复用首次UUID，不替换首次trace或新增记录。 */
+    @Test
+    void reusesFirstIdentityAndTraceForEquivalentRegistration() {
+        var first = input("{\"a\":1,\"b\":99999999999999.123456789}", 3);
+        register(first);
+        var repeated = copy(first, id(), first.idempotencyKey(), "{\"b\":99999999999999.123456789,\"a\":1}", "new-trace");
+        assertEquals(first.executionId(), register(repeated));
+        assertEquals(1, count());
+        assertEquals(first, claim(first.executionId()).orElseThrow().submission());
+    }
+
+    /** 同键不同输入或同UUID不同键都冲突；主键和业务键同时碰撞时两条原记录保持。 */
+    @Test
+    void rejectsConflictsIncludingTwoExistingUniqueKeys() {
+        var one = input("{\"value\":1}", 3);
+        var two = input("{\"value\":2}", 3);
+        register(one); register(two);
+        conflict(() -> register(copy(one, id(), one.idempotencyKey(), "{\"value\":3}", "trace")));
+        conflict(() -> register(copy(one, one.executionId(), "another-key", one.arguments(), "trace")));
+        conflict(() -> register(copy(one, one.executionId(), two.idempotencyKey(), two.arguments(), "trace")));
+        assertEquals(2, count());
+        assertEquals(one, claim(one.executionId()).orElseThrow().submission());
+        assertEquals(two, claim(two.executionId()).orElseThrow().submission());
+    }
+
+    /** 严格拒绝非法/重复键/尾随JSON及真正非法Cron，拒绝前没有可见登记。 */
+    @Test
+    void rejectsInvalidJsonAndCronBeforeInserting() {
+        for (String arguments : List.of("{", "{\"a\":1,\"a\":2}", "{} {}")) {
+            assertEquals(40000, assertThrows(StratumException.class, () -> register(input(arguments, 3))).getErrorCode().getCode());
+        }
+        var policy = new JobDefinition.RetryPolicy(3, Duration.ofSeconds(1), Duration.ofSeconds(5));
+        var definition = new JobDefinition(code, JobDefinition.Type.CRON, Optional.of("invalid-cron"), Optional.empty(),
+                30, policy, JobDefinition.IdempotencyRule.EXPLICIT_KEY);
+        var invalid = new JobExecutionRepository.Submission(id(), definition, TIME, "bad-cron", "{}", "trace");
+        assertEquals(40000, assertThrows(StratumException.class, () -> register(invalid)).getErrorCode().getCode());
+        assertEquals(0, count());
+    }
+
+    /** 没有写事务或带只读标志时登记、候选和领取全部拒绝，不自行开启事务。 */
+    @Test
+    void requiresExistingWritableApplicationUnitOfWork() {
+        var input = input("{}", 3);
+        assertThrows(IllegalStateException.class, () -> repository.register(input));
+        assertThrows(IllegalStateException.class, () -> repository.due(code, 1));
+        assertThrows(IllegalStateException.class, () -> repository.claim(input.executionId()));
+        unitOfWork.execute(() -> {
+            boolean previous = TransactionSynchronizationManager.isCurrentTransactionReadOnly();
+            TransactionSynchronizationManager.setCurrentTransactionReadOnly(true);
+            try {
+                assertThrows(IllegalStateException.class, () -> repository.register(input));
+                assertThrows(IllegalStateException.class, () -> repository.due(code, 1));
+                assertThrows(IllegalStateException.class, () -> repository.claim(input.executionId()));
+            } finally {
+                TransactionSynchronizationManager.setCurrentTransactionReadOnly(previous);
+            }
+            return null;
+        });
+        assertEquals(0, count());
+    }
+
+    /** 仅到期任务成为有限不可变候选，未来任务和另一个代码保持独立。 */
+    @Test
+    void boundsDueCandidatesAndDoesNotClaimFutureRuns() {
+        var due = input("{}", 3);
+        register(due);
+        var futureDefinition = new JobDefinition(code, JobDefinition.Type.ONCE, Optional.empty(),
+                Optional.of(Instant.now().plus(1, ChronoUnit.DAYS).truncatedTo(ChronoUnit.MICROS)), 30,
+                due.definition().retryPolicy(), JobDefinition.IdempotencyRule.EXPLICIT_KEY);
+        var future = new JobExecutionRepository.Submission(id(), futureDefinition, futureDefinition.triggerAt().orElseThrow(),
+                "future-key", "{}", "trace");
+        register(future);
+        var candidates = unitOfWork.execute(() -> repository.due(code, 1));
+        assertEquals(List.of(due.executionId()), candidates);
+        assertThrows(UnsupportedOperationException.class, () -> candidates.add(future.executionId()));
+        assertTrue(claim(future.executionId()).isEmpty());
+        assertTrue(unitOfWork.execute(() -> repository.due("another.code", 128)).isEmpty());
+        assertThrows(IllegalArgumentException.class, () -> unitOfWork.execute(() -> repository.due(code, 129)));
+        assertThrows(IllegalArgumentException.class, () -> unitOfWork.execute(() -> repository.due("unsafe code", 1)));
+    }
+
+    /** 领取同事务创建尝试，租期由数据库开始时刻加执行预算及30秒余量生成。 */
+    @Test
+    void claimsOnceWithDatabaseTimeAndPersistentAttempt() {
+        var input = input("{}", 3);
+        register(input);
+        var lease = claim(input.executionId()).orElseThrow();
+        assertEquals(Duration.ofSeconds(60), Duration.between(lease.startTime(), lease.expiresAt()));
+        assertEquals(1, lease.attempt());
+        assertEquals(0, lease.failures());
+        assertEquals(0, lease.cycle());
+        assertTrue(claim(input.executionId()).isEmpty());
+        assertEquals(lease.token().toString(), jdbc.queryForObject("SELECT lease_token FROM job_attempt WHERE execution_id=?",
+                String.class, input.executionId().toString()));
+        assertEquals("RUNNING", jdbc.queryForObject("SELECT result FROM job_attempt WHERE execution_id=?", String.class, input.executionId().toString()));
+        assertEquals(0, jdbc.queryForObject("""
+                SELECT start_time>UTC_TIMESTAMP(6) OR start_time<UTC_TIMESTAMP(6)-INTERVAL 5 SECOND
+                FROM job_execution WHERE execution_id=?
+                """, Integer.class, input.executionId().toString()));
+    }
+
+    /** 登记或领取后的上层失败回滚执行状态和尝试，不残留占用。 */
+    @Test
+    void rollsBackRegistrationAndClaimTogether() {
+        var input = input("{}", 3);
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
+            repository.register(input);
+            repository.claim(input.executionId()).orElseThrow();
+            throw new IllegalStateException("rollback-probe");
+        }));
+        assertEquals(0, count());
+        register(input);
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
+            repository.claim(input.executionId()).orElseThrow();
+            throw new IllegalStateException("rollback-probe");
+        }));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM job_attempt WHERE execution_id=?", Integer.class, input.executionId().toString()));
+        assertEquals(1, claim(input.executionId()).orElseThrow().attempt());
+    }
+
+    /** 过期尝试先留痕并退避，到期后新领取保留输入、增加序号并更换令牌。 */
+    @Test
+    void recordsExpiredLeaseAndDefersNextAttempt() {
+        var input = input("{\"value\":1}", 3);
+        register(input);
+        var original = claim(input.executionId()).orElseThrow();
+        expire(input.executionId());
+        assertTrue(claim(input.executionId()).isEmpty());
+        assertEquals("LEASE_EXPIRED", jdbc.queryForObject("SELECT result FROM job_attempt WHERE execution_id=?", String.class, input.executionId().toString()));
+        assertEquals("RETRY_WAIT", state(input.executionId()));
+        assertTrue(unitOfWork.execute(() -> repository.due(code, 1)).isEmpty());
+        jdbc.update("UPDATE job_execution SET next_attempt_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE execution_id=?", input.executionId().toString());
+        var next = claim(input.executionId()).orElseThrow();
+        assertEquals(2, next.attempt());
+        assertEquals(1, next.failures());
+        assertNotEquals(original.token(), next.token());
+        assertEquals(input, next.submission());
+    }
+
+    /** 周期次数耗尽时过期尝试和死亡关联同事务完成，终态不再被候选或领取。 */
+    @Test
+    void archivesExhaustedExpiredAttempt() {
+        var input = input("{}", 1);
+        register(input);
+        claim(input.executionId()).orElseThrow();
+        expire(input.executionId());
+        assertTrue(claim(input.executionId()).isEmpty());
+        assertEquals("DEAD", state(input.executionId()));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dead_job WHERE execution_id=? AND reason='LEASE_EXPIRED' AND cycle_no=0",
+                Integer.class, input.executionId().toString()));
+        assertTrue(claim(input.executionId()).isEmpty());
+        assertTrue(unitOfWork.execute(() -> repository.due(code, 1)).isEmpty());
+    }
+
+    /** 过期归档后的上层失败回滚尝试和死亡记录，下一完整工作单元仍可正确归档。 */
+    @Test
+    void rollsBackExpiredAttemptAndDeathAtomically() {
+        var input = input("{}", 1);
+        register(input);
+        var original = claim(input.executionId()).orElseThrow();
+        expire(input.executionId());
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
+            assertTrue(repository.claim(input.executionId()).isEmpty());
+            assertEquals("DEAD", state(input.executionId()));
+            throw new IllegalStateException("rollback-probe");
+        }));
+        assertEquals("RUNNING", state(input.executionId()));
+        assertEquals("RUNNING", jdbc.queryForObject("SELECT result FROM job_attempt WHERE execution_id=?", String.class, input.executionId().toString()));
+        assertEquals(original.token().toString(), jdbc.queryForObject("SELECT lease_token FROM job_execution WHERE execution_id=?", String.class, input.executionId().toString()));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dead_job WHERE execution_id=?", Integer.class, input.executionId().toString()));
+        assertTrue(claim(input.executionId()).isEmpty());
+        assertEquals("DEAD", state(input.executionId()));
+    }
+
+    /** 两个独立连接竞争同一行，第二事务跳过持锁记录；首事务提交后不可重复领取。 */
+    @Test
+    void skipsBusyLeaseAcrossIndependentTransactions() throws Exception {
+        var input = input("{}", 3);
+        register(input);
+        var held = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        try (var worker = Executors.newSingleThreadExecutor()) {
+            var first = worker.submit(() -> unitOfWork.execute(() -> {
+                var lease = repository.claim(input.executionId()).orElseThrow();
+                held.countDown();
+                try {
+                    if (!release.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("测试持锁超时");
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt(); throw new IllegalStateException("测试中断", failure);
+                }
+                return lease;
+            }));
+            try {
+                assertTrue(held.await(5, TimeUnit.SECONDS));
+                assertTimeout(Duration.ofSeconds(2), () -> assertTrue(claim(input.executionId()).isEmpty()));
+            } finally {
+                release.countDown();
+            }
+            assertNotNull(first.get(5, TimeUnit.SECONDS));
+            assertTrue(claim(input.executionId()).isEmpty());
+        }
+    }
+
+    /** 极大累计序号和版本不发生溢出，也不留下半条尝试。 */
+    @Test
+    void rejectsExhaustedCountersWithoutPartialWrites() {
+        for (String counter : List.of("attempt_no", "version")) {
+            var input = input("{}", 3);
+            register(input);
+            jdbc.update("UPDATE job_execution SET " + counter + "=? WHERE execution_id=?", Long.MAX_VALUE, input.executionId().toString());
+            conflict(() -> claim(input.executionId()));
+            assertEquals("WAITING", state(input.executionId()));
+            assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM job_attempt WHERE execution_id=?", Integer.class, input.executionId().toString()));
+        }
+    }
+
+    /**
+     * 使用SQL定位自己租约的过期位置，并同步技术尝试开始时刻；不宣称真实等待预算经过。
+     * @param id 自身执行UUID
+     */
+    private void expire(UUID id) {
+        jdbc.update("""
+                UPDATE job_execution e JOIN job_attempt a ON a.execution_id=e.execution_id AND a.attempt_no=e.attempt_no
+                SET e.start_time=UTC_TIMESTAMP(6)-INTERVAL 61 SECOND,e.lease_until=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND,
+                a.start_time=UTC_TIMESTAMP(6)-INTERVAL 61 SECOND WHERE e.execution_id=?
+                """, id.toString());
+    }
+
+    /**
+     * 在实际应用工作单元中登记。
+     * @param input 完整输入
+     * @return 首次执行身份
+     */
+    private UUID register(JobExecutionRepository.Submission input) { return unitOfWork.execute(() -> repository.register(input)); }
+
+    /**
+     * 在独立实际工作单元中竞争领取。
+     * @param id 执行身份
+     * @return 可空领取凭据
+     */
+    private Optional<JobExecutionRepository.Lease> claim(UUID id) { return unitOfWork.execute(() -> repository.claim(id)); }
+
+    /**
+     * 读取自身执行状态，仅用于独立断言。
+     * @param id 执行身份
+     * @return 当前状态
+     */
+    private String state(UUID id) { return jdbc.queryForObject("SELECT state FROM job_execution WHERE execution_id=?", String.class, id.toString()); }
+
+    /**
+     * 统计自身任务代码的记录数量。
+     * @return 本用例登记数量
+     */
+    private int count() { return jdbc.queryForObject("SELECT COUNT(*) FROM job_execution WHERE job_code=?", Integer.class, code); }
+
+    /**
+     * 验证失败为固定可重试状态冲突。
+     * @param operation 预期失败的完整工作单元
+     */
+    private void conflict(Runnable operation) { assertEquals(40900, assertThrows(StratumException.class, operation::run).getErrorCode().getCode()); }
+
+    /**
+     * 构造可立即领取、五秒退避的一次性任务。
+     * @param arguments JSON原文
+     * @param attempts 周期最大次数
+     * @return 随机幂等身份输入
+     */
+    private JobExecutionRepository.Submission input(String arguments, int attempts) {
+        var policy = new JobDefinition.RetryPolicy(attempts, Duration.ofSeconds(5), Duration.ofSeconds(10));
+        var definition = new JobDefinition(code, JobDefinition.Type.ONCE, Optional.empty(), Optional.of(TIME),
+                30, policy, JobDefinition.IdempotencyRule.EXPLICIT_KEY);
+        return new JobExecutionRepository.Submission(id(), definition, TIME, UUID.randomUUID().toString(), arguments, "job-trace");
+    }
+
+    /**
+     * 复制定义并显式替换用于冲突/幂等断言的字段。
+     * @param original 原输入
+     * @param id 新执行身份
+     * @param key 新幂等键
+     * @param arguments 新参数
+     * @param trace 新trace
+     * @return 不可变输入
+     */
+    private JobExecutionRepository.Submission copy(JobExecutionRepository.Submission original, UUID id,
+            String key, String arguments, String trace) {
+        return new JobExecutionRepository.Submission(id, original.definition(), original.scheduleTime(), key, arguments, trace);
+    }
+
+    /**
+     * 登记本用例负责清理的UUID。
+     * @return 新执行UUID
+     */
+    private UUID id() { var id = UUID.randomUUID(); executions.add(id); return id; }
+}
