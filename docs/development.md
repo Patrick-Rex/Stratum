@@ -1107,3 +1107,11 @@ OutboxRelayApplicationService通过UnitOfWork、OutboxRelayRepository及可选Ou
 真实Starter在隔离MariaDB、Redis和RabbitMQ空间中运行，5项集成测试通过，0失败/错误/跳过。独立连接在发布前可读取已提交的PROCESSING租约，发布阶段没有活动事务；Broker正文保留高精度数值、原eventId及序号。两个聚合可独立投递，同聚合前序确认后仍等待消费进度；进度由测试SQL探针构造，不代表生产消费者已经交付。
 
 故障验证覆盖删除绑定队列后的mandatory返回、实际拒绝连接、发布确认后数据库租约过期，以及Quorum队列容量触发真实否定确认。恢复拓扑/连接/容量后仍使用原消息身份重试；过期租约以新令牌接管，Broker可出现相同eventId的两份投递，后续消费者必须持久化去重。没有停止共享Broker或修改用户队列；测试连接、临时子上下文和专用拓扑已关闭/清理。E02.2完成，自动调度仍待E03，消费留痕与缓存补偿继续E02.3。
+
+## 消费凭据与顺序存储（NODE-E02.3a）
+
+V202610260003新增outbox_consumption，以eventId/固定消费组为主键，并约束聚合/序号/消费组唯一；保存数据库原始主题、发生时刻、载荷、trace及消费时间。现有迁移保持校验和。ERP_AUDIT只接erp.*，CACHE_INVALIDATION只接缓存失效；每类事件只有一个负责推进全局聚合进度的订阅。
+
+OutboxConsumptionRepository在Application已有写工作单元中执行begin→副作用→complete。begin按进度、事件锁顺序使用SKIP LOCKED当前读，忙行或非头返回WAITING，已完成凭据返回DUPLICATE；收到信封必须与本地Outbox的全部字段、正序号及无损JSON值相符，未知或篡改事件拒绝。complete重新核验资格，同事务复制原始信封并推进consumed_sequence；不要求先SENT，允许Broker已收到但发布确认尚未落盘的正常时序。存储不自行重试或开启事务，快照1020/串行化冲突沿用40900，整个工作单元回滚后重试。
+
+7项真实MariaDB测试通过，0失败/错误/跳过，覆盖审计原值与高精度、重复凭据、前序等待与其他聚合独立、组别、篡改及未知事件、完整回滚、事务/只读拒绝、独立连接竞争，以及旧快照冲突回滚后新事务识别重复。当前仅有存储端口，生产缓存消费用例和Broker监听仍待E02.3b/c，不将技术存储验收视为已自动消费。
