@@ -6,4 +6,6 @@ dependencies {
     implementation 'org.quartz-scheduler:quartz'
     implementation 'net.javacrumbs.shedlock:shedlock-spring'
     implementation 'org.springframework:spring-context'
+    implementation 'org.springframework.boot:spring-boot-autoconfigure'
+    implementation 'org.slf4j:slf4j-api'
 }

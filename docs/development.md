@@ -42,7 +42,7 @@
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
 | stratum-infrastructure | 已引入 Easy-Query 3.3.1（Boot 4 starter / MySQL 方言 / 处理器）、MariaDB JDBC、Flyway、Redis、Caffeine；已配置数据源与 Flyway；NODE-B03.2b 已验证真实 MariaDB 提交、回滚和嵌套事务 |
 | stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由、Header灰度、协议透传和代理超时/错误处理；已具备头体防护及管理直连CIDR限制，已绑定直连IP共享Redis限流，已提供JSON访问日志及受管理CIDR保护的Prometheus指标；双进程ERP闭环、权限组合及g3全工程回归已验收，D04.1完成 |
-| stratum-job | Quartz/ShedLock Spring依赖已接入，任务执行器与周期Relay尚待E03后续节点 |
+| stratum-job | Quartz/ShedLock Spring依赖及固定处理器注册表已接入，任务执行器与周期Relay尚待E03后续节点 |
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
 
@@ -1279,3 +1279,11 @@ JobExecutionApplicationService通过Domain登记/完成端口与现有UnitOfWork
 内部ThreadPoolTaskScheduler由提供者拥有、关闭取消续期并有界等待，不公开为Executor Bean，避免改变项目Boot4.0.5的应用执行器自动选择。只有真实解锁结束才释放一次本地名额；该名额不提供分布式所有权，数据库锁仍必不可少。后续执行器须先停自己的实际工作，再释放锁提供者及数据源。
 
 2项新真实续期测试及既有调度4项/迁移3项共9项集成通过，0失败/错误/跳过。实际等待超过原30秒截止（新续期测试约32秒），数据库租期确已推进且另一提供者仍无法取得；释放后可取。另验证单线程对应4个锁名额、超额不落库、重复释放不超发、短租期/非法名拒绝不泄漏，以及内部Executor不暴露、全部调度/续期线程退出。没有SQL时间探针或模拟提供者，不将此验收视为处理器/Quartz失败闭环完成；下一E03.4b。
+
+## 任务处理器契约与注册（NODE-E03.4b）
+
+Application新增JobHandler端口，Job新增固定有界注册表：最多64个安全唯一代码，保存周期定义快照，周期只能是匹配代码的CRON/SCHEDULE_TIME，Quartz校验真实语法。未知处理器拒绝，不根据外部输入反射装载类型；无处理器不会生成默认任务。执行器后续通过Application入口控制任务状态和真实处理，不让Job直接访问数据库。
+
+Job为后续显式配置绑定与任务日志接入项目BOM管理的spring-boot-autoconfigure及既有SLF4J API，无新版本号或商业组件，也没有采用Quartz Starter的隐式调度器。当前注册表构造不创建线程或执行处理器。
+
+Job首次5项实际单元测试及Application12项回归共17项通过，0失败/错误/跳过；验证空/未知、快照/不可变排序、64个上限、非法/重复/缺失代码以及周期归属/类型/幂等规则/真实Cron不一致拒绝。本节点未运行集成测试，不把注册契约记为实际任务执行；下一E03.4c。
