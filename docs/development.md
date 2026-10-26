@@ -1123,3 +1123,11 @@ Domain的OutboxConsumer端口由OutboxConsumerApplicationService实现，Infrast
 ERP_AUDIT只保存原事件留痕，不增加业务副作用。CACHE_INVALIDATION严格解析现有CacheInvalidation契约并复用VersionedCache.invalidate及TTL/版本屏障。Redis效果与数据库没有分布式原子事务：Redis成功后数据库失败时凭据和顺序回滚，下次仍可失效；版本规则保证不会删去更新的数据。DUPLICATE在副作用前返回，不重置缓存标记或TTL。
 
 本轮13项真实MariaDB/Redis集成通过，0失败/错误/跳过（原存储7项、新应用6项）。新增覆盖ERP原值/trace恢复、真实旧缓存删除与版本屏障/有界TTL、重复无效果、实际Redis操作后注入结果失败、凭据写入后注入失败并整体回滚、更新版本保护、非法载荷和后序等待、外层事务拒绝。故障由测试包装器在真实效果之后注入，不宣称模拟实际Redis断网；Broker监听与手动ack尚待E02.3c。
+
+## 信封解码与确认适配（NODE-E02.3c1）
+
+RabbitOutboxMessageCodec限制信封512KiB，要求持久JSON/UTF-8、7个字段、正long序号、安全trace，以及messageId/correlationId和四项关联头与正文一致。JSON严格拒绝重复字段、尾随内容、隐式文本/整数转换，使用BigDecimal保留原值。解码只是传输校验，Application中的存储仍需核对原Outbox信封。固定错误说明不携带原载荷或解析异常。
+
+RabbitOutboxConsumerAdapter只依赖Domain消费端口，核验主交换机和实际路由与订阅匹配。应用提交后返回CONSUMED/DUPLICATE才basicAck单条；WAITING使用basicNack(requeue=true)原生延迟等待，实际解码/应用失败使用basicReject(requeue=true)增加失败计数；中断线程只退回消息。确认IOException向容器传播，不在结果未知后再reject。失败日志仅安全身份、组别及异常类型，不记录异常原文/正文。
+
+13项单元通过，0失败/错误/跳过（新消费7、原发布6），用实际生产发布编码验证接收兼容与精度；通道/应用端口为可控替身，不作为Broker或数据库验收。尚未装配监听容器、启动线程或自动消费；真实生命周期由E02.3c2继续。手动确认语义参考[Spring AMQP配置](https://docs.spring.io/spring-amqp/reference/amqp/containerAttributes.html)，实际依赖保持4.0.2。
