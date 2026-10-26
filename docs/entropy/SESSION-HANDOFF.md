@@ -2,17 +2,11 @@
 
 ## 交接报告（2026-10-26）
 
-- completedNode: NODE-D04.1g3（完成网关全工程验收，D04.1及Phase D非部署范围完成）。
-- changedFiles:
-  - `README.md`
-  - `docs/CONTEXT.md`
-  - `docs/development.md`
-  - `docs/entropy/SESSION-HANDOFF.md`
+- completedNode: 无新增开发节点；D04.1g3已提交推送，当前为已确认消息架构与计划的文档维护。
+- changedFiles: `docs/消息总线设计.md`、`docs/基础设施配置.md`、`docs/adr/ADR-001.md`、`docs/adr/ADR-007-有序消息与原生重试.md`、`docs/AI可执行开发计划.md`、`docs/development.md`、`docs/CONTEXT.md`、本文件。
+- validations: 文本、链接与Git差异检查；纯文档无需重新构建。D04.1g3实际623项测试结果沿用该节点记录，不冒称本次重跑。
+- unresolved: 消费业务用途待确认；部署暂缓。严格顺序/原生重试方案已确认并记录ADR-007。
+- nextNode: NODE-E01.1，之后按E01.2/3/4顺序执行。
+- 本轮独立MariaDB/Redis保持供连续验证，最终结束前停止；用户已有Docker服务保留，无自身Gateway子进程遗留。
 
-- validations: 39任务全部重新执行；179项单元、434项Starter与10项Gateway集成测试通过，共623项，0失败/错误/跳过。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
-- unresolved: 部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
-- nextNode: NODE-E01。
-- 当前节点验收后审查、提交、推送；完成后继续下一节点，不重复请求授权。
-- CONTEXT 已更新。共享 Docker 容器保持运行，仅清理本轮创建的测试资源；测试 JVM 已退出；独立测试容器 stratum-integration-mariadb / stratum-integration-redis 暂留供连续验证，会话结束前清理。连接状态在本机临时目录 stratum-integration-state.json，不提交凭据。
-
-VERIFICATION REPORT：Build PASS；Tests PASS（623项实际测试）；Architecture PASS（Domain/Query边界与独立Gateway）；Security PASS（认证/范围/入口拒绝全量回归）；Docs Sync PASS；Overall READY。
+VERIFICATION REPORT：Build N/A；Tests N/A（纯文档）；Architecture PASS；Security N/A；Docs Sync PASS；Overall READY。

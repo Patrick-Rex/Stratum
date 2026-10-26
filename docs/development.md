@@ -55,7 +55,7 @@ Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完�
 | Spring Boot | 4.0.5+（当前构建固定为 4.0.5） |
 | MariaDB | 10.11+ |
 | Redis | 开发单节点，生产 Sentinel |
-| RabbitMQ | 4.2.0+ |
+| RabbitMQ | 4.3+；已确认本机现有4.3.6，原生延迟重试，依赖尚未接入 |
 | Nacos | 3.2.0+ |
 | 网关 | Spring Cloud Gateway Server WebFlux 5.0.4 / Cloud 2025.1.4，独立进程；项目外负载均衡 |
 | 后台任务 | Spring Scheduler + Quartz + ShedLock |
