@@ -99,12 +99,48 @@ abstract class GatewayHttpIntegrationTest {
      * @return 可关闭上下文
      */
     protected ConfigurableApplicationContext gateway(URI stable, URI gray, boolean enabled, boolean grayEnabled, String host, String... extraArguments) {
+        return startGateway(true, stable, gray, enabled, grayEnabled, host, extraArguments);
+    }
+
+    /**
+     * 启动使用真实Redis限流器的网关，调用方必须提供独立Redis配置。
+     * @param stable 稳定上游
+     * @param gray 灰度上游
+     * @param extraArguments 独立Redis及令牌策略CLI参数
+     * @return 可关闭网关上下文
+     */
+    protected ConfigurableApplicationContext realRateGateway(Upstream stable, Upstream gray, String... extraArguments) {
+        return startGateway(false, stable.address(), gray.address(), true, true, "", extraArguments);
+    }
+
+    /**
+     * 组装固定启动参数，仅普通协议测试注入显式限流替身，不提供生产配置旁路。
+     * @param protocolStub 是否使用协议测试替身
+     * @param stable 稳定上游地址
+     * @param gray 灰度上游地址
+     * @param enabled 是否转发
+     * @param grayEnabled 是否灰度
+     * @param host 可选入口域名
+     * @param extraArguments 额外CLI参数
+     * @return 可关闭上下文
+     */
+    private ConfigurableApplicationContext startGateway(boolean protocolStub, URI stable, URI gray, boolean enabled, boolean grayEnabled, String host, String... extraArguments) {
         var arguments = new java.util.ArrayList<>(List.of( "--server.port=0", "--server.address=127.0.0.1", "--spring.main.banner-mode=off",
                 "--logging.level.root=ERROR", "--stratum.gateway.routing.enabled=" + enabled,
                 "--stratum.gateway.routing.upstream=" + stable, "--stratum.gateway.routing.gray-upstream=" + gray,
                 "--stratum.gateway.routing.gray-enabled=" + grayEnabled, "--stratum.gateway.routing.gray-value=v2.0", "--stratum.gateway.routing.host=" + host));
         arguments.addAll(List.of(extraArguments));
-        return SpringApplication.run(GatewayApplication.class, arguments.toArray(String[]::new));
+        var application = new SpringApplication(GatewayApplication.class);
+        if (protocolStub) application.addInitializers(context -> {
+            var generic = (org.springframework.context.support.GenericApplicationContext) context;
+            generic.registerBean("protocolTestLimiter", com.patrick.stratum.gateway.ratelimit.RedisGatewayRateLimiter.class, () -> {
+                var limiter = org.mockito.Mockito.mock(com.patrick.stratum.gateway.ratelimit.RedisGatewayRateLimiter.class);
+                org.mockito.Mockito.when(limiter.consume(org.mockito.ArgumentMatchers.any(java.net.InetAddress.class)))
+                        .thenReturn(reactor.core.publisher.Mono.just(new com.patrick.stratum.gateway.ratelimit.RedisGatewayRateLimiter.Decision(true, 40, 0, false)));
+                return limiter;
+            }, definition -> definition.setPrimary(true));
+        });
+        return application.run(arguments.toArray(String[]::new));
     }
 
     /**

@@ -41,7 +41,7 @@
 | stratum-query | QuerySpec、Query/Handler/Result/Context、QueryGateway 与 Spring 装配；统一路由及查询指标日志 |
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
 | stratum-infrastructure | 已引入 Easy-Query 3.3.1（Boot 4 starter / MySQL 方言 / 处理器）、MariaDB JDBC、Flyway、Redis、Caffeine；已配置数据源与 Flyway；NODE-B03.2b 已验证真实 MariaDB 提交、回滚和嵌套事务 |
-| stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由、Header灰度、协议透传和代理超时/错误处理；已具备头体防护及管理直连CIDR限制，限流待后续节点 |
+| stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由、Header灰度、协议透传和代理超时/错误处理；已具备头体防护及管理直连CIDR限制，已绑定直连IP共享Redis限流，访问日志/指标及双进程ERP验收待后续节点 |
 | stratum-job | Gradle 模块骨架 |
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
@@ -922,3 +922,11 @@ Gateway build、26项原网关回归与6项显式集成测试通过，0失败/�
 CommonErrorCode增加RATE_LIMITED（40002），Gateway自身HTTP429映射该码及安全文案“请求过于频繁，请稍后重试”；沿用ApiResponse五字段、空data/details、显式traceId与no-store，保留后续限流器给出的Retry-After秒值。HTTP503入口故障使用50000及“入口服务暂不可用”，不被内部连接异常改成上游502，也不回显存储地址/凭据/异常原因。正常上游业务错误继续原样透传。
 
 Common9项与Gateway27项回归通过，0失败/错误/跳过，Gateway build退出码0。新增1项协议测试同时核对429/503状态、错误码/文案、五字段/空业务数据、关联、缓存、等待建议及嵌套内部异常脱敏；其余代理、来源、防护、路由及协议回归通过。本节点未给HTTP转发绑定限流；下一e3完成绑定及真实Redis/HTTP组合效果。
+
+## 路由共享限流绑定（NODE-D04.1e3）
+
+GatewayRateLimitFilter作为GlobalFilter在路由匹配之后、Netty转发之前消费真实直连IP令牌；同一IP不因稳定/灰度、请求路径、Bearer或客户端自报代理头而更换桶。正常放行继续既有协议代理，配额不足429/40002并返回Retry-After秒值，IP槽位耗尽503/50000并给出等待建议；Redis错误、超时、策略冲突或损坏结果均503且不调用上游。入口存储错误的映射仅作用于消费阶段，不把后续上游502/504改成503。无法取得已解析直连地址时400，不提供生产关闭限流的配置旁路。
+
+健康和不存在路由没有进入GlobalFilter，不消耗桶；生产health保留Redis健康检测，Redis不可用时health可报告DOWN，不等同于配额耗尽。普通路由/协议验收通过测试初始化器注册显式Primary替身，保持独立于Redis；真实限流测试通过realRateGateway保留生产组件及独立存储配置，不使用该替身。
+
+Gateway build、27项普通网关回归与10项显式集成测试通过，0失败/错误/跳过。包括6项原共享桶回归和4项新真实HTTP：两个独立网关上下文及稳定/灰度上游共用一IP额度，空桶429且POST未增加任何上游请求，伪造代理来源/灰度/幂等头不能换桶，健康/404不改桶状态；IP槽位耗尽、另一入口策略漂移和真实Redis连接拒绝均503且上游请求数不增加。拒绝响应核对五字段/空数据/trace/缓存/等待及故障脱敏；测试用空桶及未来时戳隔离HTTP耗时，没有依赖一秒内完成多请求的假设。各上下文、上游与客户端关闭，唯一测试四键删除；独立Redis/MariaDB继续供后续验证。D04.1e完成，下一f交付结构化访问日志和指标。
