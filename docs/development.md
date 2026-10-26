@@ -1059,3 +1059,13 @@ $env:STRATUM_IT_MQ_PASSWORD=Read-Host '测试专用口令' -MaskInput
 ```
 
 同时提供前述STRATUM_IT_DB_URL/USERNAME/PASSWORD和STRATUM_IT_REDIS_PORT；Gateway集成复用此显式Redis端口。缺少任一必要连接将失败，不静默跳过。测试删除专用空间内固定拓扑并关闭客户端；运行结束由创建者删除测试虚拟主机和账号、停止自己启动的独立测试容器，保留用户原有服务。Docker测试容器重启后应重新核实实际端口，不沿用可能已变化的随机映射。仅验证消息基础设施时，可给Starter integrationTest添加`--tests '*Rabbit*IntegrationTest' --tests '*MessagingApplicationIntegrationTest'`，仍需完整应用用例的DB/Redis配置。
+
+## Outbox同事务顺序存储（NODE-E02.1a）
+
+V202610260001新增outbox_aggregate_progress，精确区分大小写和尾随空格的aggregate_id为主键，保存已分配last_sequence及已消费consumed_sequence（初始0）。Outbox增加正event_sequence、聚合/序号唯一约束和进度外键，原UUID主键不变；聚合列改为utf8mb4_nopad_bin，避免不同标识被大小写或尾随空格规则折叠。消费进度目前仍为0，后续消费者成功后才推进。
+
+OutboxRepositoryImpl在Application已有写事务内用参数化INSERT ON DUPLICATE KEY UPDATE锁定/初始化聚合进度，再在同一连接分配下一个long序号；锁保持到事务结束，随后仍由Easy-Query插入原信封。重复事件、非法JSON或外层失败必须向工作单元传播，使进度和事件一起回滚；无事务或只读标志拒写，Long.MAX_VALUE耗尽显式拒绝而不溢出。该技术存储不新增Application/Infrastructure事务边界，不向Domain加入JDBC。
+
+这是数据库迁移兼容性变更：旧写入端不会提供新序号，升级前必须暂停旧写入。迁移在任何DDL前检查历史Outbox，非空时以SQLSTATE45000明确失败，需人工确认可证明的顺序迁移策略；不自动清空、排序时间或猜测UUID。当前本轮独立测试库迁移前实际0事件，迁移已成功执行；若真实环境已有事件，不能照搬此验收结论。预处理SIGNAL遵循[MariaDB 10.6.2+允许预处理语句规则](https://mariadb.com/docs/server/reference/sql-statements/prepared-statements/prepare-statement)，符合项目10.11+基线。
+
+本轮12项真实MariaDB测试通过，0失败/错误/跳过：原Outbox5项及新序号7项。新增验证连续1/2、大小写/尾随空格隔离、原UUID/JSON高精度原文/trace保留、进度为0、失败与重复不留空洞、事务/只读拒写、耗尽、正序号/进度上界/FK约束，以及执行迁移原文的前置守卫拒绝非空且已有事件保持。此节点没有Relay、消费进度推进或并发顺序证明，后者由E02.1b继续验收。

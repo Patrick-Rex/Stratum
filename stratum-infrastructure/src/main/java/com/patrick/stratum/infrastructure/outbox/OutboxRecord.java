@@ -23,6 +23,7 @@ public class OutboxRecord implements ProxyEntityAvailable<OutboxRecord, OutboxRe
     private String eventId;
     private String eventType;
     private String aggregateId;
+    private Long eventSequence;
     private LocalDateTime occurredAt;
     private String payload;
     private String traceId;
