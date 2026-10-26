@@ -2,8 +2,6 @@ package com.patrick.stratum.starter.integration;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -37,12 +35,7 @@ class RabbitOutboxPublisherIntegrationTest {
         if (context == null) return;
         try {
             if (context.isActive()) {
-                var admin = context.getBean(RabbitAdmin.class);
-                for (String queue : List.of(CACHE_QUEUE, ERP_QUEUE, CACHE_QUEUE + ".dlq", ERP_QUEUE + ".dlq")) {
-                    admin.deleteQueue(queue);
-                }
-                admin.deleteExchange(EXCHANGE);
-                admin.deleteExchange(DEAD_EXCHANGE);
+                RabbitIntegrationSupport.clearTopology(context.getBean(RabbitAdmin.class));
             }
         } finally { context.close(); }
     }
@@ -130,18 +123,7 @@ class RabbitOutboxPublisherIntegrationTest {
      * @param overrides 本用例覆盖参数
      */
     private void start(Map<String, Object> overrides) {
-        String vhost = required("STRATUM_IT_MQ_VHOST");
-        String username = required("STRATUM_IT_MQ_USERNAME");
-        if (!vhost.matches("stratum-it-[a-f0-9]{32}") || !username.equals(vhost)) {
-            throw new IllegalStateException("消息集成测试必须使用独立stratum-it虚拟主机及同名账号");
-        }
-        var values = new HashMap<String, Object>();
-        values.put("stratum.messaging.enabled", "true");
-        values.put("stratum.messaging.host", "127.0.0.1");
-        values.put("stratum.messaging.port", required("STRATUM_IT_MQ_PORT"));
-        values.put("stratum.messaging.virtual-host", vhost);
-        values.put("stratum.messaging.username", username);
-        values.put("stratum.messaging.password", required("STRATUM_IT_MQ_PASSWORD"));
+        var values = RabbitIntegrationSupport.connectionProperties();
         values.putAll(overrides);
         context = new AnnotationConfigApplicationContext();
         context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("isolated-publisher", values));
@@ -162,14 +144,4 @@ class RabbitOutboxPublisherIntegrationTest {
                 9_007_199_254_740_993L);
     }
 
-    /**
-     * 缺失测试连接配置时直接失败。
-     * @param name 必需环境变量
-     * @return 非空值
-     */
-    private static String required(String name) {
-        String value = System.getenv(name);
-        if (value == null || value.isBlank()) throw new IllegalStateException("缺少消息集成测试配置：" + name);
-        return value;
-    }
 }

@@ -2,7 +2,6 @@ package com.patrick.stratum.starter.integration;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -40,12 +39,7 @@ class RabbitTopologyIntegrationTest {
         if (context == null) return;
         try {
             if (context.isActive()) {
-                var admin = context.getBean(RabbitAdmin.class);
-                for (String queue : List.of(CACHE_QUEUE, ERP_QUEUE, CACHE_QUEUE + ".dlq", ERP_QUEUE + ".dlq")) {
-                    admin.deleteQueue(queue);
-                }
-                admin.deleteExchange(EXCHANGE);
-                admin.deleteExchange(DEAD_EXCHANGE);
+                RabbitIntegrationSupport.clearTopology(context.getBean(RabbitAdmin.class));
             }
         } finally {
             context.close();
@@ -199,18 +193,7 @@ class RabbitTopologyIntegrationTest {
      * @param overrides 本用例拓扑参数
      */
     private void start(Map<String, Object> overrides) {
-        String vhost = required("STRATUM_IT_MQ_VHOST");
-        String username = required("STRATUM_IT_MQ_USERNAME");
-        if (!vhost.matches("stratum-it-[a-f0-9]{32}") || !username.equals(vhost)) {
-            throw new IllegalStateException("消息集成测试必须使用独立stratum-it虚拟主机及同名账号");
-        }
-        var values = new HashMap<String, Object>();
-        values.put("stratum.messaging.enabled", "true");
-        values.put("stratum.messaging.host", "127.0.0.1");
-        values.put("stratum.messaging.port", required("STRATUM_IT_MQ_PORT"));
-        values.put("stratum.messaging.virtual-host", vhost);
-        values.put("stratum.messaging.username", username);
-        values.put("stratum.messaging.password", required("STRATUM_IT_MQ_PASSWORD"));
+        var values = RabbitIntegrationSupport.connectionProperties();
         values.put("stratum.messaging.topology.retry-min", "200ms");
         values.put("stratum.messaging.topology.retry-max", "600ms");
         values.put("stratum.messaging.topology.delivery-limit", "2");
@@ -278,14 +261,4 @@ class RabbitTopologyIntegrationTest {
                 .deliveryMode(2).contentType("application/octet-stream").headers(Map.of()).build();
     }
 
-    /**
-     * 缺失测试环境变量时直接失败，不静默跳过。
-     * @param name 环境变量名
-     * @return 非空值
-     */
-    private static String required(String name) {
-        String value = System.getenv(name);
-        if (value == null || value.isBlank()) throw new IllegalStateException("缺少消息集成测试配置：" + name);
-        return value;
-    }
 }

@@ -79,7 +79,7 @@ Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完�
 .\gradlew.bat --no-daemon :stratum-domain:dependencies --configuration runtimeClasspath
 ```
 
-集成测试通过独立任务显式运行，不在普通 `test` 中隐式连接外部服务。先在本机 MariaDB 建立专用 `stratum_it` 数据库并授予测试账号权限，再设置 `STRATUM_IT_DB_URL`（`jdbc:mariadb://127.0.0.1:端口/stratum_it`）、`STRATUM_IT_DB_USERNAME`、`STRATUM_IT_DB_PASSWORD`，同时用 `STRATUM_IT_REDIS_PORT` 指定本机测试 Redis（认证时另设 `STRATUM_IT_REDIS_PASSWORD`），执行：
+集成测试通过独立任务显式运行，不在普通 `test` 中隐式连接外部服务。先在本机 MariaDB 建立专用 `stratum_it` 数据库并授予测试账号权限，再设置 `STRATUM_IT_DB_URL`（`jdbc:mariadb://127.0.0.1:端口/stratum_it`）、`STRATUM_IT_DB_USERNAME`、`STRATUM_IT_DB_PASSWORD`，同时用 `STRATUM_IT_REDIS_PORT` 指定本机测试 Redis（认证时另设 `STRATUM_IT_REDIS_PASSWORD`）；全量Starter集成还需下述独立RabbitMQ测试空间配置，执行：
 
 ```powershell
 .\gradlew.bat --no-daemon :stratum-starter:integrationTest
@@ -1026,3 +1026,36 @@ RabbitOutboxPublisherConfiguration仅在消息开启时提供OutboxPublisher。�
 CONFIRMED要求confirm为ack且没有mandatory返回；不可路由为RETURNED，Broker否定为REJECTED，确认等待超时为TIMED_OUT，连接/确认异常或中断为UNAVAILABLE。超时/异常/中断重置独立发布连接以清理未确认状态，保持中断标志；若重置失败，适配保持关闭直到重建，避免继续累积挂起消息。主声明/未来消费连接不因此重置。客户端随Spring销毁；生产业务当前未调用该端口，只有后续Relay可在事务外使用，不提供临时写事务直接发送或自动定时器。
 
 本轮6项发布适配单元及4项真实Broker集成测试通过，0失败/错误/跳过。单元验证完整JSON/64位序号和高精度小数、mandatory优先/否定、确认超时、重置失败关闭、发送及确认异常、中断、并发容量恢复、事务/输入拒绝和资源销毁。真实验收覆盖两订阅持久消息/标识/序号/trace及36位高精度小数原值、主与发布连接物理隔离、不可路由与同事件恢复、容量否定确认、仅发布连接重置并恢复。不可路由探针先建立发布连接再删除队列，避开管理员首次连接的自动修复；真实故障以Broker返回判定。确认超时分支采用显式未完成确认替身，不冒称本轮真实Broker超时演练。拓扑6项及Infrastructure25项沿用E01.3b，本节点未重跑。
+
+## 消息基础设施组合验收与操作（NODE-E01.4）
+
+消息启用的完整Starter已在真实MariaDB/Redis/RabbitMQ下装配：唯一OutboxPublisher、健康HTTP为UP，当前无Rabbit监听容器/自动Relay；Outbox提交保留PENDING且队列为空，回滚不保留事件或消息，事务内调用发布器拒绝。此检查沿用现有DB/Redis健康项；RabbitMQ目前由启动版本/声明校验及发布结果检测，尚未额外注册持续健康项。两个独立Broker测试类和完整应用测试共享隔离配置及清理工具，避免不同守卫或测试先后依赖。
+
+2026-10-26执行`test :stratum-gateway:integrationTest :stratum-starter:integrationTest --rerun-tasks`，39任务全部重新执行，构建成功。193项单元（application6、common9、domain63、gateway33、infrastructure25、interface10、query21、starter26）、446项Starter显式集成（含真实DB/Redis/HTTP、消息配置及真实Broker）和10项Gateway真实集成，共649项，0失败/错误/跳过。Job仍为NO-SOURCE，不计为测试通过。自身Gateway子进程、测试连接与消息拓扑均已退出/清理，用户服务保持运行。本轮独立测试容器和专用Broker空间暂供E02连续验证，最终结束前停止/删除。E01完成，严格顺序进度、Relay、消费者及死信重放继续E02，调度仍待E03；部署暂缓。
+
+本地启用消息前，由Broker管理员预建专用虚拟主机和账号，授予该空间内拓扑声明/读取/写入权限。沿用已有数据库/Redis及认证配置，再设置：
+
+```powershell
+$env:STRATUM_MQ_ENABLED='true'
+$env:STRATUM_MQ_HOST='127.0.0.1'
+$env:STRATUM_MQ_PORT='5672'
+$env:STRATUM_MQ_VHOST=Read-Host '已建立的专用虚拟主机'
+$env:STRATUM_MQ_USERNAME=Read-Host '专用账号'
+$env:STRATUM_MQ_PASSWORD=Read-Host '专用口令' -MaskInput
+.\gradlew.bat --no-daemon :stratum-starter:bootRun
+```
+
+关闭开关并重启可恢复消息关闭模式，不删除既有Broker数据。消息开启后需要RabbitMQ 4.3+可达且队列参数等价；不自动删除冲突资源，不声明物理retry队列。应用退出用Ctrl+C，连接与有界线程由Spring关闭。此时启用的只有基础设施，生产业务仍只写Outbox，不代表已自动投递或完成消费补偿。
+
+全量集成测试需要额外的独立RabbitMQ空间，虚拟主机及同名账号严格为`stratum-it-`加32位小写随机十六进制；不得指向业务空间。由管理员创建后，通过环境变量提供连接：
+
+```powershell
+$env:STRATUM_IT_MQ_PORT='5672'
+# VHOST与USERNAME均为管理员已创建的同一随机测试名称。
+$env:STRATUM_IT_MQ_VHOST=Read-Host '专用随机测试虚拟主机'
+$env:STRATUM_IT_MQ_USERNAME=$env:STRATUM_IT_MQ_VHOST
+$env:STRATUM_IT_MQ_PASSWORD=Read-Host '测试专用口令' -MaskInput
+.\gradlew.bat --no-daemon test :stratum-gateway:integrationTest :stratum-starter:integrationTest --rerun-tasks
+```
+
+同时提供前述STRATUM_IT_DB_URL/USERNAME/PASSWORD和STRATUM_IT_REDIS_PORT；Gateway集成复用此显式Redis端口。缺少任一必要连接将失败，不静默跳过。测试删除专用空间内固定拓扑并关闭客户端；运行结束由创建者删除测试虚拟主机和账号、停止自己启动的独立测试容器，保留用户原有服务。Docker测试容器重启后应重新核实实际端口，不沿用可能已变化的随机映射。仅验证消息基础设施时，可给Starter integrationTest添加`--tests '*Rabbit*IntegrationTest' --tests '*MessagingApplicationIntegrationTest'`，仍需完整应用用例的DB/Redis配置。
