@@ -5,11 +5,19 @@ spring:
     web-application-type: reactive
   lifecycle:
     timeout-per-shutdown-phase: 10s
+  cloud:
+    gateway:
+      server:
+        webflux:
+          httpserver:
+            customizer-enabled: false
 
 server:
   address: ${STRATUM_GATEWAY_ADDRESS:127.0.0.1}
   port: ${STRATUM_GATEWAY_PORT:8081}
   shutdown: graceful
+  forward-headers-strategy: none
+  max-http-request-header-size: 64KB
 
 management:
   endpoints:
@@ -36,3 +44,9 @@ stratum:
       maximum-connections: ${STRATUM_GATEWAY_MAXIMUM_CONNECTIONS:128}
       maximum-pending: ${STRATUM_GATEWAY_MAXIMUM_PENDING:256}
       acquire-timeout: ${STRATUM_GATEWAY_ACQUIRE_TIMEOUT:1s}
+    protection:
+      maximum-body-bytes: ${STRATUM_GATEWAY_MAXIMUM_BODY_BYTES:1048576}
+      maximum-header-bytes: ${STRATUM_GATEWAY_MAXIMUM_HEADER_BYTES:16384}
+      maximum-header-count: ${STRATUM_GATEWAY_MAXIMUM_HEADER_COUNT:100}
+      maximum-buffered-requests: ${STRATUM_GATEWAY_MAXIMUM_BUFFERED_REQUESTS:32}
+      body-timeout: ${STRATUM_GATEWAY_BODY_TIMEOUT:5s}

@@ -888,3 +888,13 @@ Gateway通过官方HttpClientFactory扩展替换有界连接提供者，保留TL
 网关自身连接/传输故障502、超时504、未知路由404，经显式traceId工厂返回统一五字段外壳，5xx沿用50000、data为空、details为空，移除残留实体/缓存/重定向及Cookie头，不回显异常、上游地址或请求参数。正常上游业务状态和正文原样透传；已经提交的流不能再改写为JSON，继续传播失败并由服务器结束连接。
 
 Gateway build及17项测试通过，0失败/错误/跳过，包括5项新代理验收及原启动、路由、协议和边界回归。真实HTTP验证拒绝连接502、响应头前停滞504、POST连接中断不额外重试、未知路由及业务401/409原样；连接超时类型以模拟交换验证504，未冒称真实TCP黑洞验收。核对实际客户端超时/禁重试、有界池容量及关闭释放、配置拒绝和已提交响应保护。全部本机测试服务、客户端和网关上下文已关闭；D04.1c完成，下一d接入请求防护和管理来源控制。
+
+## 网关请求头与体防护（NODE-D04.1d1）
+
+GatewayRequestProtectionFilter在路由前校验头名称/控制字符、总字节及数量，并完整有界读取请求体；已知Content-Length先拒绝，未知长度分块由DataBufferUtils.join硬性限制。通过后保持原始字节并设置实际Content-Length，超限或未读完不会把部分请求体转发到ERP。客户端Forwarded、所有X-Forwarded-*及X-Real-IP被移除；server.forward-headers-strategy=none且关闭Gateway httpserver customizer，当前只承认直连来源，没有代理信任链。
+
+stratum.gateway.protection默认maximum-body-bytes=1048576、maximum-header-bytes=16384、maximum-header-count=100、maximum-buffered-requests=32、body-timeout=5s，分别由STRATUM_GATEWAY_MAXIMUM_BODY_BYTES、MAXIMUM_HEADER_BYTES、MAXIMUM_HEADER_COUNT、MAXIMUM_BUFFERED_REQUESTS、BODY_TIMEOUT配置。体1KiB至8MiB、头1至64KiB、头数8至256、并发1至128、读取总等待50ms至30s；体上限×缓冲并发最大64MiB（聚合至数组复制时会短暂同时持有两份内容，不是整个进程堆上限）。缓冲额度一直保留至后续处理结束，取消、失败和成功都释放，不阻塞事件线程等待容量。
+
+应用级体超限413、头容量431、缓冲耗尽503、体读取总时限408，沿用统一错误外壳。Netty硬解析头上限64KiB；在HTTP解析阶段已经拒绝的非法报文可能无法进入关联过滤器和JSON错误处理，不宣称所有底层协议错误都由应用包装。
+
+Gateway build及22项测试通过，0失败/错误/跳过，包括5项新防护及全部原网关回归。真实HTTP验证固定/分块合法边界、两类超限不触达上游、头预算431及伪造代理来源不透传；池化片段校验聚合超限/取消refCnt归零，缓冲耗尽、读取超时后容量恢复，非法头/控制字符/字段数量和配置边界均拒绝。全部本机服务、上下文及客户端已关闭；管理来源路径与默认CIDR已由用户于2026-10-26确认，下一D04.1d2实施：账号/角色/权限管理及子路径，默认仅IPv4/IPv6回环，支持配置CIDR，只信任直连地址。
