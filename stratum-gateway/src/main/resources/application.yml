@@ -18,6 +18,8 @@ spring:
         webflux:
           httpserver:
             customizer-enabled: false
+          metrics:
+            enabled: false
 
 server:
   address: ${STRATUM_GATEWAY_ADDRESS:127.0.0.1}
@@ -27,10 +29,17 @@ server:
   max-http-request-header-size: 64KB
 
 management:
+  metrics:
+    use-global-registry: false
+    distribution:
+      percentiles-histogram:
+        stratum.gateway.requests: true
+      slo:
+        stratum.gateway.requests: 100ms,300ms,800ms,1s,3s,5s
   endpoints:
     web:
       exposure:
-        include: health
+        include: health,prometheus
   endpoint:
     health:
       show-details: never

@@ -938,3 +938,13 @@ Gateway使用Boot StructuredLogFormatter扩展输出逐行JSON，公共字段tim
 GatewayAccessLogFilter在来源/体防护之前登记响应提交回调，因此错误处理器设置最终状态后才记录一次事件。upstream只取stable/gray/local/unmatched/other固定别名，不记录上游URI；clientIp来自已解析直连地址。latencyMs使用单调时钟统计到响应提交（不是整个响应流结束），取消在尚未记录时用499日志标记；原子请求级标记避免提交/取消重复。普通业务代理保留既有响应及关联协议。
 
 Gateway build及30项普通回归通过，0失败/错误/跳过。新增3项验证实际控制台7条访问JSON的200/204/403/404/429/502最终状态、稳定/灰度/健康归属、全部公共与访问字段、真实trace/IP以及敏感输入不出现；格式器转义引号/换行、忽略非白名单及MDC敏感键、保留已有跨度；取消后再提交只有一条499。测试上下文、HTTP上游、客户端与日志捕获器均关闭/恢复。10项Redis/HTTP显式集成测试沿用e3结果，本节点未重新执行；下一f2接入低基数Prometheus指标，并按用户已确认规则保护指标来源。
+
+## 有界入口指标与受保护抓取（NODE-D04.1f2a）
+
+Gateway接入Boot管理的micrometer-registry-prometheus 1.16.4，[Micrometer许可](https://github.com/micrometer-metrics/micrometer/blob/main/LICENSE)为Apache2.0，沿用官方维护组件，不收库授权/按量费用；只开放本地抓取能力，不启动外部Prometheus服务。/actuator/prometheus已暴露，并经既有管理来源过滤器限制完整路径、子路径及编码/矩阵形式；默认回环允许，其他来源需配置CIDR。health不受该来源限制，仍保留正常Redis健康检查。
+
+GatewayMetricsFilter记录stratum.gateway.requests Timer，标签仅method/route/status：标准HTTP方法或OTHER、固定上游/本地/未知别名、最终提交状态或取消499。时长到响应提交，覆盖正常代理、限流、存储故障、来源/体拒绝及未知路由；同一请求取消与提交只记一次。按配置发布直方图与100/300/800ms、1/3/5s SLO桶，可从秒数count/sum/bucket观察请求、拒绝和故障，不记录IP、用户、原URL、trace或异常消息标签。
+
+同时用ServerRequestObservationConvention及GatewayObservationConvention约束入站http.server.requests与出站http.client.requests（含active）。在创建Meter.Id之前归并扩展方法和动态URI，出站仅使用固定路由别名，不输出实际地址或请求URL；不靠事后MeterFilter改标签，避免注册缓存保留无界原ID。关闭重复的原生Gateway计时器，保留原生入站/出站观测与传播；不加入全局静态Registry，防止本地多上下文共享指标状态。
+
+Gateway build、33项普通回归与10项真实Redis/HTTP显式集成测试通过，0失败/错误/跳过。新增3项验证真实Prometheus文本含请求直方图/JVM指标、204/429/503样本、6个自定义方法和6个动态未知路径均不进入任何入站/出站标签、指标来源403且健康仍200、取消后再提交只一条499；原W3C透传、范围、防护、错误与限流回归均通过。所有测试上下文、上游、客户端及Registry已关闭，独立Redis/MariaDB供连续验收。下一f2b补充真实共享桶429与抓取指标的联合断言及README启动说明后，才标记f2/f完成。

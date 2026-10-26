@@ -14,11 +14,11 @@ import org.springframework.web.server.WebFilter;
 import org.springframework.web.server.WebFilterChain;
 import reactor.core.publisher.Mono;
 
-/** 按可信直连IP限制账号、角色及权限管理入口，先于体缓冲执行，不替代ERP管理员鉴权。 */
+/** 按可信直连IP限制账号、角色、权限及指标管理入口，先于体缓冲执行，不替代ERP管理员鉴权。 */
 @Component
 @EnableConfigurationProperties(GatewayManagementProperties.class)
 public class GatewayManagementSourceFilter implements WebFilter, Ordered {
-    private static final List<String> MANAGEMENT_PATHS = List.of("/api/auth/accounts", "/api/auth/roles", "/api/auth/permissions");
+    private static final List<String> MANAGEMENT_PATHS = List.of("/api/auth/accounts", "/api/auth/roles", "/api/auth/permissions", "/actuator/prometheus");
     private final List<Cidr> allowed;
 
     /**
