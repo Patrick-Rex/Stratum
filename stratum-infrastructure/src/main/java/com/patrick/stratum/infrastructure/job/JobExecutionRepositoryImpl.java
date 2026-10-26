@@ -16,6 +16,7 @@ import com.patrick.stratum.common.error.CommonErrorCode;
 import com.patrick.stratum.common.error.StratumException;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository;
+import com.patrick.stratum.domain.job.JobRecoveryRepository.Outcome;
 import org.quartz.CronExpression;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -116,7 +117,7 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository {
             if (row == null || row.state() == State.SUCCEEDED || row.state() == State.DEAD) return Optional.empty();
             Instant now = databaseNow();
             if (row.state() == State.RUNNING) {
-                if (!row.expiresAt().isAfter(now)) expire(row, now);
+                if (!row.expiresAt().isAfter(now)) complete(row, Outcome.LEASE_EXPIRED, now);
                 return Optional.empty();
             }
             if (row.nextAttempt().isAfter(now)) return Optional.empty();
@@ -140,31 +141,42 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository {
     }
 
     /**
-     * 已锁定的过期尝试先留痕并计失败，遵守退避或死亡，不在同一次调用静默重新执行。
-     * @param row 当前锁定任务
+     * 在持有执行行锁的工作单元中写回固定结果，历史与退避/死亡/恢复状态原子更新。
+     * @param row 已由调用者当前读锁定的任务
+     * @param outcome 固定结果，不含异常正文
      * @param now 锁定后重新取得的数据库时刻
      */
-    private void expire(Row row, Instant now) {
+    void complete(Row row, Outcome outcome, Instant now) {
+        requireWrite();
         if (row.version() == Long.MAX_VALUE) throw conflict("任务版本达到上限");
         String id = row.submission().executionId().toString();
         int changed = jdbc.update("""
-                UPDATE job_attempt SET result='LEASE_EXPIRED',end_time=?,duration_ms=?
+                UPDATE job_attempt SET result=?,end_time=?,duration_ms=?
                 WHERE execution_id=? AND attempt_no=? AND cycle_no=? AND lease_token=? AND result='RUNNING'
-                """, time(now), Duration.between(row.startTime(), now).toMillis(), id, row.attempt(), row.cycle(), row.token().toString());
-        if (changed != 1) throw conflict("过期任务缺少对应运行尝试");
-        int failures = row.failures() + 1;
+                """, outcome.name(), time(now), Duration.between(row.startTime(), now).toMillis(), id,
+                row.attempt(), row.cycle(), row.token().toString());
+        if (changed != 1) throw conflict("任务缺少对应运行尝试");
+        boolean success = outcome == Outcome.SUCCEEDED;
+        int failures = success ? row.failures() : row.failures() + 1;
         var policy = row.submission().definition().retryPolicy();
-        boolean dead = failures >= policy.maxAttempts();
-        Instant next = dead ? now : now.plus(policy.delayForFailure(failures));
-        jdbc.update("""
+        boolean dead = !success && failures >= policy.maxAttempts();
+        Instant next = success || dead ? now : now.plus(policy.delayForFailure(failures));
+        changed = jdbc.update("""
                 UPDATE job_execution SET state=?,failure_count=?,lease_token=NULL,start_time=NULL,lease_until=NULL,
-                next_attempt_at=?,finished_at=?,updated_at=?,version=version+1 WHERE execution_id=?
-                """, dead ? "DEAD" : "RETRY_WAIT", failures, time(next), dead ? time(now) : null, time(now), id);
+                next_attempt_at=?,finished_at=?,updated_at=?,version=version+1 WHERE execution_id=? AND lease_token=?
+                """, success ? "SUCCEEDED" : dead ? "DEAD" : "RETRY_WAIT", failures, time(next),
+                success || dead ? time(now) : null, time(now), id, row.token().toString());
+        if (changed != 1) throw conflict("任务领取状态已变更");
         if (dead) {
             jdbc.update("""
                     INSERT INTO dead_job(dead_id,execution_id,cycle_no,last_attempt,failure_count,reason,failed_at)
-                    VALUES (?,?,?,?,?,'LEASE_EXPIRED',?)
-                    """, UUID.randomUUID().toString(), id, row.cycle(), row.attempt(), failures, time(now));
+                    VALUES (?,?,?,?,?,?,?)
+                    """, UUID.randomUUID().toString(), id, row.cycle(), row.attempt(), failures, outcome.name(), time(now));
+        } else if (success) {
+            jdbc.update("""
+                    UPDATE dead_job SET state='RESOLVED',resolved_at=?
+                    WHERE execution_id=? AND state='REPLAY_REQUESTED'
+                    """, time(now), id);
         }
     }
 
@@ -174,7 +186,7 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository {
      * @param lock 本类常量锁后缀
      * @return 技术快照，未找到或被跳过为null
      */
-    private Row load(UUID executionId, String lock) {
+    Row load(UUID executionId, String lock) {
         var rows = jdbc.query("SELECT * FROM job_execution WHERE execution_id=? " + lock,
                 JobExecutionRepositoryImpl::map, executionId.toString());
         return rows.isEmpty() ? null : rows.getFirst();
@@ -205,7 +217,7 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository {
      * 在已取得行锁之后执行独立时钟查询，不使用可能等待前的语句开始时间。
      * @return 数据库UTC微秒时刻
      */
-    private Instant databaseNow() {
+    Instant databaseNow() {
         return jdbc.queryForObject("SELECT UTC_TIMESTAMP(6)", LocalDateTime.class).toInstant(ZoneOffset.UTC);
     }
 
@@ -226,7 +238,7 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository {
      * @param instant UTC时刻
      * @return UTC本地时间字段值
      */
-    private static LocalDateTime time(Instant instant) {
+    static LocalDateTime time(Instant instant) {
         return LocalDateTime.ofInstant(instant, ZoneOffset.UTC);
     }
 
@@ -249,7 +261,7 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository {
      * 不允许仓储自行开启事务或进入只读工作单元。
      * @throws IllegalStateException 没有活动写工作单元
      */
-    private static void requireWrite() {
+    static void requireWrite() {
         if (!TransactionSynchronizationManager.isActualTransactionActive() || TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
             throw new IllegalStateException("任务存储必须参与已有应用写工作单元");
         }
@@ -260,7 +272,7 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository {
      * @param message 固定安全说明
      * @return 可由新工作单元重试的40900
      */
-    private static StratumException conflict(String message) {
+    static StratumException conflict(String message) {
         return new StratumException(CommonErrorCode.CONFLICT, message);
     }
 
@@ -269,7 +281,7 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository {
      * @param failure JDBC异常
      * @return 固定冲突或原异常
      */
-    private static RuntimeException translate(DataAccessException failure) {
+    static RuntimeException translate(DataAccessException failure) {
         for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
             if (cause instanceof SQLException sql && (sql.getErrorCode() == 1062 || sql.getErrorCode() == 1020
                     || sql.getErrorCode() == 1205 || "40001".equals(sql.getSQLState()))) {
@@ -292,7 +304,7 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository {
      * @param nextAttempt 下次到期时刻
      * @param version 乐观版本
      */
-    private record Row(Submission submission, State state, long attempt, int failures, long cycle,
+    record Row(Submission submission, State state, long attempt, int failures, long cycle,
             UUID token, Instant startTime, Instant expiresAt, Instant nextAttempt, long version) {
         /**
          * 只输出安全执行身份与状态。
