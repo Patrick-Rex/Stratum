@@ -42,11 +42,11 @@
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
 | stratum-infrastructure | 已引入 Easy-Query 3.3.1（Boot 4 starter / MySQL 方言 / 处理器）、MariaDB JDBC、Flyway、Redis、Caffeine；已配置数据源与 Flyway；NODE-B03.2b 已验证真实 MariaDB 提交、回滚和嵌套事务 |
 | stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由、Header灰度、协议透传和代理超时/错误处理；已具备头体防护及管理直连CIDR限制，已绑定直连IP共享Redis限流，已提供JSON访问日志及受管理CIDR保护的Prometheus指标；双进程ERP闭环、权限组合及g3全工程回归已验收，D04.1完成 |
-| stratum-job | Quartz/ShedLock Spring依赖、固定处理器注册表与有界虚拟线程执行器已接入；实际工作器持有数据库锁，周期触发与Relay继续E03后续节点 |
+| stratum-job | Quartz/ShedLock Spring依赖、固定处理器注册表与有界虚拟线程执行器已接入；实际工作器持有数据库锁，已接入固定Quartz触发及数据库重试驱动，周期Relay继续E03后续节点 |
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
 
-Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ已接入显式启用的连接配置，持久化Topic/Quorum拓扑及发布确认适配已建立，Relay、有序消费、死信归档及人工重放闭环已通过E02.5全工程验收；Quartz JDBC/ShedLock数据库锁已具备默认关闭的显式装配；任务有界执行器已接入，Quartz触发、周期Relay、Nacos和完整观测组件仍待后续节点。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
+Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ已接入显式启用的连接配置，持久化Topic/Quorum拓扑及发布确认适配已建立，Relay、有序消费、死信归档及人工重放闭环已通过E02.5全工程验收；Quartz JDBC/ShedLock数据库锁已具备默认关闭的显式装配；任务有界执行器已接入，固定Quartz触发已接入，周期Relay、Nacos和完整观测组件仍待后续节点。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
 
 以下目标基线沿用原项目入口的既有约定，尚未接入时不作为当前依赖版本：
 
@@ -1299,3 +1299,9 @@ JobRunControl只协调单个进程内私有虚拟线程的启动、截止信号�
 任务显式启用时装配私有有界虚拟线程执行器及ShedLock工作器，不暴露通用Executor Bean；默认关闭无运行资源。参数`stratum.jobs.workers`与Quartz共用1至8容量，默认2。实际处理在状态工作单元外运行，同代码在不同实例仍由数据库锁互斥；超时只请求中断，未实际退出继续占用容量和锁。调用分类不代替数据库执行状态；关闭顺序为实际执行器、锁续期、数据源。
 
 本节点新增6项真实集成验证：事务外处理/trace恢复、失败死亡和日志脱敏、实际超时中断、忽略中断时容量/跨实例锁保持、关闭提交与实际线程退出、预中断/未知身份拒绝。处理线程保留实际引用验退出；平台线程快照仅用于Quartz/续期退出，不用它推断虚拟线程生命周期。完整Quartz触发与周期Relay尚待后续节点。
+
+## NODE-E03.4d 固定调度触发
+
+`stratum.jobs.enabled=true`时，已登记处理器自动获得每秒一次的到期驱动；周期处理器额外按其UTC Cron登记原计划时刻，初始参数{}。重启和双实例复用同一JDBC定义；同键配置冲突或遗留已移除的处理器/周期定义时启动失败，不自动覆盖或删除。任务历史与重试资格继续使用Application及真实数据库，不把Quartz触发次数当作业务处理次数。
+
+新增真实Quartz JDBC测试核对双实例失败后退避成功、原WAITING重启执行、Cron身份/参数、持久化定义冲突与旧周期拒绝，以及实际Quartz/工作器的关闭提交和线程退出。关闭协调在Bean销毁前完成，锁提供者及数据源保持可用；周期Outbox Relay尚待E03.5。
