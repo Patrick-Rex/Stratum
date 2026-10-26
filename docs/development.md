@@ -46,7 +46,7 @@
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
 
-Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ已接入显式启用的连接配置，持久化Topic/Quorum拓扑已建立，发布与消费仍待后续节点；Nacos、Quartz、ShedLock和完整观测组件仍为后续目标设计。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
+Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ已接入显式启用的连接配置，持久化Topic/Quorum拓扑及发布确认适配已建立，Relay与消费仍待后续节点；Nacos、Quartz、ShedLock和完整观测组件仍为后续目标设计。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
 
 以下目标基线沿用原项目入口的既有约定，尚未接入时不作为当前依赖版本：
 
@@ -1016,3 +1016,13 @@ Domain增加OutboxPublisher端口，Delivery复用原OutboxMessage并携带正lo
 RabbitMQ Java Client使用原生NIO；I/O循环独立于原回调工作池，单线程、最多4项等待任务，避免workers=1时I/O占满回调执行器。每连接写队列最多64项，写入队等待沿用STRATUM_MQ_TIMEOUT；请求帧上限128KiB，协商后遵循Broker限制。连接、握手及RPC边界保持原配置，NIO关闭动作使用已有有界回调池。两个执行器均由Spring管理，连接工厂先释放连接，再关闭线程池，最多各等待5秒。
 
 本轮25项Infrastructure单元与6项拓扑验收重新执行通过，0失败/错误/跳过；实际NIO连接完成路由、nack延迟、reject超限DLQ及容量拒绝回归。配置/握手测试核对I/O与回调资源隔离、队列/帧/等待边界、无启动TCP连接、无响应握手按时失败、两池关闭终止。发送器与confirm判定仍待E01.3c，不把NIO入队成功视为Broker确认。
+
+## Outbox有界发布确认（NODE-E01.3c）
+
+RabbitOutboxPublisherConfiguration仅在消息开启时提供OutboxPublisher。它使用主工厂的独立发布连接，mandatory=true，关联confirm；正文是含eventId/eventType/aggregateId/occurredAt/payload/traceId/sequence的JSON，payload保持JSON值且小数按BigDecimal解析以保留数量/金额精度，消息持久化，messageId固定原eventId。头携带X-Trace-Id及stratum-sequence/aggregate-id/event-type，correlationId为业务trace；每次发送的客户端确认关联标识独立生成，重试不更换业务eventId。本节点保留既有业务关联值，尚无OTel跨度或持久化W3C上下文，不伪造traceparent。
+
+只接受erp三段式事件或stratum.cache.invalidate，以及公共安全关联字符规则；非法JSON（含额外尾随值）、超512KiB信封或活动业务写事务中的发送在调用Broker前拒绝。stratum.messaging.publisher.max-in-flight默认16（1至128），容量耗尽立即UNAVAILABLE；序列化和等待同受该容量限制。confirm-timeout默认2s（50ms至10s），从send返回后开始；连接、NIO帧入队与通道RPC另按连接配置限时，不能把它描述为整次调用总时限。
+
+CONFIRMED要求confirm为ack且没有mandatory返回；不可路由为RETURNED，Broker否定为REJECTED，确认等待超时为TIMED_OUT，连接/确认异常或中断为UNAVAILABLE。超时/异常/中断重置独立发布连接以清理未确认状态，保持中断标志；若重置失败，适配保持关闭直到重建，避免继续累积挂起消息。主声明/未来消费连接不因此重置。客户端随Spring销毁；生产业务当前未调用该端口，只有后续Relay可在事务外使用，不提供临时写事务直接发送或自动定时器。
+
+本轮6项发布适配单元及4项真实Broker集成测试通过，0失败/错误/跳过。单元验证完整JSON/64位序号和高精度小数、mandatory优先/否定、确认超时、重置失败关闭、发送及确认异常、中断、并发容量恢复、事务/输入拒绝和资源销毁。真实验收覆盖两订阅持久消息/标识/序号/trace及36位高精度小数原值、主与发布连接物理隔离、不可路由与同事件恢复、容量否定确认、仅发布连接重置并恢复。不可路由探针先建立发布连接再删除队列，避开管理员首次连接的自动修复；真实故障以Broker返回判定。确认超时分支采用显式未完成确认替身，不冒称本轮真实Broker超时演练。拓扑6项及Infrastructure25项沿用E01.3b，本节点未重跑。

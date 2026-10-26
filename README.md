@@ -10,7 +10,7 @@ Phase D已实现本地账号、环境初始化、BCrypt、RS256登录/刷新、R
 
 D03已完成角色仓库管理与业务读写范围：ALL或指定仓库按多角色取并集；administrator固定全部、普通角色默认无仓库。读取在数据库计数/分页/详情前过滤；创建和履约在命令及回执重放前检查范围。API权限独立，只有履约API及范围也可收发货；无范围创建403、原订单目标404。同一会话立即看到范围变更，旧回执不能绕过撤权。
 
-2026-10-26的D04.1g3全工程验收重新执行39个任务，179项单元、434项Starter和10项Gateway真实集成测试全部通过，0失败、错误或跳过。D04.1及Phase D非部署范围已完成。独立网关已提供固定路由/Header灰度、协议透传、代理超时/错误、头体防护、管理来源CIDR、Redis共享限流、结构化访问日志及受保护Prometheus指标；消息投递消费、后台任务及完整可观测性仍待实现；部署相关节点暂缓。准确节点状态见[CONTEXT](docs/CONTEXT.md)，历史验收不代表本次重新执行。
+2026-10-26的D04.1g3全工程验收重新执行39个任务，179项单元、434项Starter和10项Gateway真实集成测试全部通过，0失败、错误或跳过。D04.1及Phase D非部署范围已完成。独立网关已提供固定路由/Header灰度、协议透传、代理超时/错误、头体防护、管理来源CIDR、Redis共享限流、结构化访问日志及受保护Prometheus指标；Outbox Relay与消息消费、后台任务及完整可观测性仍待实现；部署相关节点暂缓。准确节点状态见[CONTEXT](docs/CONTEXT.md)，历史验收不代表本次重新执行。
 
 ## 文档入口
 
@@ -32,7 +32,7 @@ D03已完成角色仓库管理与业务读写范围：ALL或指定仓库按多�
 .\gradlew.bat --no-daemon :stratum-starter:bootRun
 ```
 
-消息连接默认关闭；设置`STRATUM_MQ_ENABLED=true`时须显式提供`STRATUM_MQ_VHOST/USERNAME/PASSWORD`，地址用`STRATUM_MQ_HOST/PORT`。启用后会连接RabbitMQ 4.3+、校验版本并声明缓存补偿与ERP事件留痕的Topic/Quorum及DLQ拓扑；当前尚无生产发布与消费，完整消息链路仍待后续节点；详见[开发与迭代](docs/development.md)。
+消息连接默认关闭；设置`STRATUM_MQ_ENABLED=true`时须显式提供`STRATUM_MQ_VHOST/USERNAME/PASSWORD`，地址用`STRATUM_MQ_HOST/PORT`。启用后会连接RabbitMQ 4.3+、校验版本并声明缓存补偿与ERP事件留痕的Topic/Quorum及DLQ拓扑；Outbox专用发布适配已具备持久JSON、关联confirm及mandatory返回判定，Relay与消费仍待后续节点；详见[开发与迭代](docs/development.md)。
 
 当前通过环境变量配置MariaDB、Redis和外部RSA密钥，初始管理员凭据不设默认值；Nacos尚未接入。未配置JWT时ERP端点返回401。启用认证后使用`/auth/login`与`/auth/refresh`，业务请求携带`Authorization: Bearer`；本人退出为`/auth/logout`、全部退出为`/auth/logout-all`。管理员通过`/api/auth/accounts`、`/api/auth/roles`及`/api/auth/permissions`管理账号与角色，通过`/api/auth/roles/{id}/warehouse-scope`的GET/PUT读取和配置角色仓库范围。启动后可检查`http://localhost:8080/actuator/health`，结束时按`Ctrl+C`退出。
 
