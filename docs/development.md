@@ -1077,3 +1077,11 @@ OutboxRepositoryImpl在Application已有写事务内用参数化INSERT ON DUPLIC
 OutboxRepositoryImpl现在将序号分配JDBC与事件ORM写入的1020/SQLSTATE40001统一映射既有CONFLICT基线；1062重复事件继续映射40900。不在仓储内开启新事务或自动重试，调用方必须让失败退出工作单元后再重试，避免旧快照或部分提交。并发验收发现并修复了原JDBC快照错误会变成500的缺口。
 
 本轮20项真实MariaDB/Redis/HTTP测试通过，0失败/错误/跳过：序号并发4、序号与迁移7、原Outbox5、直连ERP闭环2与独立Gateway ERP闭环2。原事件/回执/缓存与精确金额、分批收发货回归通过；自身Gateway子进程已退出。E02.1完成，仅证明持久化序号与事务行为，Relay和消费者仍待后续节点。
+
+## Relay领取与完成契约（NODE-E02.2a）
+
+Domain增加OutboxRelayRepository：claim只参与Application已有写工作单元，最多领取请求上限的不可变聚合头列表；finish在MQ事务外发布后，由新的工作单元按原竞争令牌和数据库租约核验结果。确认仅标SENT，不表示消费完成；租约过期、接管或状态已变返回false，不覆盖新状态。前序消费成功前不能领取后序，发送失败到达上限仍阻塞该聚合。
+
+ClaimRequest限制1至128条、租期1秒至10分钟，采用毫秒精度；Claim保留原Delivery、UUID竞争令牌、数据库UTC截止时间和非负失败次数，摘要不包含正文或令牌，构造不依据本机时间推测有效期。RetryPolicy限制失败次数1至100、首次延迟100ms至1min、封顶不超过1h；指数退避封顶后立即结束计算，即使Integer.MAX_VALUE次数也不会无限循环或溢出。
+
+本轮67项Domain测试通过，0失败/错误/跳过，新增4项验证领取边界、不可变证据及摘要、封顶退避和非法参数。Domain源码框架导入检查无命中。本节点没有数据库领取、MQ调用或调度，后续E02.2b实现持久化，不把契约测试计为真实租约互斥。
