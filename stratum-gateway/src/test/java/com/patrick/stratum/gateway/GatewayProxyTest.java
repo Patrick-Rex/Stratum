@@ -130,6 +130,28 @@ class GatewayProxyTest extends GatewayHttpIntegrationTest {
         assertSame(failure, assertThrows(IllegalStateException.class, () -> handler.handle(committed, failure).block(Duration.ofSeconds(2))));
     }
 
+    /** 限流429保留等待建议，入口存储故障503不被内部连接异常覆盖，全部文案脱敏。 */
+    @Test void rateLimitAndStoreFailureHaveSafeProtocol() {
+        var handler = new GatewayErrorHandler(JsonMapper.builder().build());
+        for (int status : List.of(429, 503)) {
+            var exchange = MockServerWebExchange.from(MockServerHttpRequest.get("/api/private"));
+            exchange.getAttributes().put(com.patrick.stratum.gateway.filter.GatewayCorrelationFilter.TRACE_ATTRIBUTE, "rate-safe");
+            exchange.getResponse().getHeaders().set("Retry-After", "2");
+            var failure = new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatusCode.valueOf(status),
+                    "sensitive-client-and-redis-address", new java.net.ConnectException("sensitive-redis-password"));
+            handler.handle(exchange, failure).block(Duration.ofSeconds(2));
+            var response = exchange.getResponse(); assertEquals(status, response.getStatusCode().value());
+            String text = response.getBodyAsString().block(Duration.ofSeconds(2));
+            var body = JsonMapper.builder().build().readTree(text);
+            assertEquals(5, body.size()); assertEquals(status == 429 ? 40002 : 50000, body.path("code").asInt());
+            assertEquals(status == 429 ? "请求过于频繁，请稍后重试" : "入口服务暂不可用", body.path("message").asText());
+            assertTrue(body.path("data").isNull()); assertEquals(0, body.path("details").size());
+            assertEquals("rate-safe", body.path("traceId").asText()); assertFalse(text.contains("sensitive"));
+            assertEquals("2", response.getHeaders().getFirst("Retry-After")); assertEquals("no-store", response.getHeaders().getFirst("Cache-Control"));
+            assertEquals("rate-safe", response.getHeaders().getFirst("X-Trace-Id"));
+        }
+    }
+
     /**
      * 验证网关自身错误使用精确五字段、空业务数据和一致关联标识。
      * @param response 原始响应

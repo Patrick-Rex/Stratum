@@ -916,3 +916,9 @@ RedisGatewayRateLimiter按已解析IP字节的规范十六进制身份消费令�
 stratum.gateway.rate-limit配置replenish-rate、burst-capacity、maximum-clients、namespace、command-timeout；对应STRATUM_GATEWAY_REPLENISH_RATE、BURST_CAPACITY、MAXIMUM_CLIENTS、RATE_NAMESPACE、RATE_TIMEOUT。namespace最长40个小写字母数字连字符且以字母开头，必须为所有入口实例的同一受信值；默认stratum-gateway。命令默认500ms，允许50ms至2s；Lettuce每连接命令队列固定256，断连拒绝排队，保留官方已有连接选项。Redis连接由STRATUM_GATEWAY_REDIS_HOST/PORT/PASSWORD提供，默认本机6379和空认证；连接1s、客户端命令500ms，不把密码写入代码或日志。
 
 Gateway build、26项原网关回归与6项显式集成测试通过，0失败/错误/跳过。5项真实Redis场景验证独立客户端并发共享、Redis时钟补充、IPv4/IPv6桶独立、策略漂移、槽位拒绝/惰性回收/TTL、错误类型/真实连接拒绝和四键逐个丢失失败；另1项校验配置、客户端队列选项、模拟损坏结果和未完成命令的超时。所有测试仅删除自身唯一命名空间四键并关闭客户端；独立Redis/MariaDB暂留供连续验证。当前仅交付共享存储能力，尚未给HTTP转发绑定限流；e2先接入标准错误，e3再绑定并验收真实HTTP效果。
+
+## 入口限流错误协议（NODE-D04.1e2）
+
+CommonErrorCode增加RATE_LIMITED（40002），Gateway自身HTTP429映射该码及安全文案“请求过于频繁，请稍后重试”；沿用ApiResponse五字段、空data/details、显式traceId与no-store，保留后续限流器给出的Retry-After秒值。HTTP503入口故障使用50000及“入口服务暂不可用”，不被内部连接异常改成上游502，也不回显存储地址/凭据/异常原因。正常上游业务错误继续原样透传。
+
+Common9项与Gateway27项回归通过，0失败/错误/跳过，Gateway build退出码0。新增1项协议测试同时核对429/503状态、错误码/文案、五字段/空业务数据、关联、缓存、等待建议及嵌套内部异常脱敏；其余代理、来源、防护、路由及协议回归通过。本节点未给HTTP转发绑定限流；下一e3完成绑定及真实Redis/HTTP组合效果。

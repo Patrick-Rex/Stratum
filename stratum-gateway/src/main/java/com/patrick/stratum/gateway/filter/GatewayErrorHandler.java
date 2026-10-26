@@ -35,7 +35,7 @@ public class GatewayErrorHandler implements ErrorWebExceptionHandler {
         String traceId = exchange.getAttribute(GatewayCorrelationFilter.TRACE_ATTRIBUTE);
         if (!CorrelationIdPolicy.isValid(traceId)) traceId = CorrelationIdPolicy.resolve(null);
         exchange.getAttributes().put(GatewayCorrelationFilter.TRACE_ATTRIBUTE, traceId);
-        String message = switch (status) { case 502 -> "上游服务暂不可用"; case 504 -> "上游响应超时"; default -> code.getDefaultMessage(); };
+        String message = switch (status) { case 502 -> "上游服务暂不可用"; case 504 -> "上游响应超时"; case 503 -> "入口服务暂不可用"; default -> code.getDefaultMessage(); };
         byte[] body = json.writeValueAsBytes(ApiResponse.failure(code, message, List.of(), traceId));
         response.setStatusCode(HttpStatusCode.valueOf(status)); var headers = response.getHeaders();
         for (String name : List.of(HttpHeaders.CONTENT_LENGTH, HttpHeaders.TRANSFER_ENCODING, HttpHeaders.CONTENT_ENCODING,
@@ -71,6 +71,7 @@ public class GatewayErrorHandler implements ErrorWebExceptionHandler {
         return switch (status) {
             case 401 -> CommonErrorCode.UNAUTHORIZED; case 403 -> CommonErrorCode.FORBIDDEN;
             case 404 -> CommonErrorCode.NOT_FOUND; case 409 -> CommonErrorCode.CONFLICT;
+            case 429 -> CommonErrorCode.RATE_LIMITED;
             default -> status < 500 ? CommonErrorCode.BAD_REQUEST : CommonErrorCode.INTERNAL_ERROR;
         };
     }
