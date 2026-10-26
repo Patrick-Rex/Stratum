@@ -50,3 +50,5 @@ stratum:
       maximum-header-count: ${STRATUM_GATEWAY_MAXIMUM_HEADER_COUNT:100}
       maximum-buffered-requests: ${STRATUM_GATEWAY_MAXIMUM_BUFFERED_REQUESTS:32}
       body-timeout: ${STRATUM_GATEWAY_BODY_TIMEOUT:5s}
+    management:
+      allowed-cidrs: ${STRATUM_GATEWAY_MANAGEMENT_ALLOWED_CIDRS:127.0.0.0/8,::1/128}

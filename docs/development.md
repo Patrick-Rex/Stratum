@@ -41,7 +41,7 @@
 | stratum-query | QuerySpec、Query/Handler/Result/Context、QueryGateway 与 Spring 装配；统一路由及查询指标日志 |
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
 | stratum-infrastructure | 已引入 Easy-Query 3.3.1（Boot 4 starter / MySQL 方言 / 处理器）、MariaDB JDBC、Flyway、Redis、Caffeine；已配置数据源与 Flyway；NODE-B03.2b 已验证真实 MariaDB 提交、回滚和嵌套事务 |
-| stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由、Header灰度、协议透传和代理超时/错误处理；请求防护与限流待后续节点 |
+| stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由、Header灰度、协议透传和代理超时/错误处理；已具备头体防护及管理直连CIDR限制，限流待后续节点 |
 | stratum-job | Gradle 模块骨架 |
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
@@ -898,3 +898,11 @@ stratum.gateway.protection默认maximum-body-bytes=1048576、maximum-header-byte
 应用级体超限413、头容量431、缓冲耗尽503、体读取总时限408，沿用统一错误外壳。Netty硬解析头上限64KiB；在HTTP解析阶段已经拒绝的非法报文可能无法进入关联过滤器和JSON错误处理，不宣称所有底层协议错误都由应用包装。
 
 Gateway build及22项测试通过，0失败/错误/跳过，包括5项新防护及全部原网关回归。真实HTTP验证固定/分块合法边界、两类超限不触达上游、头预算431及伪造代理来源不透传；池化片段校验聚合超限/取消refCnt归零，缓冲耗尽、读取超时后容量恢复，非法头/控制字符/字段数量和配置边界均拒绝。全部本机服务、上下文及客户端已关闭；管理来源路径与默认CIDR已由用户于2026-10-26确认，下一D04.1d2实施：账号/角色/权限管理及子路径，默认仅IPv4/IPv6回环，支持配置CIDR，只信任直连地址。
+
+## 管理直连来源控制（NODE-D04.1d2）
+
+GatewayManagementSourceFilter在请求体缓冲之前检查/api/auth/accounts、/api/auth/roles、/api/auth/permissions及其子路径。默认允许127.0.0.0/8与::1/128，stratum.gateway.management.allowed-cidrs或STRATUM_GATEWAY_MANAGEMENT_ALLOWED_CIDRS提供逗号分隔完整列表；增加网段时保留需要的默认项，空列表表示拒绝所有管理来源，最多64项，每项最长64字符。启动时以JDK25的InetAddress.ofLiteral解析IP字面量，不查DNS，拒绝主机名/区域标识/错误前缀。只检查同地址族前缀，允许网段内主机位；无法获得解析好的直连地址时拒绝。
+
+路径按一次解码的段值及去掉矩阵参数后的值判断，折叠空段，精确管理根或其子路径才受控制；模糊编码分隔符、重复转义、点段400失败关闭，不改写实际上游URI。来源未允许403且在上游调用前终止；Forwarded/X-Forwarded-*/X-Real-IP均不能提供资格。允许来源只代表继续代理，ERP仍检查当前管理员和API/仓库权限。
+
+Gateway build及26项测试通过，0失败/错误/跳过，包括4项新增管理检查及原网关全部回归。真实HTTP验证默认本机允许到达上游401（未授予业务身份）、指定CIDR排除本机时管理根/子路径/编码及矩阵形式403，伪造允许来源无效，非管理相似前缀和登录仍可到达上游。IPv4/IPv6前缀边界、缺失/未解析来源、拒绝全部、模糊路径、配置语法/容量/不可变性用模拟交换验证；没有声称真实IPv6监听验收。测试上下文、上游及客户端均关闭，D04.1d完成；下一e按用户已确认的直连IP共享令牌桶规则细分后实施。
