@@ -10,7 +10,7 @@
 
 ```
 阶段：Phase D（认证、权限与网关）
-当前节点：NODE-D04.1f2（待开始）
+当前节点：NODE-D04.1f2a（进行中）
 上次会话日期：2026-10-26（NODE-D04.1f1 验收）
 项目状态：NODE-B01 已完成，Domain 核心抽象已建立（AggregateRoot、Entity、ValueObject、Repository、DomainEvent），domain 模块直接声明 common 依赖，源码无框架导入；根构建统一配置 Lombok 编译期依赖；Phase A 与 Phase B 已完成；Phase C 已完成；Phase D 进行中
 ```
@@ -202,7 +202,7 @@
 
 ## 3. 待执行节点（按顺序）
 
-下一节点为 **NODE-D04.1f2**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
+当前节点为 **NODE-D04.1f2a**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
 
 ---
 
