@@ -33,15 +33,18 @@ import org.springframework.scheduling.quartz.SchedulerFactoryBean;
 @EnableSchedulerLock(defaultLockAtMostFor = "PT5M", proxyTargetClass = true)
 public class SchedulerConfiguration {
     /**
-     * 创建使用数据库UTC时间、独立技术协调事务的锁适配。
+     * 创建数据库UTC时间锁与有界自动续期，内部执行器不参与应用Executor自动装配。
      * @param dataSource 应用数据源，业务工作单元不会传入锁事务
-     * @return 同名主键保护的数据库锁提供者
+     * @param properties 本实例资源容量与命名空间
+     * @return 随上下文关闭的数据库锁提供者
      */
-    @Bean
-    LockProvider jobLockProvider(DataSource dataSource) {
-        return new JdbcTemplateLockProvider(JdbcTemplateLockProvider.Configuration.builder()
-                .withJdbcTemplate(new JdbcTemplate(dataSource))
-                .withTableName("stratum_shedlock").usingDbTime().build());
+    @Bean(destroyMethod = "close")
+    LockProvider jobLockProvider(DataSource dataSource, Properties properties) {
+        var jdbc = new JdbcTemplate(dataSource);
+        jdbc.setQueryTimeout(5);
+        var database = new JdbcTemplateLockProvider(JdbcTemplateLockProvider.Configuration.builder()
+                .withJdbcTemplate(jdbc).withTableName("stratum_shedlock").usingDbTime().build());
+        return new BoundedJobLockProvider(database, properties.workers(), properties.name());
     }
 
     /**
