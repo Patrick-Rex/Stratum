@@ -93,6 +93,17 @@ public class OutboxConsumptionRepositoryImpl implements OutboxConsumptionReposit
                     WHERE aggregate_id = ? AND consumed_sequence = ?
                     """, delivery.sequence(), delivery.message().aggregateId(), delivery.sequence() - 1);
             if (inserted != 1 || advanced != 1) throw new IllegalStateException("消费凭据或顺序更新失败");
+            jdbc.update("""
+                    UPDATE outbox_dead_letter d JOIN outbox_replay_delivery r ON r.dead_id = d.dead_id
+                    SET d.status = 'RESOLVED'
+                    WHERE r.event_id = ? AND r.consumer_group = ? AND r.status <> 'RESOLVED'
+                        AND d.category = 'RETRIES_EXHAUSTED'
+                    """, delivery.message().eventId(), group.name());
+            jdbc.update("""
+                    UPDATE outbox_replay_delivery SET status = 'RESOLVED', resolved_at = UTC_TIMESTAMP(6),
+                        lease_token = NULL, lease_until = NULL, version = version + 1
+                    WHERE event_id = ? AND consumer_group = ? AND status <> 'RESOLVED'
+                    """, delivery.message().eventId(), group.name());
         } catch (DataAccessException failure) { throw translate(failure); }
     }
 
