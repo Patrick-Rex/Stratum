@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpHandler;
 import com.patrick.stratum.common.trace.CorrelationIdPolicy;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.web.server.context.WebServerApplicationContext;
@@ -40,10 +41,7 @@ abstract class GatewayHttpIntegrationTest {
      * @throws Exception 端口或HTTP初始化失败
      */
     protected Upstream upstream(String name) throws Exception {
-        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0); var requests = new AtomicInteger();
-        server.createContext("/", exchange -> {
-            requests.incrementAndGet();
-            try {
+        return upstream(exchange -> {
                 byte[] input = exchange.getRequestBody().readNBytes(4097);
                 if (input.length > 4096) { exchange.sendResponseHeaders(413, -1); return; }
                 var received = new java.util.LinkedHashMap<String, String>();
@@ -58,7 +56,20 @@ abstract class GatewayHttpIntegrationTest {
                 exchange.getResponseHeaders().set(CorrelationIdPolicy.REQUEST_HEADER, "upstream-request");
                 exchange.getResponseHeaders().set("Content-Type", "application/json"); exchange.sendResponseHeaders(200, output.length);
                 exchange.getResponseBody().write(output);
-            } finally { exchange.close(); }
+        });
+    }
+
+    /**
+     * 创建可注入故障行为的计数服务，由共用包装器关闭每个交换。
+     * @param handler 有界测试处理器
+     * @return 可关闭上游
+     * @throws Exception 端口或服务初始化失败
+     */
+    protected Upstream upstream(HttpHandler handler) throws Exception {
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0); var requests = new AtomicInteger();
+        server.createContext("/", exchange -> {
+            requests.incrementAndGet();
+            try { handler.handle(exchange); } finally { exchange.close(); }
         });
         server.start(); return new Upstream(server, URI.create("http://127.0.0.1:" + server.getAddress().getPort()), requests);
     }
@@ -70,13 +81,30 @@ abstract class GatewayHttpIntegrationTest {
      * @param enabled 是否转发
      * @param grayEnabled 是否灰度
      * @param host 可选精确域名
+     * @param extraArguments 额外CLI配置
      * @return 必须由调用方关闭的上下文
      */
-    protected ConfigurableApplicationContext gateway(Upstream stable, Upstream gray, boolean enabled, boolean grayEnabled, String host) {
-        return SpringApplication.run(GatewayApplication.class, "--server.port=0", "--server.address=127.0.0.1", "--spring.main.banner-mode=off",
+    protected ConfigurableApplicationContext gateway(Upstream stable, Upstream gray, boolean enabled, boolean grayEnabled, String host, String... extraArguments) {
+        return gateway(stable.address(), gray.address(), enabled, grayEnabled, host, extraArguments);
+    }
+
+    /**
+     * 通过固定URI启动网关，允许使用受测试持有但未监听的本机端口。
+     * @param stable 稳定上游URI
+     * @param gray 灰度上游URI
+     * @param enabled 是否转发
+     * @param grayEnabled 是否灰度
+     * @param host 可选精确域名
+     * @param extraArguments 额外CLI配置
+     * @return 可关闭上下文
+     */
+    protected ConfigurableApplicationContext gateway(URI stable, URI gray, boolean enabled, boolean grayEnabled, String host, String... extraArguments) {
+        var arguments = new java.util.ArrayList<>(List.of( "--server.port=0", "--server.address=127.0.0.1", "--spring.main.banner-mode=off",
                 "--logging.level.root=ERROR", "--stratum.gateway.routing.enabled=" + enabled,
-                "--stratum.gateway.routing.upstream=" + stable.address(), "--stratum.gateway.routing.gray-upstream=" + gray.address(),
-                "--stratum.gateway.routing.gray-enabled=" + grayEnabled, "--stratum.gateway.routing.gray-value=v2.0", "--stratum.gateway.routing.host=" + host);
+                "--stratum.gateway.routing.upstream=" + stable, "--stratum.gateway.routing.gray-upstream=" + gray,
+                "--stratum.gateway.routing.gray-enabled=" + grayEnabled, "--stratum.gateway.routing.gray-value=v2.0", "--stratum.gateway.routing.host=" + host));
+        arguments.addAll(List.of(extraArguments));
+        return SpringApplication.run(GatewayApplication.class, arguments.toArray(String[]::new));
     }
 
     /**

@@ -41,12 +41,12 @@
 | stratum-query | QuerySpec、Query/Handler/Result/Context、QueryGateway 与 Spring 装配；统一路由及查询指标日志 |
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
 | stratum-infrastructure | 已引入 Easy-Query 3.3.1（Boot 4 starter / MySQL 方言 / 处理器）、MariaDB JDBC、Flyway、Redis、Caffeine；已配置数据源与 Flyway；NODE-B03.2b 已验证真实 MariaDB 提交、回滚和嵌套事务 |
-| stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由和Header灰度；请求治理与限流待后续节点 |
+| stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由、Header灰度、协议透传和代理超时/错误处理；请求防护与限流待后续节点 |
 | stratum-job | Gradle 模块骨架 |
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
 
-Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ、Nacos、Quartz、ShedLock、网关路由和观测组件仍为后续目标设计。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
+Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ、Nacos、Quartz、ShedLock和完整观测组件仍为后续目标设计。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
 
 以下目标基线沿用原项目入口的既有约定，尚未接入时不作为当前依赖版本：
 
@@ -880,3 +880,11 @@ Gateway build和12项测试通过，0失败/错误/跳过，包括4项新增协�
 ApiResponse增加failure(errorCode,message,details,traceId)重载，显式校验安全关联标识并构造统一五字段失败外壳，不读取或建立线程上下文。失败data始终为空，details继续由原构造器防御性复制；空白文案回退默认。原成功及两类失败工厂保持原有线程上下文行为，不改变已上线响应契约。
 
 19项单元测试通过，0失败/错误/跳过，包括Common9项（新增3项工厂契约）及Interface10项回归。验证错误码/文案/数据/明细/trace语义、不可变集合、缺省明细与文案、非法trace及空错误码拒绝、无线程状态副作用和原工厂兼容。c2已细分为显式工厂与代理超时/错误；Gateway错误处理继续由c2b接入。
+
+## 网关代理超时与错误（NODE-D04.1c2b）
+
+Gateway通过官方HttpClientFactory扩展替换有界连接提供者，保留TLS等官方装配。stratum.gateway.proxy默认connect-timeout=2s、response-timeout=5s、maximum-connections=128、maximum-pending=256、acquire-timeout=1s；对应环境变量STRATUM_GATEWAY_CONNECT_TIMEOUT、RESPONSE_TIMEOUT、MAXIMUM_CONNECTIONS、MAXIMUM_PENDING、ACQUIRE_TIMEOUT。连接和等待容量按固定上游分别生效，池随上下文关闭；禁用传输层额外重试与自动重定向，请求写入亦受response-timeout约束。响应超时是读取空闲上界，不是整个流的总时长限制。
+
+网关自身连接/传输故障502、超时504、未知路由404，经显式traceId工厂返回统一五字段外壳，5xx沿用50000、data为空、details为空，移除残留实体/缓存/重定向及Cookie头，不回显异常、上游地址或请求参数。正常上游业务状态和正文原样透传；已经提交的流不能再改写为JSON，继续传播失败并由服务器结束连接。
+
+Gateway build及17项测试通过，0失败/错误/跳过，包括5项新代理验收及原启动、路由、协议和边界回归。真实HTTP验证拒绝连接502、响应头前停滞504、POST连接中断不额外重试、未知路由及业务401/409原样；连接超时类型以模拟交换验证504，未冒称真实TCP黑洞验收。核对实际客户端超时/禁重试、有界池容量及关闭释放、配置拒绝和已提交响应保护。全部本机测试服务、客户端和网关上下文已关闭；D04.1c完成，下一d接入请求防护和管理来源控制。

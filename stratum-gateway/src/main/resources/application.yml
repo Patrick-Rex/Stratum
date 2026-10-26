@@ -30,3 +30,9 @@ stratum:
       gray-header: ${STRATUM_GATEWAY_GRAY_HEADER:X-Stratum-Release}
       gray-value: ${STRATUM_GATEWAY_GRAY_VALUE:gray}
       host: ${STRATUM_GATEWAY_HOST:}
+    proxy:
+      connect-timeout: ${STRATUM_GATEWAY_CONNECT_TIMEOUT:2s}
+      response-timeout: ${STRATUM_GATEWAY_RESPONSE_TIMEOUT:5s}
+      maximum-connections: ${STRATUM_GATEWAY_MAXIMUM_CONNECTIONS:128}
+      maximum-pending: ${STRATUM_GATEWAY_MAXIMUM_PENDING:256}
+      acquire-timeout: ${STRATUM_GATEWAY_ACQUIRE_TIMEOUT:1s}
