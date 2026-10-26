@@ -46,7 +46,7 @@
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
 
-Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ、Nacos、Quartz、ShedLock和完整观测组件仍为后续目标设计。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
+Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ已接入显式启用的连接配置，拓扑、发布与消费仍待后续节点；Nacos、Quartz、ShedLock和完整观测组件仍为后续目标设计。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
 
 以下目标基线沿用原项目入口的既有约定，尚未接入时不作为当前依赖版本：
 
@@ -55,7 +55,7 @@ Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完�
 | Spring Boot | 4.0.5+（当前构建固定为 4.0.5） |
 | MariaDB | 10.11+ |
 | Redis | 开发单节点，生产 Sentinel |
-| RabbitMQ | 4.3+；已确认本机现有4.3.6，原生延迟重试，依赖尚未接入 |
+| RabbitMQ | 4.3+；本机现有4.3.6，客户端Spring AMQP 4.0.2已接入，原生延迟重试拓扑待E01.2 |
 | Nacos | 3.2.0+ |
 | 网关 | Spring Cloud Gateway Server WebFlux 5.0.4 / Cloud 2025.1.4，独立进程；项目外负载均衡 |
 | 后台任务 | Spring Scheduler + Quartz + ShedLock |
@@ -984,3 +984,13 @@ ErpWorkflowHttpIntegrationTest新增可覆盖的固定业务入口，保留原�
 39个任务全部重新执行，构建成功。实际XML结果为179项单元测试（application6、common9、domain60、gateway33、infrastructure20、interface10、query21、starter20）、434项Starter集成测试及10项Gateway集成测试，共623项，0失败、错误或跳过。Job仍是骨架，NO-SOURCE不计为通过测试。此次结果覆盖此前节点的业务、鉴权、仓库范围、事务/缓存、独立网关与真实限流验收；早期各节点段落保留当时实现边界，不作为当前待办。
 
 Domain框架导入、Query写SQL检查无命中；Starter测试只构建Gateway JAR，不引入其运行时依赖。独立Gateway子进程已退出，用户已有Java与Docker服务保留；本轮独立测试数据库/Redis暂留连续开发，结束前停止。D04.1及Phase D非部署范围完成，D04.2部署继续暂缓，后续进入Phase E消息与任务；消息、任务及完整观测尚未交付。
+
+## 消息连接基础（NODE-E01.1）
+
+Infrastructure引入Boot 4.0.5 BOM管理的spring-rabbit 4.0.2及RabbitMQ Java Client 5.27.1，不向Domain/Application加入客户端。使用官方维护的[Spring AMQP](https://github.com/spring-projects/spring-amqp/blob/main/LICENSE.txt)（Apache 2.0）及[Java Client](https://github.com/rabbitmq/rabbitmq-java-client/blob/main/LICENSE)可选Apache 2.0许可，无库授权或按量费用；沿用本地Broker，不引入收费服务。
+
+连接配置由RabbitMessagingConfiguration显式装配，使用spring-rabbit库，不接入会自动创建默认连接的Boot AMQP自动配置模块。STRATUM_MQ_ENABLED缺省false，关闭时没有消息工厂、配置凭据对象或线程池，既有ERP健康检查不要求Broker。启用时必须提供STRATUM_MQ_VHOST、STRATUM_MQ_USERNAME、STRATUM_MQ_PASSWORD；无guest或默认口令。STRATUM_MQ_HOST缺省127.0.0.1、PORT缺省5672。配置toString隐藏全部内容，校验异常不回显原文。
+
+STRATUM_MQ_TIMEOUT缺省2s，允许100ms至10s，分别应用于连接、握手、通道RPC、工作池等待及通道借用；关闭等待同值。CHANNELS缺省16，允许1至128；非零借用等待使缓存大小成为通道上限，同时设置Broker协商通道上限。WORKERS缺省4，允许1至16，工作池最多256项等待任务，退出等待最多5秒；最大接收消息体2MiB，心跳30秒。采用关联confirm和returns能力，关闭原生自动连接/拓扑恢复，后续由Spring消费者和Relay处理恢复。工厂延迟建立连接，本节点无RabbitAdmin、RabbitTemplate或监听容器，启用本身不声明队列、不发送消息，也不代表Broker健康验收。
+
+本节点实际25项Infrastructure单元测试通过（新增5项），0失败/错误/跳过：真实Spring绑定、关闭隔离、凭据/UTF-8/资源边界、无启动TCP连接、握手无响应按时失败及线程池退出。另执行4项直连/独立Gateway ERP闭环与2项真实安全链/健康文档HTTP测试，均通过；Starter health实际返回UP，Gateway自身子进程已退出。后续E01.2在确认消费用途后建立真实Broker隔离拓扑，本节点不把连接配置测试计为消息收发完成。

@@ -28,6 +28,16 @@ easy-query:
   name-conversion: underlined
 
 stratum:
+  messaging:
+    enabled: ${STRATUM_MQ_ENABLED:false}
+    host: ${STRATUM_MQ_HOST:127.0.0.1}
+    port: ${STRATUM_MQ_PORT:5672}
+    virtual-host: ${STRATUM_MQ_VHOST:}
+    username: ${STRATUM_MQ_USERNAME:}
+    password: ${STRATUM_MQ_PASSWORD:}
+    timeout: ${STRATUM_MQ_TIMEOUT:2s}
+    channels: ${STRATUM_MQ_CHANNELS:16}
+    workers: ${STRATUM_MQ_WORKERS:4}
   auth:
     jwt:
       enabled: ${STRATUM_AUTH_JWT_ENABLED:false}
