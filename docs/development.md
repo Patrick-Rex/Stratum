@@ -41,7 +41,7 @@
 | stratum-query | QuerySpec、Query/Handler/Result/Context、QueryGateway 与 Spring 装配；统一路由及查询指标日志 |
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
 | stratum-infrastructure | 已引入 Easy-Query 3.3.1（Boot 4 starter / MySQL 方言 / 处理器）、MariaDB JDBC、Flyway、Redis、Caffeine；已配置数据源与 Flyway；NODE-B03.2b 已验证真实 MariaDB 提交、回滚和嵌套事务 |
-| stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由、Header灰度、协议透传和代理超时/错误处理；已具备头体防护及管理直连CIDR限制，已绑定直连IP共享Redis限流，已提供JSON访问日志及受管理CIDR保护的Prometheus指标；双进程ERP闭环与权限组合已验收，整体回归待g3 |
+| stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由、Header灰度、协议透传和代理超时/错误处理；已具备头体防护及管理直连CIDR限制，已绑定直连IP共享Redis限流，已提供JSON访问日志及受管理CIDR保护的Prometheus指标；双进程ERP闭环、权限组合及g3全工程回归已验收，D04.1完成 |
 | stratum-job | Gradle 模块骨架 |
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
@@ -972,3 +972,15 @@ ErpWorkflowHttpIntegrationTest新增可覆盖的固定业务入口，保留原�
 9项真实MariaDB/Redis/HTTP测试通过，0失败/错误/跳过（原直连创建/履约各2项，独立网关创建3项/履约2项）。覆盖双类型创建和分批履约、API及仓库范围独立、指定/ALL/撤回、同一JWT立即生效、旧键不能绕过撤权、恢复原结果重放，以及匿名/Refresh不能访问业务。原订单/库存/凭据/流水/事件/回执快照在拒绝和重放时保持不变。
 
 新联合用例实际经网关创建普通账号、登录、刷新、/auth/me及退出；伪造管理员Header/查询不能改主体，普通账号无默认API/FEAT权限，退出后Access401。已有普通读取账号的仓库列表按空→指定仓库2单→撤回变空变化，详情从200变404；随后给定创建API及ALL范围，再使本用例入口桶为空，POST返回429/40002，ERP订单、Outbox和幂等回执均未增加。补充读取范围断言后9项再次重跑通过；全部自身Gateway子进程已退出，用户服务保留。g2完成，下一g3全工程重跑并核对D04.1收敛，部署继续暂缓。
+
+## 非部署网关全工程验收（NODE-D04.1g3）
+
+2026-10-26设置独立MariaDB/Redis测试连接后执行：
+
+```powershell
+.\gradlew.bat --no-daemon test :stratum-gateway:integrationTest :stratum-starter:integrationTest --rerun-tasks
+```
+
+39个任务全部重新执行，构建成功。实际XML结果为179项单元测试（application6、common9、domain60、gateway33、infrastructure20、interface10、query21、starter20）、434项Starter集成测试及10项Gateway集成测试，共623项，0失败、错误或跳过。Job仍是骨架，NO-SOURCE不计为通过测试。此次结果覆盖此前节点的业务、鉴权、仓库范围、事务/缓存、独立网关与真实限流验收；早期各节点段落保留当时实现边界，不作为当前待办。
+
+Domain框架导入、Query写SQL检查无命中；Starter测试只构建Gateway JAR，不引入其运行时依赖。独立Gateway子进程已退出，用户已有Java与Docker服务保留；本轮独立测试数据库/Redis暂留连续开发，结束前停止。D04.1及Phase D非部署范围完成，D04.2部署继续暂缓，后续进入Phase E消息与任务；消息、任务及完整观测尚未交付。
