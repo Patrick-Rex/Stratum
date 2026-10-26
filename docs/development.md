@@ -1115,3 +1115,11 @@ V202610260003新增outbox_consumption，以eventId/固定消费组为主键，�
 OutboxConsumptionRepository在Application已有写工作单元中执行begin→副作用→complete。begin按进度、事件锁顺序使用SKIP LOCKED当前读，忙行或非头返回WAITING，已完成凭据返回DUPLICATE；收到信封必须与本地Outbox的全部字段、正序号及无损JSON值相符，未知或篡改事件拒绝。complete重新核验资格，同事务复制原始信封并推进consumed_sequence；不要求先SENT，允许Broker已收到但发布确认尚未落盘的正常时序。存储不自行重试或开启事务，快照1020/串行化冲突沿用40900，整个工作单元回滚后重试。
 
 7项真实MariaDB测试通过，0失败/错误/跳过，覆盖审计原值与高精度、重复凭据、前序等待与其他聚合独立、组别、篡改及未知事件、完整回滚、事务/只读拒绝、独立连接竞争，以及旧快照冲突回滚后新事务识别重复。当前仅有存储端口，生产缓存消费用例和Broker监听仍待E02.3b/c，不将技术存储验收视为已自动消费。
+
+## 缓存补偿与ERP留痕用例（NODE-E02.3b）
+
+Domain的OutboxConsumer端口由OutboxConsumerApplicationService实现，Infrastructure后续仅依赖该端口。consume必须从事务外进入，一个UnitOfWork中依次核验资格、执行副作用、保存凭据和推进进度；返回CONSUMED/DUPLICATE时事务已经提交，WAITING不执行副作用。已有外层事务会被入口拒绝，避免后续监听器过早ack。消费trace使用现有关联标识规则并在finally恢复调用线程上下文；日志包含eventId、messageId、traceId、consumerGroup和结果，不记录正文。
+
+ERP_AUDIT只保存原事件留痕，不增加业务副作用。CACHE_INVALIDATION严格解析现有CacheInvalidation契约并复用VersionedCache.invalidate及TTL/版本屏障。Redis效果与数据库没有分布式原子事务：Redis成功后数据库失败时凭据和顺序回滚，下次仍可失效；版本规则保证不会删去更新的数据。DUPLICATE在副作用前返回，不重置缓存标记或TTL。
+
+本轮13项真实MariaDB/Redis集成通过，0失败/错误/跳过（原存储7项、新应用6项）。新增覆盖ERP原值/trace恢复、真实旧缓存删除与版本屏障/有界TTL、重复无效果、实际Redis操作后注入结果失败、凭据写入后注入失败并整体回滚、更新版本保护、非法载荷和后序等待、外层事务拒绝。故障由测试包装器在真实效果之后注入，不宣称模拟实际Redis断网；Broker监听与手动ack尚待E02.3c。
