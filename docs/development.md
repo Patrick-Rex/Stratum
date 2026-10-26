@@ -906,3 +906,13 @@ GatewayManagementSourceFilter在请求体缓冲之前检查/api/auth/accounts、
 路径按一次解码的段值及去掉矩阵参数后的值判断，折叠空段，精确管理根或其子路径才受控制；模糊编码分隔符、重复转义、点段400失败关闭，不改写实际上游URI。来源未允许403且在上游调用前终止；Forwarded/X-Forwarded-*/X-Real-IP均不能提供资格。允许来源只代表继续代理，ERP仍检查当前管理员和API/仓库权限。
 
 Gateway build及26项测试通过，0失败/错误/跳过，包括4项新增管理检查及原网关全部回归。真实HTTP验证默认本机允许到达上游401（未授予业务身份）、指定CIDR排除本机时管理根/子路径/编码及矩阵形式403，伪造允许来源无效，非管理相似前缀和登录仍可到达上游。IPv4/IPv6前缀边界、缺失/未解析来源、拒绝全部、模糊路径、配置语法/容量/不可变性用模拟交换验证；没有声称真实IPv6监听验收。测试上下文、上游及客户端均关闭，D04.1d完成；下一e按用户已确认的直连IP共享令牌桶规则细分后实施。
+
+## 共享Redis入口令牌桶（NODE-D04.1e1）
+
+Gateway加入Boot统一管理的spring-boot-starter-data-redis-reactive，实际Spring Data Redis 4.0.4，未导入业务模块/JDBC。沿用[Spring Data Redis](https://github.com/spring-projects/spring-data-redis/blob/main/LICENSE.txt) Apache2.0免费许可及官方持续维护版本，无库授权或按量费用，本地Redis运行仍消耗资源。[官方脚本抽象](https://docs.spring.io/spring-data/redis/reference/redis/scripting.html)复用单一脚本及EVALSHA缓存。普通test关闭Redis健康探测以保持无外部服务回归，生产健康探测不关闭；真实测试显式执行 `:stratum-gateway:integrationTest` 并提供STRATUM_IT_REDIS_PORT，未提供环境直接失败、不跳过。
+
+RedisGatewayRateLimiter按已解析IP字节的规范十六进制身份消费令牌，时间取Redis TIME；同命名空间固定四键（tokens/times/expires/policy）共用Hash Tag。两张Hash与有界ZSET记录客户端，默认4096、最多65536个活跃IP，每次至多清理128个过期槽位；满额拒绝新身份，不驱逐其他IP。补充速率默认20/s、容量40；闲置TTL取60秒与完整补充时间两倍的较大值，四键全部过期。相同命名空间的速率/容量/槽位策略不一致、任一共享键部分丢失或状态不一致均失败，不重置旧桶。
+
+stratum.gateway.rate-limit配置replenish-rate、burst-capacity、maximum-clients、namespace、command-timeout；对应STRATUM_GATEWAY_REPLENISH_RATE、BURST_CAPACITY、MAXIMUM_CLIENTS、RATE_NAMESPACE、RATE_TIMEOUT。namespace最长40个小写字母数字连字符且以字母开头，必须为所有入口实例的同一受信值；默认stratum-gateway。命令默认500ms，允许50ms至2s；Lettuce每连接命令队列固定256，断连拒绝排队，保留官方已有连接选项。Redis连接由STRATUM_GATEWAY_REDIS_HOST/PORT/PASSWORD提供，默认本机6379和空认证；连接1s、客户端命令500ms，不把密码写入代码或日志。
+
+Gateway build、26项原网关回归与6项显式集成测试通过，0失败/错误/跳过。5项真实Redis场景验证独立客户端并发共享、Redis时钟补充、IPv4/IPv6桶独立、策略漂移、槽位拒绝/惰性回收/TTL、错误类型/真实连接拒绝和四键逐个丢失失败；另1项校验配置、客户端队列选项、模拟损坏结果和未完成命令的超时。所有测试仅删除自身唯一命名空间四键并关闭客户端；独立Redis/MariaDB暂留供连续验证。当前仅交付共享存储能力，尚未给HTTP转发绑定限流；e2先接入标准错误，e3再绑定并验收真实HTTP效果。

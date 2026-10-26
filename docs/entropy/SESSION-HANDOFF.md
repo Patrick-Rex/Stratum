@@ -2,21 +2,19 @@
 
 ## 交接报告（2026-10-26）
 
-- completedNode: NODE-D04.1d2（完成管理直连网段控制，D04.1d完成）。
+- completedNode: NODE-D04.1e1（完成有界Redis共享令牌桶及真实存储验收）。
 - changedFiles:
-  - `README.md`
   - `docs/CONTEXT.md`
   - `docs/development.md`
   - `docs/entropy/SESSION-HANDOFF.md`
-  - `stratum-gateway/src/main/java/com/patrick/stratum/gateway/filter/GatewayManagementProperties.java`
-  - `stratum-gateway/src/main/java/com/patrick/stratum/gateway/filter/GatewayManagementSourceFilter.java`
+  - `stratum-gateway/build.gradle`
+  - `stratum-gateway/src/main/java/com/patrick/stratum/gateway/ratelimit/RedisGatewayRateLimiter.java`
   - `stratum-gateway/src/main/resources/application.yml`
-  - `stratum-gateway/src/test/java/com/patrick/stratum/gateway/GatewayManagementTest.java`
+  - `stratum-gateway/src/main/resources/redis/gateway-rate-limit.lua`
+  - `stratum-gateway/src/test/java/com/patrick/stratum/gateway/RedisGatewayRateLimiterIntegrationTest.java`
 
-- validations: Gateway build及26项测试通过，0失败/错误/跳过；真实HTTP来源拒绝、路径边界、IPv4/IPv6 CIDR及伪造来源验证。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
-- unresolved: 部署范围暂缓；D04.1e令牌桶规则已由用户确认，已登记细分，按序执行，不将文档维护计为开发节点。
-- nextNode: NODE-D04.1e1。
+- validations: Gateway build、26项网关回归及6项显式集成测试通过，0失败/错误/跳过；独立客户端共享、容量/TTL、部分状态丢失与存储故障关闭。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
+- unresolved: 部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
+- nextNode: NODE-D04.1e2。
 - 当前节点验收后审查、提交、推送；完成后继续下一节点，不重复请求授权。
-- CONTEXT 已更新。测试网关、上游、客户端和JVM均已退出。用户已允许启动现有Docker Desktop，实际启动命令返回already running，引擎已恢复；保留用户原有运行容器。已恢复本轮独立stratum-integration-mariadb与stratum-integration-redis供后续真实验证，端口从docker port重新取得并仅写本机临时状态；会话结束前停止本轮启动的运行资源。连接状态在本机临时目录stratum-integration-state.json，不提交凭据。
-
-本次后续文档维护：网关设计、API规范、开发计划、CONTEXT及本交接；登记已确认限流规则与3个子节点，不计开发节点完成。链接及文本格式核对后提交，未重新构建业务工程。
+- CONTEXT 已更新。共享 Docker 容器保持运行，仅清理本轮创建的测试资源；测试 JVM 已退出；独立测试容器 stratum-integration-mariadb / stratum-integration-redis 暂留供连续验证，会话结束前清理。连接状态在本机临时目录 stratum-integration-state.json，不提交凭据。

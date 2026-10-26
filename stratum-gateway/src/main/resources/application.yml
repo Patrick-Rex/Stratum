@@ -1,6 +1,13 @@
 spring:
   application:
     name: stratum-gateway
+  data:
+    redis:
+      host: ${STRATUM_GATEWAY_REDIS_HOST:127.0.0.1}
+      port: ${STRATUM_GATEWAY_REDIS_PORT:6379}
+      password: ${STRATUM_GATEWAY_REDIS_PASSWORD:}
+      timeout: 500ms
+      connect-timeout: 1s
   main:
     web-application-type: reactive
   lifecycle:
@@ -52,3 +59,9 @@ stratum:
       body-timeout: ${STRATUM_GATEWAY_BODY_TIMEOUT:5s}
     management:
       allowed-cidrs: ${STRATUM_GATEWAY_MANAGEMENT_ALLOWED_CIDRS:127.0.0.0/8,::1/128}
+    rate-limit:
+      replenish-rate: ${STRATUM_GATEWAY_REPLENISH_RATE:20}
+      burst-capacity: ${STRATUM_GATEWAY_BURST_CAPACITY:40}
+      maximum-clients: ${STRATUM_GATEWAY_MAXIMUM_CLIENTS:4096}
+      namespace: ${STRATUM_GATEWAY_RATE_NAMESPACE:stratum-gateway}
+      command-timeout: ${STRATUM_GATEWAY_RATE_TIMEOUT:500ms}
