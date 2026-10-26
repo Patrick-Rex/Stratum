@@ -42,8 +42,8 @@ public class RabbitTopologyConfiguration {
         var dead = new DirectExchange(DEAD_EXCHANGE, true, false);
         var cache = businessQueue(CACHE_QUEUE, properties);
         var erp = businessQueue(ERP_QUEUE, properties);
-        var cacheDead = queueBuilder(CACHE_QUEUE + ".dlq", properties).build();
-        var erpDead = queueBuilder(ERP_QUEUE + ".dlq", properties).build();
+        var cacheDead = deadQueue(CACHE_QUEUE + ".dlq", properties);
+        var erpDead = deadQueue(ERP_QUEUE + ".dlq", properties);
         return new Declarables(topic, dead, cacheDead, erpDead, cache, erp,
                 BindingBuilder.bind(cache).to(topic).with("stratum.cache.invalidate"),
                 BindingBuilder.bind(erp).to(topic).with("erp.#"),
@@ -105,6 +105,19 @@ public class RabbitTopologyConfiguration {
                 .deadLetterExchange(DEAD_EXCHANGE).deadLetterRoutingKey(name)
                 .deliveryLimit(properties.deliveryLimit())
                 .withArgument("x-dead-letter-strategy", "at-least-once")
+                .withArgument("x-delayed-retry-type", "all")
+                .withArgument("x-delayed-retry-min", properties.retryMin().toMillis())
+                .withArgument("x-delayed-retry-max", properties.retryMax().toMillis()).build();
+    }
+
+    /**
+     * 归档故障时保留死信，取消DLQ自身的次数淘汰并使用原生有界延迟，容量限制保持不变。
+     * @param name 固定死信队列
+     * @param properties 容量和延迟边界
+     * @return 不设置TTL及二次死信转移的持久化队列
+     */
+    private static Queue deadQueue(String name, Properties properties) {
+        return queueBuilder(name, properties).deliveryLimit(-1)
                 .withArgument("x-delayed-retry-type", "all")
                 .withArgument("x-delayed-retry-min", properties.retryMin().toMillis())
                 .withArgument("x-delayed-retry-max", properties.retryMax().toMillis()).build();

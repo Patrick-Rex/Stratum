@@ -165,6 +165,7 @@ public class RabbitOutboxPublisherConfiguration {
             headers.setCorrelationId(event.traceId());
             headers.setHeader(CorrelationIdPolicy.TRACE_HEADER, event.traceId());
             headers.setHeader("stratum-sequence", delivery.sequence());
+            headers.setHeader("stratum-publication-id", UUID.randomUUID().toString());
             headers.setHeader("stratum-aggregate-id", event.aggregateId());
             headers.setHeader("stratum-event-type", event.eventType());
             return new Message(body, headers);
