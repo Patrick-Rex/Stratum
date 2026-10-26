@@ -28,6 +28,10 @@ easy-query:
   name-conversion: underlined
 
 stratum:
+  jobs:
+    enabled: ${STRATUM_JOBS_ENABLED:false}
+    name: ${STRATUM_JOBS_NAME:stratum}
+    workers: ${STRATUM_JOBS_WORKERS:2}
   messaging:
     enabled: ${STRATUM_MQ_ENABLED:false}
     host: ${STRATUM_MQ_HOST:127.0.0.1}

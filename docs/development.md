@@ -42,11 +42,11 @@
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
 | stratum-infrastructure | 已引入 Easy-Query 3.3.1（Boot 4 starter / MySQL 方言 / 处理器）、MariaDB JDBC、Flyway、Redis、Caffeine；已配置数据源与 Flyway；NODE-B03.2b 已验证真实 MariaDB 提交、回滚和嵌套事务 |
 | stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由、Header灰度、协议透传和代理超时/错误处理；已具备头体防护及管理直连CIDR限制，已绑定直连IP共享Redis限流，已提供JSON访问日志及受管理CIDR保护的Prometheus指标；双进程ERP闭环、权限组合及g3全工程回归已验收，D04.1完成 |
-| stratum-job | Gradle 模块骨架 |
+| stratum-job | Quartz/ShedLock Spring依赖已接入，任务执行器与周期Relay尚待E03后续节点 |
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
 
-Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ已接入显式启用的连接配置，持久化Topic/Quorum拓扑及发布确认适配已建立，Relay、有序消费、死信归档及人工重放闭环已通过E02.5全工程验收；Nacos、Quartz、ShedLock和完整观测组件仍为后续目标设计。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
+Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ已接入显式启用的连接配置，持久化Topic/Quorum拓扑及发布确认适配已建立，Relay、有序消费、死信归档及人工重放闭环已通过E02.5全工程验收；Quartz JDBC/ShedLock数据库锁已具备默认关闭的显式装配；任务执行器、Nacos和完整观测组件仍待后续节点。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
 
 以下目标基线沿用原项目入口的既有约定，尚未接入时不作为当前依赖版本：
 
@@ -1227,3 +1227,11 @@ Quartz使用项目Boot4.0.5 BOM固定的2.5.2，ShedLock7.10.1版本约束集中
 Flyway V202610260006新增11张STRATUM_QRTZ_技术表及stratum_shedlock。Quartz2.5.2官方MySQL/InnoDB结构去除DROP/commit并固定前缀及精确字符排序，ShedLock名称主键唯一、租期保留毫秒。不会改写已提交迁移，也不执行每次启动清表的Quartz初始化脚本。
 
 独立MariaDB11.8上SchedulerSchemaIntegrationTest共3项通过，0失败/错误/跳过；验证完整迁移及未启用时无心跳、触发器外键/重复键/父记录删除保护、锁名唯一与毫秒持久化。Job compileJava为NO-SOURCE，仅依赖装配验证，不视为Job测试通过。生产调度装配与实际竞争继续E03.2。
+
+## 显式调度器装配（NODE-E03.2）
+
+STRATUM_JOBS_ENABLED缺省false，完整Starter没有Scheduler或Job LockProvider；设为true后SchedulerConfiguration在数据库初始化完成后创建JDBC集群调度器，固定STRATUM_QRTZ_前缀、useProperties=true（JobDataMap仅字符串）、每次生成UUID实例ID。STRATUM_JOBS_NAME默认stratum，同集群一致，允许1至64个字母数字/点/下划线/连字符；WORKERS默认2、允许1至8。每次最多领取一个触发器，线程数固定，无业务任务在此自动登记；数据库故障重试5秒、集群检查5秒、misfire阈值60秒。多实例Quartz仍要求主机时间同步。
+
+ShedLock使用stratum_shedlock和数据库UTC时间，技术协调独立于业务工作单元。EnableSchedulerLock采用方法代理与类代理，Quartz JobFactory只查找已有唯一Spring Job组件，保留注解代理，不能通过数据库类名任意创建实例；Job必须保持无共享执行状态。动态锁名需按ShedLock语法使用完整SpEL包装，并以实际落库锁名验收。表由Flyway维护，不开启Quartz初始化或覆盖已有任务定义。
+
+4项新集成与3项表结构回归共7项通过，0失败/错误/跳过。真实MariaDB验证默认关闭/非法边界、两个不同Scheduler实例共享集群JobStore且单个触发只执行一次、重启后读取持久Job、两独立Spring代理竞争同名ShedLock时跳过及释放后恢复。每个子上下文关闭后在5秒内核对其调度/集群/工作线程退出。探针是无业务副作用的测试Job，竞争同步只使用测试信号，实际互斥使用数据库。当前未交付生产任务、运行中任务超时中断、执行记录或dead_job，继续E03.3/4/5；关闭设置不无限等待在途任务，具体可中断执行器仍需后续验收。
