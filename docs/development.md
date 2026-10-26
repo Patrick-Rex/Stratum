@@ -41,7 +41,7 @@
 | stratum-query | QuerySpec、Query/Handler/Result/Context、QueryGateway 与 Spring 装配；统一路由及查询指标日志 |
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
 | stratum-infrastructure | 已引入 Easy-Query 3.3.1（Boot 4 starter / MySQL 方言 / 处理器）、MariaDB JDBC、Flyway、Redis、Caffeine；已配置数据源与 Flyway；NODE-B03.2b 已验证真实 MariaDB 提交、回滚和嵌套事务 |
-| stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由、Header灰度、协议透传和代理超时/错误处理；已具备头体防护及管理直连CIDR限制，已绑定直连IP共享Redis限流，已提供JSON访问日志及受管理CIDR保护的Prometheus指标；双进程ERP验收待后续节点 |
+| stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由、Header灰度、协议透传和代理超时/错误处理；已具备头体防护及管理直连CIDR限制，已绑定直连IP共享Redis限流，已提供JSON访问日志及受管理CIDR保护的Prometheus指标；双进程ERP闭环与权限组合已验收，整体回归待g3 |
 | stratum-job | Gradle 模块骨架 |
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
@@ -964,3 +964,11 @@ Starter integrationTest仅在任务图依赖Gateway bootJar，并把实际归档
 ErpWorkflowHttpIntegrationTest新增可覆盖的固定业务入口，保留原有全部业务断言；Gateway子类复用两项用例，经独立进程完成四主数据、精确金额、分批采购、库存不足回滚、补货重试、销售出库、幂等、查询与引用保护，及未知API版本写入前拒绝。断言18条同trace Outbox、10份幂等回执与缓存保留，核对实际Gateway JSON日志含同一trace，并验证Starter无法加载GatewayApplication。
 
 4项真实MariaDB/Redis/HTTP测试通过，0失败/错误/跳过（原直连2项、实际独立JAR2项）。资源边界复核后再次重跑4项通过，确认自身Gateway子进程已退出；用户已有Java进程及共享Docker服务保留。仅验证Gateway为独立子进程、ERP运行在真实Starter测试上下文，不冒称两个生产部署实例。g1完成；完整认证/API/仓库实时撤回及限流无ERP副作用由g2验证，全工程验收由g3执行。
+
+## 双进程认证与仓库权限组合（NODE-D04.1g2）
+
+管理与订单写HTTP夹具提供可覆盖入口，订单范围夹具默认仍直连；Gateway派生用例仅选择独立JAR入口，复用原创建/收货/出库全部授权与数据库状态断言。身份、角色及双仓库夹具先准备，再启动网关；结束先关闭自身进程，数据库/事件/回执清理在finally执行。公共登录夹具提取签名验证及会话键登记，支持安全登记经Gateway登录/刷新获得的会话，结束按有限键集合清理。
+
+9项真实MariaDB/Redis/HTTP测试通过，0失败/错误/跳过（原直连创建/履约各2项，独立网关创建3项/履约2项）。覆盖双类型创建和分批履约、API及仓库范围独立、指定/ALL/撤回、同一JWT立即生效、旧键不能绕过撤权、恢复原结果重放，以及匿名/Refresh不能访问业务。原订单/库存/凭据/流水/事件/回执快照在拒绝和重放时保持不变。
+
+新联合用例实际经网关创建普通账号、登录、刷新、/auth/me及退出；伪造管理员Header/查询不能改主体，普通账号无默认API/FEAT权限，退出后Access401。已有普通读取账号的仓库列表按空→指定仓库2单→撤回变空变化，详情从200变404；随后给定创建API及ALL范围，再使本用例入口桶为空，POST返回429/40002，ERP订单、Outbox和幂等回执均未增加。补充读取范围断言后9项再次重跑通过；全部自身Gateway子进程已退出，用户服务保留。g2完成，下一g3全工程重跑并核对D04.1收敛，部署继续暂缓。

@@ -110,7 +110,7 @@ abstract class AdministrationHttpIntegrationTest extends AuthenticatedHttpIntegr
      * @throws Exception HTTP失败
      */
     protected HttpResponse<String> request(String method, String path, String token, Object payload, String version) throws Exception {
-        var builder = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path)).timeout(Duration.ofSeconds(15))
+        var builder = HttpRequest.newBuilder(endpoint(path)).timeout(Duration.ofSeconds(15))
                 .header("Content-Type", "application/json").header("X-API-Version", version)
                 .header("X-Trace-Id", "administration-http").header("X-User-Id", subjectId());
         if (token != null) builder.header("Authorization", "Bearer " + token);
@@ -122,6 +122,13 @@ abstract class AdministrationHttpIntegrationTest extends AuthenticatedHttpIntegr
             assertTrue(response.headers().allValues("Set-Cookie").isEmpty()); return response;
         }
     }
+
+    /**
+     * 选择受控的本机HTTP入口，子夹具可切换为独立网关。
+     * @param path 固定相对路径
+     * @return 本机URI
+     */
+    protected URI endpoint(String path) { return URI.create("http://127.0.0.1:" + port + path); }
 
     /**
      * 断言标准成功结果且不将响应原文作为失败信息。

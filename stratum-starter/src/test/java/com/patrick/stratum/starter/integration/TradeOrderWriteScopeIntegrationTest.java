@@ -12,6 +12,9 @@ import java.util.UUID;
 
 import com.patrick.stratum.domain.auth.Permission;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -23,19 +26,44 @@ abstract class TradeOrderWriteScopeIntegrationTest extends TradeOrderScopeIntegr
     private final Set<String> keys = new HashSet<>();
     private final Set<String> createdOrders = new HashSet<>();
     private long roleVersion = 1;
+    @Autowired protected StringRedisTemplate scopeRedis;
+    protected GatewayProcessFixture gateway;
 
-    /** 在原订单夹具清理前移除本用例HTTP库存效果、新增订单、事件和回执。 */
+    /**
+     * 原有范围用例默认直连，网关子类仅覆盖此选择。
+     * @return 是否启动独立网关
+     */
+    protected boolean gatewayEnabled() { return false; }
+
+    /**
+     * 在身份和业务夹具就绪后按需启动真实独立网关。
+     * @throws Exception 子进程启动失败
+     */
+    @BeforeEach void startScopeGateway() throws Exception {
+        if (gatewayEnabled()) gateway = GatewayProcessFixture.start(port, scopeRedis);
+    }
+
+    /** {@inheritDoc} */
+    @Override protected URI endpoint(String path) { return gateway == null ? super.endpoint(path) : gateway.endpoint(path); }
+
+    /**
+     * 先停止自身网关，再在原订单夹具清理前移除HTTP写入效果。
+     * @throws Exception 子进程退出失败，数据库清理仍在finally执行
+     */
     @AfterEach
-    void cleanWrites() {
-        for (String key : keys) jdbc.update("DELETE FROM idempotency_receipt WHERE request_key=?", key);
-        jdbc.update("DELETE FROM outbox_event WHERE trace_id=?", trace);
-        for (var values : fixtures.values()) for (var order : values) {
-            jdbc.update("DELETE FROM erp_stock_movement WHERE order_id=?", order.getId().toString());
-        }
-        for (UUID warehouse : java.util.List.of(first, second)) jdbc.update("DELETE FROM erp_stock_balance WHERE warehouse_id=?", warehouse.toString());
-        for (String id : createdOrders) {
-            jdbc.update("DELETE FROM erp_order_line WHERE order_id=?", id);
-            jdbc.update("DELETE FROM erp_trade_order WHERE id=?", id);
+    void cleanWrites() throws Exception {
+        try { if (gateway != null) gateway.close(); }
+        finally {
+            for (String key : keys) jdbc.update("DELETE FROM idempotency_receipt WHERE request_key=?", key);
+            jdbc.update("DELETE FROM outbox_event WHERE trace_id=?", trace);
+            for (var values : fixtures.values()) for (var order : values) {
+                jdbc.update("DELETE FROM erp_stock_movement WHERE order_id=?", order.getId().toString());
+            }
+            for (UUID warehouse : java.util.List.of(first, second)) jdbc.update("DELETE FROM erp_stock_balance WHERE warehouse_id=?", warehouse.toString());
+            for (String id : createdOrders) {
+                jdbc.update("DELETE FROM erp_order_line WHERE order_id=?", id);
+                jdbc.update("DELETE FROM erp_trade_order WHERE id=?", id);
+            }
         }
     }
 
@@ -73,7 +101,7 @@ abstract class TradeOrderWriteScopeIntegrationTest extends TradeOrderScopeIntegr
      */
     protected HttpResponse<String> write(String path, String access, Object input, String key) throws Exception {
         keys.add(key);
-        var builder = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path)).timeout(Duration.ofSeconds(15))
+        var builder = HttpRequest.newBuilder(endpoint(path)).timeout(Duration.ofSeconds(15))
                 .header("Content-Type", "application/json").header("X-Trace-Id", trace).header("X-User-Id", subjectId())
                 .header("Idempotency-Key", key);
         if (access != null) builder.header("Authorization", "Bearer " + access);

@@ -31,6 +31,7 @@ import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -124,13 +125,21 @@ abstract class AuthenticatedHttpIntegrationTest extends MariaDbIntegrationTest {
                     .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(Map.of("username", username, "password", password)))).build();
             var response = client.send(request, HttpResponse.BodyHandlers.ofString());
             assertEquals(200, response.statusCode(), "HTTP认证夹具登录失败");
-            var data = json.readTree(response.body()).path("data");
-            var claims = tokens.verify(data.path("refreshToken").asText(), Purpose.REFRESH);
-            authenticationKeys.add("auth:user:" + claims.subject() + ":ver");
-            authenticationKeys.add("auth:sess:" + claims.sessionId()); authenticationKeys.add("auth:rt:" + claims.tokenId());
-            assertEquals(claims.subject(), tokens.verify(data.path("accessToken").asText(), Purpose.ACCESS).subject());
-            return new Session(data.path("accessToken").asText(), data.path("refreshToken").asText(), claims.subject());
+            return rememberSession(json.readTree(response.body()).path("data"));
         }
+    }
+
+    /**
+     * 登记从任一真实入口获得的会话，复用签名校验及有限清理范围，不输出令牌。
+     * @param data 登录或刷新成功的data节点
+     * @return 已验证主体的敏感会话
+     */
+    protected Session rememberSession(JsonNode data) {
+        var claims = tokens.verify(data.path("refreshToken").asText(), Purpose.REFRESH);
+        authenticationKeys.add("auth:user:" + claims.subject() + ":ver");
+        authenticationKeys.add("auth:sess:" + claims.sessionId()); authenticationKeys.add("auth:rt:" + claims.tokenId());
+        assertEquals(claims.subject(), tokens.verify(data.path("accessToken").asText(), Purpose.ACCESS).subject());
+        return new Session(data.path("accessToken").asText(), data.path("refreshToken").asText(), claims.subject());
     }
 
     /**
