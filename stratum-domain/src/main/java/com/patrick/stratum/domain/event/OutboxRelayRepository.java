@@ -22,7 +22,7 @@ public interface OutboxRelayRepository {
      * @param claim 原领取证据
      * @param result 事务外发布得到的实际结果
      * @param retryPolicy 非确认结果的次数及退避边界
-     * @return 更新成功为true；租约失效或状态不再匹配为false
+     * @return 更新成功为true；行被占用、租约失效或状态不再匹配为false
      * @throws IllegalStateException 没有活动写工作单元
      * @apiNote 示例：unitOfWork.execute(() -> relay.finish(claim, result, retryPolicy))。
      */

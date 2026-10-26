@@ -30,6 +30,8 @@ public class OutboxRecord implements ProxyEntityAvailable<OutboxRecord, OutboxRe
     private String status;
     private Integer retryCount;
     private LocalDateTime nextRetryAt;
+    private String leaseToken;
+    private LocalDateTime leaseUntil;
     private LocalDateTime createdAt;
     @Version(strategy = VersionLongStrategy.class)
     private Long version;
