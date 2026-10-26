@@ -1141,3 +1141,11 @@ STRATUM_MQ_CONSUMER_CONCURRENCY默认1，允许1至4，表示每队列固定并�
 容器使用MANUAL、关闭批量拆分及通道事务。确认传输异常终止当前消费通道以归还未确认消息，不重置共享连接，不追加相反确认。容器错误处理只记异常类型和固定组别。STRATUM_MQ_CONSUMER_SHUTDOWN_TIMEOUT默认5s，允许1至10s：退出先允许已预取处理在预算内结束，超时中断处理并关闭通道，未确认消息回Broker；不承诺强制终止不响应中断的任意用户代码。工作池随上下文关闭并限制退出等待。停止/回调语义核对[实际4.0.2容器源码](https://github.com/spring-projects/spring-amqp/blob/v4.0.2/spring-rabbit/src/main/java/org/springframework/amqp/rabbit/listener/SimpleMessageListenerContainer.java)。
 
 本轮监听测试6项及完整Starter回归2项通过，0失败/错误/跳过。监听测试含3项配置/资源边界、1项真实装配配合受控确认IOException、2项真实Broker流程：等待nack后的delivery-count仍0，reject后为1，第三次成功后队列无消息；实际预取2条后触发1秒退出预算，中断当前处理并最终归还两个原消息ID，连接和工作池均退出。受控消费端口不代表数据库业务消费组合，后者由E02.3d验证；完整Starter2项证明消息开启、消费默认关闭时仍无监听/自动Relay，原事务提交与回滚保持。E02.3c完成，DLQ持久化及人工重放尚待E02.4。
+
+## 有序消费完整组合验收（NODE-E02.3d）
+
+3项真实MariaDB/Redis/RabbitMQ组合通过，0失败/错误/跳过。完整Starter启用消费开关，由生产Application有界Relay领取、事务外发布和监听器手动确认；连续两条ERP事件保留原高精度载荷与顺序，缓存补偿实际删除旧值并阻止旧版本回填。消费进度由生产应用提交，不使用SQL探针推进。
+
+跨实例用例在首实例真实提交后注入确认前失败，由真实Broker原生重投；停首实例监听后，第二独立消费上下文以独立数据库连接、Application事务代理和Broker连接识别DUPLICATE。实际CONNECTION_ID集合互不重叠、AMQP连接不同；凭据仍只有一份，缓存失效总计一次，重投不修改较新缓存或其版本标记。第二上下文共用真实Redis门面，验证持久化去重与接管，不把它描述成两套独立L1缓存或两个完整应用进程。
+
+前序用例先在应用调用前注入一次实际消费失败，再受控返回WAITING；原生重试保留该消息，后序仍PENDING、该聚合进度为0，其他聚合成功推进。解除等待后，生产消费者提交前序，Relay才可投递后序并完成。故障探针均在生产用例前后，不替代数据库/Redis/MQ，不宣称进程崩溃或Broker断网演练。监听、第二上下文/数据库连接与消息拓扑均退出/清理。E02.3完成；DLQ持久化、人工重放及超限恢复由E02.4继续，自动Relay调度仍待E03。
