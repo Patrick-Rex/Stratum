@@ -1219,3 +1219,11 @@ E01/E02完成。运行时先启用消息连接并提供专用Broker凭据，再�
 启动前备份数据库并核对Flyway：序号迁移遇到非空未知历史Outbox会显式失败，不能自行猜测顺序；既有Quorum队列参数不兼容时不会自动清空或重建。业务失败按既定上限进入DLQ，归档故障保留有界队列中的证据并原生延迟重试；满队列会拒绝发布，需排查和恢复，不能删除证据绕过。每聚合死信只阻塞自身后序；人工重放必须核验本地原事件，隔离/未知/篡改归档不能执行。所有已提交迁移校验和保持不变。
 
 本轮测试应用、Gateway子进程、监听连接和工作池已退出；独立测试数据库/Redis及专用消息空间仅供后续连续验证，最终结束前清理本轮资源。E03继续Quartz/ShedLock调度，不将此文档收敛计为新增业务实现。
+
+## 调度持久化表与依赖（NODE-E03.1）
+
+Quartz使用项目Boot4.0.5 BOM固定的2.5.2，ShedLock7.10.1版本约束集中在根工程；两者均为Apache-2.0，不要求商业服务或按量计费。Job仅引入Quartz/ShedLock Spring和Spring Context，Infrastructure引入Quartz/Spring Context Support及ShedLock JDBC适配；Domain没有框架依赖，尚未创建任何调度Bean或线程。ShedLock支持Spring7的维护声明和许可见[官方仓库](https://github.com/lukas-krecan/ShedLock)，Quartz许可及原始SQL来源保留在迁移头。
+
+Flyway V202610260006新增11张STRATUM_QRTZ_技术表及stratum_shedlock。Quartz2.5.2官方MySQL/InnoDB结构去除DROP/commit并固定前缀及精确字符排序，ShedLock名称主键唯一、租期保留毫秒。不会改写已提交迁移，也不执行每次启动清表的Quartz初始化脚本。
+
+独立MariaDB11.8上SchedulerSchemaIntegrationTest共3项通过，0失败/错误/跳过；验证完整迁移及未启用时无心跳、触发器外键/重复键/父记录删除保护、锁名唯一与毫秒持久化。Job compileJava为NO-SOURCE，仅依赖装配验证，不视为Job测试通过。生产调度装配与实际竞争继续E03.2。

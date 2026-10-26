@@ -3,4 +3,7 @@ description = 'Stratum Job'
 dependencies {
     api project(':stratum-application')
     api project(':stratum-common')
+    implementation 'org.quartz-scheduler:quartz'
+    implementation 'net.javacrumbs.shedlock:shedlock-spring'
+    implementation 'org.springframework:spring-context'
 }

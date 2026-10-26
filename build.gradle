@@ -11,6 +11,7 @@ ext {
     easyQueryVersion = '3.3.1'
     springdocVersion = '3.0.3'
     knife4jUiVersion = '4.5.0'
+    shedLockVersion = '7.10.1'
 }
 
 allprojects {
@@ -47,6 +48,8 @@ subprojects {
         testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
         constraints {
+            implementation "net.javacrumbs.shedlock:shedlock-spring:${shedLockVersion}"
+            implementation "net.javacrumbs.shedlock:shedlock-provider-jdbc-template:${shedLockVersion}"
             implementation "org.springdoc:springdoc-openapi-starter-webmvc-ui:${springdocVersion}"
             implementation "com.github.xiaoymin:knife4j-openapi3-ui:${knife4jUiVersion}"
             implementation "com.easy-query:sql-springboot4-starter:${easyQueryVersion}"
