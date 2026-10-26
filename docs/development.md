@@ -1010,3 +1010,9 @@ stratum.messaging.topology配置：max-messages默认10000（1至100000）、max
 Domain增加OutboxPublisher端口，Delivery复用原OutboxMessage并携带正long持久化序号，不生成新的eventId或临时猜测顺序。CONFIRMED只表示Broker确认且可路由，不表示消费完成；RETURNED/REJECTED/TIMED_OUT/UNAVAILABLE都不能标记SENT。超时/不可用仍可能已到达Broker，重试必须沿用原eventId，由消费者数据库唯一去重守住副作用。
 
 此端口仅供后续Relay在业务事务外使用，业务写用例继续只追加Outbox。Delivery摘要只含eventId和序号，避免日志复制正文。63项Domain测试通过，0失败/错误/跳过；新增3项验证空信封/非正序号拒绝、64位序号和原信封保留、摘要不泄露正文；源码无框架导入。当前尚无生产发布器、数据库序号分配或Relay，不把契约测试计为消息收发。
+
+## 有界消息NIO传输（NODE-E01.3b）
+
+RabbitMQ Java Client使用原生NIO；I/O循环独立于原回调工作池，单线程、最多4项等待任务，避免workers=1时I/O占满回调执行器。每连接写队列最多64项，写入队等待沿用STRATUM_MQ_TIMEOUT；请求帧上限128KiB，协商后遵循Broker限制。连接、握手及RPC边界保持原配置，NIO关闭动作使用已有有界回调池。两个执行器均由Spring管理，连接工厂先释放连接，再关闭线程池，最多各等待5秒。
+
+本轮25项Infrastructure单元与6项拓扑验收重新执行通过，0失败/错误/跳过；实际NIO连接完成路由、nack延迟、reject超限DLQ及容量拒绝回归。配置/握手测试核对I/O与回调资源隔离、队列/帧/等待边界、无启动TCP连接、无响应握手按时失败、两池关闭终止。发送器与confirm判定仍待E01.3c，不把NIO入队成功视为Broker确认。

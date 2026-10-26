@@ -40,6 +40,7 @@ class RabbitMessagingConfigurationTest {
     @Test
     void bindsLimitsWithoutOpeningConnectionAndClosesWorkers() throws Exception {
         ThreadPoolTaskExecutor executor;
+        ThreadPoolTaskExecutor ioExecutor;
         try (var listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
             var values = properties();
             values.put("stratum.messaging.host", listener.getInetAddress().getHostAddress());
@@ -61,7 +62,17 @@ class RabbitMessagingConfigurationTest {
                 assertTrue(factory.isPublisherReturns());
                 assertEquals("RabbitMessagingProperties[配置已隐藏]",
                         context.getBean(RabbitMessagingConfiguration.Properties.class).toString());
-                executor = context.getBean(ThreadPoolTaskExecutor.class);
+                executor = context.getBean("rabbitExecutor", ThreadPoolTaskExecutor.class);
+                ioExecutor = context.getBean("rabbitIoExecutor", ThreadPoolTaskExecutor.class);
+                assertEquals(131_072, client.getRequestedFrameMax());
+                assertEquals(64, client.getNioParams().getWriteQueueCapacity());
+                assertEquals(2000, client.getNioParams().getWriteEnqueuingTimeoutInMs());
+                assertEquals(1, client.getNioParams().getNbIoThreads());
+                assertSame(ioExecutor.getThreadPoolExecutor(), client.getNioParams().getNioExecutor());
+                assertEquals(1, ioExecutor.getCorePoolSize());
+                assertEquals(1, ioExecutor.getMaxPoolSize());
+                assertEquals(4, ioExecutor.getThreadPoolExecutor().getQueue().remainingCapacity());
+                assertEquals("io", ioExecutor.submit(() -> "io").get(1, TimeUnit.SECONDS));
                 assertEquals(4, executor.getCorePoolSize());
                 assertEquals(4, executor.getMaxPoolSize());
                 assertEquals(256, executor.getThreadPoolExecutor().getQueue().remainingCapacity());
@@ -71,6 +82,7 @@ class RabbitMessagingConfigurationTest {
             }
         }
         assertTrue(executor.getThreadPoolExecutor().isTerminated());
+        assertTrue(ioExecutor.getThreadPoolExecutor().isTerminated());
     }
 
     /** 必要项缺失、空白、控制字符和UTF-8超限均拒绝启动且异常不携带凭据。 */

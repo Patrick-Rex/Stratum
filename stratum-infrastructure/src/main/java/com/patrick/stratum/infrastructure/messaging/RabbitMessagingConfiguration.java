@@ -3,7 +3,9 @@ package com.patrick.stratum.infrastructure.messaging;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
+import com.rabbitmq.client.impl.nio.NioParams;
 import org.springframework.amqp.rabbit.connection.CachingConnectionFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -37,14 +39,31 @@ public class RabbitMessagingConfiguration {
     }
 
     /**
+     * 创建与消费回调隔离的单线程NIO工作池，避免最小回调池被I/O循环占满。
+     * @return 一个I/O线程和最多四项等待任务的执行器
+     */
+    @Bean
+    ThreadPoolTaskExecutor rabbitIoExecutor() {
+        var executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(1);
+        executor.setQueueCapacity(4);
+        executor.setThreadNamePrefix("stratum-rabbit-io-");
+        executor.setAwaitTerminationSeconds(5);
+        return executor;
+    }
+
+    /**
      * 建立延迟连接的工厂，发布确认使用关联模式，关闭时释放客户端连接。
      * @param properties 已校验配置
-     * @param rabbitExecutor 受容器管理的有界执行器
+     * @param rabbitExecutor 受容器管理的有界回调执行器
+     * @param rabbitIoExecutor 独立NIO执行器
      * @return 不会在创建时连接Broker的缓存工厂
      */
     @Bean
     CachingConnectionFactory rabbitConnectionFactory(Properties properties,
-            ThreadPoolTaskExecutor rabbitExecutor) {
+            @Qualifier("rabbitExecutor") ThreadPoolTaskExecutor rabbitExecutor,
+            @Qualifier("rabbitIoExecutor") ThreadPoolTaskExecutor rabbitIoExecutor) {
         var client = new com.rabbitmq.client.ConnectionFactory();
         client.setHost(properties.host());
         client.setPort(properties.port());
@@ -56,6 +75,12 @@ public class RabbitMessagingConfiguration {
         client.setHandshakeTimeout(timeoutMillis);
         client.setChannelRpcTimeout(timeoutMillis);
         client.setWorkPoolTimeout(timeoutMillis);
+        client.setNioParams(new NioParams().setNbIoThreads(1).setWriteQueueCapacity(64)
+                .setWriteEnqueuingTimeoutInMs(timeoutMillis)
+                .setNioExecutor(rabbitIoExecutor.getThreadPoolExecutor())
+                .setConnectionShutdownExecutor(rabbitExecutor.getThreadPoolExecutor()));
+        client.useNio();
+        client.setRequestedFrameMax(131_072);
         client.setRequestedHeartbeat(30);
         client.setRequestedChannelMax(properties.channels());
         client.setMaxInboundMessageBodySize(2 * 1024 * 1024);
