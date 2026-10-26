@@ -7,6 +7,7 @@ import java.util.List;
 
 import org.springframework.stereotype.Repository;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.dao.DataAccessException;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.easy.query.api.proxy.client.EasyEntityQuery;
@@ -38,7 +39,6 @@ public class OutboxRepositoryImpl implements OutboxRepository {
         row.setEventId(message.eventId());
         row.setEventType(message.eventType());
         row.setAggregateId(message.aggregateId());
-        row.setEventSequence(allocateSequence(message.aggregateId()));
         row.setOccurredAt(LocalDateTime.ofInstant(message.occurredAt(), ZoneOffset.UTC));
         row.setPayload(message.payload());
         row.setTraceId(message.traceId());
@@ -48,11 +48,15 @@ public class OutboxRepositoryImpl implements OutboxRepository {
         row.setCreatedAt(now);
         row.setVersion(0L);
         try {
+            row.setEventSequence(allocateSequence(message.aggregateId()));
             query.insertable(row).executeRows();
-        } catch (EasyQueryException failure) {
+        } catch (DataAccessException | EasyQueryException failure) {
             for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
                 if (cause instanceof SQLException sql && sql.getErrorCode() == 1062) {
                     throw new StratumException(CommonErrorCode.CONFLICT, List.of("事件已登记"), failure);
+                }
+                if (cause instanceof SQLException sql && (sql.getErrorCode() == 1020 || "40001".equals(sql.getSQLState()))) {
+                    throw new StratumException(CommonErrorCode.CONFLICT, List.of("事件顺序状态已变更"), failure);
                 }
             }
             throw failure;
