@@ -29,6 +29,15 @@ public class OutboxRelayRepositoryImpl implements OutboxRelayRepository {
             ((e.status = 'PENDING' AND e.next_retry_at <= UTC_TIMESTAMP(6))
             OR (e.status = 'PROCESSING' AND e.lease_until <= UTC_TIMESTAMP(6)))
             """;
+    private static final String REPLAY_READY = """
+            ((r.status = 'PENDING' AND r.next_retry_at <= UTC_TIMESTAMP(6))
+            OR (r.status = 'PROCESSING' AND r.lease_until <= UTC_TIMESTAMP(6)))
+            """;
+    private static final String REPLAY_SOURCE = """
+            e.status IN ('SENT', 'FAILED') AND r.aggregate_id = e.aggregate_id AND r.event_sequence = e.event_sequence
+            AND ((r.consumer_group = 'ERP_AUDIT' AND e.event_type LIKE 'erp.%')
+                OR (r.consumer_group = 'CACHE_INVALIDATION' AND e.event_type = 'stratum.cache.invalidate'))
+            """;
     private final JdbcTemplate jdbc;
 
     /** {@inheritDoc} */
@@ -37,14 +46,25 @@ public class OutboxRelayRepositoryImpl implements OutboxRelayRepository {
         requireWriteUnit();
         Objects.requireNonNull(request, "领取请求不能为空");
         try {
+            int candidateLimit = request.batchSize() * 4;
             var candidates = jdbc.queryForList("""
-                    SELECT p.aggregate_id
+                    SELECT c.aggregate_id FROM (
+                    (SELECT p.aggregate_id, e.event_id, e.next_retry_at AS ready_at
                     FROM outbox_aggregate_progress p
                     JOIN outbox_event e ON e.aggregate_id = p.aggregate_id
                       AND e.event_sequence = CASE WHEN p.consumed_sequence < p.last_sequence
                           THEN p.consumed_sequence + 1 ELSE NULL END
                     WHERE
-                    """ + READY + " ORDER BY e.next_retry_at, e.event_id LIMIT ?", String.class, request.batchSize() * 4);
+                    """ + READY + " ORDER BY e.next_retry_at, e.event_id LIMIT ?) UNION ALL ("
+                    + """
+                    SELECT p.aggregate_id, e.event_id, r.next_retry_at AS ready_at
+                    FROM outbox_replay_delivery r JOIN outbox_event e ON e.event_id = r.event_id
+                    JOIN outbox_aggregate_progress p ON p.aggregate_id = e.aggregate_id
+                    WHERE e.event_sequence = CASE WHEN p.consumed_sequence < p.last_sequence
+                        THEN p.consumed_sequence + 1 ELSE NULL END AND
+                    """ + REPLAY_SOURCE + " AND " + REPLAY_READY
+                    + " ORDER BY r.next_retry_at, r.delivery_id LIMIT ?)) c ORDER BY c.ready_at, c.event_id LIMIT ?",
+                    String.class, candidateLimit, candidateLimit, candidateLimit);
             var claims = new ArrayList<Claim>(request.batchSize());
             for (String aggregate : candidates) {
                 if (claims.size() == request.batchSize()) break;
@@ -58,7 +78,11 @@ public class OutboxRelayRepositoryImpl implements OutboxRelayRepository {
                         SELECT e.*, UTC_TIMESTAMP(6) AS database_now FROM outbox_event e
                         WHERE e.aggregate_id = ? AND e.event_sequence = ? AND
                         """ + READY + " FOR UPDATE SKIP LOCKED", OutboxRelayRepositoryImpl::mapHead, aggregate, sequence);
-                if (heads.isEmpty()) continue;
+                if (heads.isEmpty()) {
+                    var replay = claimReplay(aggregate, sequence, request);
+                    if (replay != null) claims.add(replay);
+                    continue;
+                }
                 var head = heads.getFirst();
                 UUID token = UUID.randomUUID();
                 LocalDateTime expires = head.databaseNow().plusNanos(request.leaseDuration().toNanos());
@@ -93,7 +117,7 @@ public class OutboxRelayRepositoryImpl implements OutboxRelayRepository {
                     WHERE event_id = ? AND status = 'PROCESSING' AND lease_token = ?
                     FOR UPDATE SKIP LOCKED
                     """, String.class, delivery.message().eventId(), claim.token().toString());
-            if (locked.isEmpty()) return false;
+            if (locked.isEmpty()) return finishReplay(claim, target, failures, delayMicros);
             return jdbc.update("""
                     UPDATE outbox_event SET status = ?, retry_count = ?,
                         next_retry_at = TIMESTAMPADD(MICROSECOND, ?, UTC_TIMESTAMP(6)),
@@ -106,6 +130,60 @@ public class OutboxRelayRepositoryImpl implements OutboxRelayRepository {
         } catch (DataAccessException failure) {
             throw translate(failure);
         }
+    }
+
+    /**
+     * 已持有聚合进度锁时领取独立重放意图，读取本地原信封，不使用归档正文发送。
+     * @param aggregate 当前聚合
+     * @param sequence 只允许的头序号
+     * @param request 有界租期
+     * @return 实际领取或空
+     * @throws org.springframework.dao.DataAccessException JDBC读取失败
+     */
+    private Claim claimReplay(String aggregate, long sequence, ClaimRequest request) {
+        var rows = jdbc.query("""
+                SELECT e.*, r.delivery_id, r.retry_count AS replay_retry_count, UTC_TIMESTAMP(6) AS database_now
+                FROM outbox_event e JOIN outbox_replay_delivery r ON r.event_id = e.event_id
+                WHERE e.aggregate_id = ? AND e.event_sequence = ? AND
+                """ + REPLAY_SOURCE + " AND " + REPLAY_READY
+                + " ORDER BY r.next_retry_at, r.delivery_id LIMIT 1 FOR UPDATE SKIP LOCKED",
+                (row, number) -> new ReplayHead(mapHead(row, number), row.getString("delivery_id"), row.getInt("replay_retry_count")),
+                aggregate, sequence);
+        if (rows.isEmpty()) return null;
+        var replay = rows.getFirst(); UUID token = UUID.randomUUID();
+        LocalDateTime expires = replay.head().databaseNow().plusNanos(request.leaseDuration().toNanos());
+        int changed = jdbc.update("""
+                UPDATE outbox_replay_delivery SET status = 'PROCESSING', lease_token = ?, lease_until = ?, version = version + 1
+                WHERE delivery_id = ?
+                """, token.toString(), expires, replay.id());
+        if (changed != 1) throw new StratumException(CommonErrorCode.CONFLICT);
+        return new Claim(replay.head().delivery(), token, expires.toInstant(ZoneOffset.UTC), replay.failures());
+    }
+
+    /**
+     * 按重放意图竞争令牌登记发送结果；忙行、旧令牌或过期均不覆盖新状态。
+     * @param claim 原领取
+     * @param target 本次发布结果对应状态
+     * @param failures 饱和失败计数
+     * @param delayMicros 有界退避微秒数
+     * @return 是否完成实际意图更新
+     */
+    private boolean finishReplay(Claim claim, String target, int failures, long delayMicros) {
+        var event = claim.delivery().message();
+        var ids = jdbc.queryForList("""
+                SELECT delivery_id FROM outbox_replay_delivery
+                WHERE event_id = ? AND status = 'PROCESSING' AND lease_token = ? FOR UPDATE SKIP LOCKED
+                """, String.class, event.eventId(), claim.token().toString());
+        if (ids.isEmpty()) return false;
+        return jdbc.update("""
+                UPDATE outbox_replay_delivery SET status = ?, retry_count = ?,
+                    next_retry_at = TIMESTAMPADD(MICROSECOND, ?, UTC_TIMESTAMP(6)),
+                    sent_at = CASE WHEN ? = 'SENT' THEN UTC_TIMESTAMP(6) ELSE sent_at END,
+                    lease_token = NULL, lease_until = NULL, version = version + 1
+                WHERE delivery_id = ? AND event_id = ? AND aggregate_id = ? AND event_sequence = ?
+                    AND status = 'PROCESSING' AND lease_token = ? AND retry_count = ? AND lease_until > UTC_TIMESTAMP(6)
+                """, target, failures, delayMicros, target, ids.getFirst(), event.eventId(), event.aggregateId(),
+                claim.delivery().sequence(), claim.token().toString(), claim.retryCount()) == 1;
     }
 
     /**
@@ -159,4 +237,12 @@ public class OutboxRelayRepositoryImpl implements OutboxRelayRepository {
      * @param databaseNow 数据库UTC时刻
      */
     private record Head(OutboxPublisher.Delivery delivery, int retryCount, LocalDateTime databaseNow) { }
+
+    /**
+     * 独立意图的有界领取快照。
+     * @param head 原事件和数据库时刻
+     * @param id 独立意图UUID
+     * @param failures 意图自身失败次数
+     */
+    private record ReplayHead(Head head, String id, int failures) { }
 }
