@@ -46,7 +46,7 @@
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
 
-Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ已接入显式启用的连接配置，拓扑、发布与消费仍待后续节点；Nacos、Quartz、ShedLock和完整观测组件仍为后续目标设计。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
+Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ已接入显式启用的连接配置，持久化Topic/Quorum拓扑已建立，发布与消费仍待后续节点；Nacos、Quartz、ShedLock和完整观测组件仍为后续目标设计。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
 
 以下目标基线沿用原项目入口的既有约定，尚未接入时不作为当前依赖版本：
 
@@ -55,7 +55,7 @@ Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完�
 | Spring Boot | 4.0.5+（当前构建固定为 4.0.5） |
 | MariaDB | 10.11+ |
 | Redis | 开发单节点，生产 Sentinel |
-| RabbitMQ | 4.3+；本机现有4.3.6，客户端Spring AMQP 4.0.2已接入，原生延迟重试拓扑待E01.2 |
+| RabbitMQ | 4.3+；本机现有4.3.6，客户端Spring AMQP 4.0.2已接入，原生延迟重试拓扑已于E01.2验收 |
 | Nacos | 3.2.0+ |
 | 网关 | Spring Cloud Gateway Server WebFlux 5.0.4 / Cloud 2025.1.4，独立进程；项目外负载均衡 |
 | 后台任务 | Spring Scheduler + Quartz + ShedLock |
@@ -994,3 +994,13 @@ Infrastructure引入Boot 4.0.5 BOM管理的spring-rabbit 4.0.2及RabbitMQ Java C
 STRATUM_MQ_TIMEOUT缺省2s，允许100ms至10s，分别应用于连接、握手、通道RPC、工作池等待及通道借用；关闭等待同值。CHANNELS缺省16，允许1至128；非零借用等待使缓存大小成为通道上限，同时设置Broker协商通道上限。WORKERS缺省4，允许1至16，工作池最多256项等待任务，退出等待最多5秒；最大接收消息体2MiB，心跳30秒。采用关联confirm和returns能力，关闭原生自动连接/拓扑恢复，后续由Spring消费者和Relay处理恢复。工厂延迟建立连接，本节点无RabbitAdmin、RabbitTemplate或监听容器，启用本身不声明队列、不发送消息，也不代表Broker健康验收。
 
 本节点实际25项Infrastructure单元测试通过（新增5项），0失败/错误/跳过：真实Spring绑定、关闭隔离、凭据/UTF-8/资源边界、无启动TCP连接、握手无响应按时失败及线程池退出。另执行4项直连/独立Gateway ERP闭环与2项真实安全链/健康文档HTTP测试，均通过；Starter health实际返回UP，Gateway自身子进程已退出。后续E01.2在确认消费用途后建立真实Broker隔离拓扑，本节点不把连接配置测试计为消息收发完成。
+
+## 首期Topic与原生重试拓扑（NODE-E01.2）
+
+用户确认缓存失效补偿及ERP事件持久化留痕。开启消息后，RabbitTopologyConfiguration在所有单例装配后建立连接，先核实Broker版本至少4.3，再显式初始化RabbitAdmin；版本不可识别、过旧、连接或声明失败均中止启动。成功后管理员在重连时自动恢复声明，不静默忽略声明不等价。关闭消息时依然没有连接、管理员或拓扑资源。
+
+持久化Topic stratum.topic分别以stratum.cache.invalidate、erp.#绑定q.stratum.invalidate与q.erp.events。每个业务队列有独立.dlq，死信交换机stratum.dlx为持久化Direct，使用原业务队列名为死信路由。四队列均为Quorum、不独占、不自动删除、无TTL；业务队列开启x-dead-letter-strategy=at-least-once，所有队列reject-publish，保留最早消息而非丢头。原生延迟保留在原队列，没有物理.retry队列。
+
+stratum.messaging.topology配置：max-messages默认10000（1至100000）、max-bytes默认67108864（1KiB至256MiB）、delivery-limit默认5（1至100）、retry-min默认1s（100ms至1min）、retry-max默认30s（不低于min且不超过5min）。每队列使用相同阈值；Quorum允许少量在途超额，阈值不是严格资源硬上限。修改队列参数后必须考虑Broker等价声明与迁移，不直接删除现有队列以绕过冲突。nack返回不增加失败次数，reject失败才计数；本节点只验证Broker机制，有序消费进度仍待E02。
+
+本轮25项Infrastructure单元及6项拓扑验收通过，0失败/错误/跳过。其中4项实际连接现有RabbitMQ 4.3.6的独立stratum-it虚拟主机：重复声明与双路由隔离、nack至少200ms原生延迟且失败计数不增、reject两次重投后进入正确DLQ并保留messageId/正文/持久属性、容量阈值最终否定确认且最早消息保留；另2项验证非法配置/关闭隔离及旧版/未知版本声明前失败。专用虚拟主机与同名专用账号必须由STRATUM_IT_MQ_VHOST/USERNAME/PASSWORD及PORT显式提供；测试只允许本机、严格随机名隔离空间，缺失直接失败。测试删除自身固定拓扑并关闭连接/线程，临时专用虚拟主机与账号保留连续验收，结束前删除；用户Broker持续运行。尚无生产发布器或消费者。

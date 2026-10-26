@@ -32,7 +32,7 @@ D03已完成角色仓库管理与业务读写范围：ALL或指定仓库按多�
 .\gradlew.bat --no-daemon :stratum-starter:bootRun
 ```
 
-消息连接默认关闭；设置`STRATUM_MQ_ENABLED=true`时须显式提供`STRATUM_MQ_VHOST/USERNAME/PASSWORD`，地址用`STRATUM_MQ_HOST/PORT`。目前只接入有界连接配置，尚无队列声明、发布或消费，不能将启用开关视作消息链路已完成；详见[开发与迭代](docs/development.md)。
+消息连接默认关闭；设置`STRATUM_MQ_ENABLED=true`时须显式提供`STRATUM_MQ_VHOST/USERNAME/PASSWORD`，地址用`STRATUM_MQ_HOST/PORT`。启用后会连接RabbitMQ 4.3+、校验版本并声明缓存补偿与ERP事件留痕的Topic/Quorum及DLQ拓扑；当前尚无生产发布与消费，完整消息链路仍待后续节点；详见[开发与迭代](docs/development.md)。
 
 当前通过环境变量配置MariaDB、Redis和外部RSA密钥，初始管理员凭据不设默认值；Nacos尚未接入。未配置JWT时ERP端点返回401。启用认证后使用`/auth/login`与`/auth/refresh`，业务请求携带`Authorization: Bearer`；本人退出为`/auth/logout`、全部退出为`/auth/logout-all`。管理员通过`/api/auth/accounts`、`/api/auth/roles`及`/api/auth/permissions`管理账号与角色，通过`/api/auth/roles/{id}/warehouse-scope`的GET/PUT读取和配置角色仓库范围。启动后可检查`http://localhost:8080/actuator/health`，结束时按`Ctrl+C`退出。
 
