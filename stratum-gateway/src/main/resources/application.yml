@@ -65,3 +65,8 @@ stratum:
       maximum-clients: ${STRATUM_GATEWAY_MAXIMUM_CLIENTS:4096}
       namespace: ${STRATUM_GATEWAY_RATE_NAMESPACE:stratum-gateway}
       command-timeout: ${STRATUM_GATEWAY_RATE_TIMEOUT:500ms}
+
+logging:
+  structured:
+    format:
+      console: com.patrick.stratum.gateway.logging.GatewayStructuredLogFormatter

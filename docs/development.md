@@ -930,3 +930,11 @@ GatewayRateLimitFilter作为GlobalFilter在路由匹配之后、Netty转发之�
 健康和不存在路由没有进入GlobalFilter，不消耗桶；生产health保留Redis健康检测，Redis不可用时health可报告DOWN，不等同于配额耗尽。普通路由/协议验收通过测试初始化器注册显式Primary替身，保持独立于Redis；真实限流测试通过realRateGateway保留生产组件及独立存储配置，不使用该替身。
 
 Gateway build、27项普通网关回归与10项显式集成测试通过，0失败/错误/跳过。包括6项原共享桶回归和4项新真实HTTP：两个独立网关上下文及稳定/灰度上游共用一IP额度，空桶429且POST未增加任何上游请求，伪造代理来源/灰度/幂等头不能换桶，健康/404不改桶状态；IP槽位耗尽、另一入口策略漂移和真实Redis连接拒绝均503且上游请求数不增加。拒绝响应核对五字段/空数据/trace/缓存/等待及故障脱敏；测试用空桶及未来时戳隔离HTTP耗时，没有依赖一秒内完成多请求的假设。各上下文、上游与客户端关闭，唯一测试四键删除；独立Redis/MariaDB继续供后续验证。D04.1e完成，下一f交付结构化访问日志和指标。
+
+## 结构化入口访问日志（NODE-D04.1f1）
+
+Gateway使用Boot StructuredLogFormatter扩展输出逐行JSON，公共字段timestamp/level/service/env/traceId/spanId/message/logger；service固定stratum-gateway，env取STRATUM_ENV或local。访问事件只登记upstream/status/latencyMs/traceId/clientIp，忽略未登记的键值及MDC；不从请求复制Authorization/Cookie/Set-Cookie、请求体、原路径、查询或幂等键。已有MDC的trace_id/span_id可作为格式缺省值，访问事件显式traceId优先；无OTel跨度时spanId为空，不生成虚假跨度或宣称全链路采集。
+
+GatewayAccessLogFilter在来源/体防护之前登记响应提交回调，因此错误处理器设置最终状态后才记录一次事件。upstream只取stable/gray/local/unmatched/other固定别名，不记录上游URI；clientIp来自已解析直连地址。latencyMs使用单调时钟统计到响应提交（不是整个响应流结束），取消在尚未记录时用499日志标记；原子请求级标记避免提交/取消重复。普通业务代理保留既有响应及关联协议。
+
+Gateway build及30项普通回归通过，0失败/错误/跳过。新增3项验证实际控制台7条访问JSON的200/204/403/404/429/502最终状态、稳定/灰度/健康归属、全部公共与访问字段、真实trace/IP以及敏感输入不出现；格式器转义引号/换行、忽略非白名单及MDC敏感键、保留已有跨度；取消后再提交只有一条499。测试上下文、HTTP上游、客户端与日志捕获器均关闭/恢复。10项Redis/HTTP显式集成测试沿用e3结果，本节点未重新执行；下一f2接入低基数Prometheus指标，并按用户已确认规则保护指标来源。
