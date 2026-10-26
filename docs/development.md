@@ -1235,3 +1235,9 @@ STRATUM_JOBS_ENABLED缺省false，完整Starter没有Scheduler或Job LockProvide
 ShedLock使用stratum_shedlock和数据库UTC时间，技术协调独立于业务工作单元。EnableSchedulerLock采用方法代理与类代理，Quartz JobFactory只查找已有唯一Spring Job组件，保留注解代理，不能通过数据库类名任意创建实例；Job必须保持无共享执行状态。动态锁名需按ShedLock语法使用完整SpEL包装，并以实际落库锁名验收。表由Flyway维护，不开启Quartz初始化或覆盖已有任务定义。
 
 4项新集成与3项表结构回归共7项通过，0失败/错误/跳过。真实MariaDB验证默认关闭/非法边界、两个不同Scheduler实例共享集群JobStore且单个触发只执行一次、重启后读取持久Job、两独立Spring代理竞争同名ShedLock时跳过及释放后恢复。每个子上下文关闭后在5秒内核对其调度/集群/工作线程退出。探针是无业务副作用的测试Job，竞争同步只使用测试信号，实际互斥使用数据库。当前未交付生产任务、运行中任务超时中断、执行记录或dead_job，继续E03.3/4/5；关闭设置不无限等待在途任务，具体可中断执行器仍需后续验收。
+
+## 任务执行值对象与端口（NODE-E03.3a）
+
+新增Domain JobDefinition、JobExecutionRepository及JobRecoveryRepository契约，包含有界定义/重试、不可变登记和领取证据、固定结果与人工恢复请求。使用既有CorrelationIdPolicy校验trace，未引入框架；正文、幂等键与令牌从执行默认摘要中隐藏。明确显式键/计划时刻键、数据库时间精度、退避上限和保留历史的恢复周期，详见SPEC-009第10节。
+
+Domain全模块76项测试通过，0失败/错误/跳过；新增9项覆盖互斥计划、时限/代码/数据库时间范围与精度、极大次数退避、完整输入/摘要、UTF-8字节与代理字符、身份/trace/键规则、领取次数/租期/周期及恢复请求。当前只有契约，没有任务仓储实现、执行表或实际调度任务；E03.3b继续迁移。
