@@ -1004,3 +1004,9 @@ STRATUM_MQ_TIMEOUT缺省2s，允许100ms至10s，分别应用于连接、握手�
 stratum.messaging.topology配置：max-messages默认10000（1至100000）、max-bytes默认67108864（1KiB至256MiB）、delivery-limit默认5（1至100）、retry-min默认1s（100ms至1min）、retry-max默认30s（不低于min且不超过5min）。每队列使用相同阈值；Quorum允许少量在途超额，阈值不是严格资源硬上限。修改队列参数后必须考虑Broker等价声明与迁移，不直接删除现有队列以绕过冲突。nack返回不增加失败次数，reject失败才计数；本节点只验证Broker机制，有序消费进度仍待E02。
 
 本轮25项Infrastructure单元及6项拓扑验收通过，0失败/错误/跳过。其中4项实际连接现有RabbitMQ 4.3.6的独立stratum-it虚拟主机：重复声明与双路由隔离、nack至少200ms原生延迟且失败计数不增、reject两次重投后进入正确DLQ并保留messageId/正文/持久属性、容量阈值最终否定确认且最早消息保留；另2项验证非法配置/关闭隔离及旧版/未知版本声明前失败。专用虚拟主机与同名专用账号必须由STRATUM_IT_MQ_VHOST/USERNAME/PASSWORD及PORT显式提供；测试只允许本机、严格随机名隔离空间，缺失直接失败。测试删除自身固定拓扑并关闭连接/线程，临时专用虚拟主机与账号保留连续验收，结束前删除；用户Broker持续运行。尚无生产发布器或消费者。
+
+## Relay专用发布契约（NODE-E01.3a）
+
+Domain增加OutboxPublisher端口，Delivery复用原OutboxMessage并携带正long持久化序号，不生成新的eventId或临时猜测顺序。CONFIRMED只表示Broker确认且可路由，不表示消费完成；RETURNED/REJECTED/TIMED_OUT/UNAVAILABLE都不能标记SENT。超时/不可用仍可能已到达Broker，重试必须沿用原eventId，由消费者数据库唯一去重守住副作用。
+
+此端口仅供后续Relay在业务事务外使用，业务写用例继续只追加Outbox。Delivery摘要只含eventId和序号，避免日志复制正文。63项Domain测试通过，0失败/错误/跳过；新增3项验证空信封/非正序号拒绝、64位序号和原信封保留、摘要不泄露正文；源码无框架导入。当前尚无生产发布器、数据库序号分配或Relay，不把契约测试计为消息收发。
