@@ -37,7 +37,7 @@
 | stratum-common | ApiResponse、错误码、异常、traceId 上下文、基础扩展与帮助类、分页模型 |
 | stratum-domain | Entity、AggregateRoot、ValueObject、Repository、DomainEvent |
 | stratum-interface | ApiResponseFactory、HTTP 请求关联过滤器与分派注册 |
-| stratum-application | Command / CommandHandler / UseCaseResult、工作单元事务代理、OperationLog 契约、CommandGateway；OutboxEventWriter 在已有工作单元内落盘领域事件 |
+| stratum-application | Command / CommandHandler / UseCaseResult、工作单元事务代理、OperationLog 契约、CommandGateway；OutboxEventWriter 在已有工作单元内落盘领域事件；OutboxRelayApplicationService提供事务外有界批次入口 |
 | stratum-query | QuerySpec、Query/Handler/Result/Context、QueryGateway 与 Spring 装配；统一路由及查询指标日志 |
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
 | stratum-infrastructure | 已引入 Easy-Query 3.3.1（Boot 4 starter / MySQL 方言 / 处理器）、MariaDB JDBC、Flyway、Redis、Caffeine；已配置数据源与 Flyway；NODE-B03.2b 已验证真实 MariaDB 提交、回滚和嵌套事务 |
@@ -1093,3 +1093,11 @@ V202610260002为Outbox加入lease_token/lease_until及PROCESSING租约一致性�
 租期基于已锁定行查询返回的数据库UTC时间，不依靠调用者时钟；每次领取产生新UUID竞争令牌，PROCESSING过期可接管，旧令牌失效。finish先以SKIP LOCKED取得匹配事件行，再用新的数据库语句时间检查租期、原事件/聚合/序号、令牌、失败次数和PROCESSING状态；忙行返回false，不等待后使用旧语句开始时刻误通过。成功只SENT，未推进consumed_sequence；非确认结果增加失败、按策略设next_retry_at或到阈值FAILED，并清空租约。所有修改随原工作单元提交或回滚；SQL1020/40001继续映射40900，仓储不自动重试。失败计数饱和于Integer.MAX_VALUE，避免损坏的大计数溢出。
 
 本轮25项真实MariaDB测试通过，0失败/错误/跳过：新增租约9项，原Outbox5、序号7与序号并发4项回归。新增验证两聚合仅头可领/确认后仍等待消费证据、数据库时钟退避、FAILED不跳过头且其他聚合继续、过期接管/伪造未来时间无效、外层回滚、伪造领取字段拒绝、写事务与数据库租约约束、极大计数、两个仓储实例/独立连接在首事务持锁时领取互不重叠，以及完成操作对被锁行立即返回false。消费进度由测试SQL探针构造，仅验证资格判断，当前还没有生产消费者或推进逻辑；Application批次投递由E02.2c接入。
+
+## Application有界Relay批次（NODE-E02.2c）
+
+OutboxRelayApplicationService通过UnitOfWork、OutboxRelayRepository及可选OutboxPublisher端口编排，不依赖Infrastructure。runBatch必须从事务外调用；没有启用发布器时在领取前失败。每实例最多执行一个批次，原子标记仅限制本实例资源，跨实例资格继续由数据库令牌控制。request.batchSize是本次最多尝试次数：每次新工作单元只领取即将发送的一条，事务提交后调用MQ，再用独立工作单元记录结果；不预先积压持租等待的消息。
+
+发布参数非法记为REJECTED，其他发布端口异常记为UNAVAILABLE，再由存储重试策略决定PENDING或FAILED；确认才能SENT。只有成功持久化结果才计入返回条数，返回值不表示成功消费。状态写入异常向调用方传播，未完成租约按到期恢复；中断保持标志并停止进一步事务/领取。日志只含安全事件/消息ID、trace、内部结果/错误类型，不输出正文或异常原文；发布阶段consumerGroup为空，真实消费组在后续消费者日志登记。
+
+本轮Application共12项单元测试通过，0失败/错误/跳过，新增6项验证事务标志内领取/完成且事务外发布、最大尝试数、错误分类及未更新结果不计数、未启用或事务内入口拒绝、同实例容量/中断恢复、持久化失败传播与释放容量，以及发布中断后不再开启完成事务。测试的工作单元替身仅验证编排标志，不模拟实际数据库提交；真实DB/Broker联调由E02.2d完成。当前没有周期调度、任务接口或消费者，不将该入口当作已自动运行的Relay任务。
