@@ -1131,3 +1131,13 @@ RabbitOutboxMessageCodec限制信封512KiB，要求持久JSON/UTF-8、7个字段
 RabbitOutboxConsumerAdapter只依赖Domain消费端口，核验主交换机和实际路由与订阅匹配。应用提交后返回CONSUMED/DUPLICATE才basicAck单条；WAITING使用basicNack(requeue=true)原生延迟等待，实际解码/应用失败使用basicReject(requeue=true)增加失败计数；中断线程只退回消息。确认IOException向容器传播，不在结果未知后再reject。失败日志仅安全身份、组别及异常类型，不记录异常原文/正文。
 
 13项单元通过，0失败/错误/跳过（新消费7、原发布6），用实际生产发布编码验证接收兼容与精度；通道/应用端口为可控替身，不作为Broker或数据库验收。尚未装配监听容器、启动线程或自动消费；真实生命周期由E02.3c2继续。手动确认语义参考[Spring AMQP配置](https://docs.spring.io/spring-amqp/reference/amqp/containerAttributes.html)，实际依赖保持4.0.2。
+
+## 有界消息监听与退出（NODE-E02.3c2）
+
+在已配置消息连接且STRATUM_MQ_ENABLED=true的基础上，设置STRATUM_MQ_CONSUMER_ENABLED=true才创建ERP和缓存两个固定监听容器；默认false，不创建消费工作池或监听线程。只开消费而未开消息时启动失败。两个容器依赖Domain的OutboxConsumer，不引用Application类型；拓扑初始化后通过Spring生命周期启动，不引入Quartz或周期Relay。
+
+STRATUM_MQ_CONSUMER_CONCURRENCY默认1，允许1至4，表示每队列固定并发；STRATUM_MQ_CONSUMER_PREFETCH默认16，允许1至32。主连接通道上限必须至少为2×并发+1。独立工作池上限为2×并发+2，额外两个线程供容器停止回调使用，等待任务数同样有界；不能把所有线程分配给长期消费后让停止回调排队。单条解码512KiB，连接入站体积上限仍为2MiB，预取数量不等于精确字节内存上限。
+
+容器使用MANUAL、关闭批量拆分及通道事务。确认传输异常终止当前消费通道以归还未确认消息，不重置共享连接，不追加相反确认。容器错误处理只记异常类型和固定组别。STRATUM_MQ_CONSUMER_SHUTDOWN_TIMEOUT默认5s，允许1至10s：退出先允许已预取处理在预算内结束，超时中断处理并关闭通道，未确认消息回Broker；不承诺强制终止不响应中断的任意用户代码。工作池随上下文关闭并限制退出等待。停止/回调语义核对[实际4.0.2容器源码](https://github.com/spring-projects/spring-amqp/blob/v4.0.2/spring-rabbit/src/main/java/org/springframework/amqp/rabbit/listener/SimpleMessageListenerContainer.java)。
+
+本轮监听测试6项及完整Starter回归2项通过，0失败/错误/跳过。监听测试含3项配置/资源边界、1项真实装配配合受控确认IOException、2项真实Broker流程：等待nack后的delivery-count仍0，reject后为1，第三次成功后队列无消息；实际预取2条后触发1秒退出预算，中断当前处理并最终归还两个原消息ID，连接和工作池均退出。受控消费端口不代表数据库业务消费组合，后者由E02.3d验证；完整Starter2项证明消息开启、消费默认关闭时仍无监听/自动Relay，原事务提交与回滚保持。E02.3c完成，DLQ持久化及人工重放尚待E02.4。

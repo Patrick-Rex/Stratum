@@ -38,6 +38,11 @@ stratum:
     timeout: ${STRATUM_MQ_TIMEOUT:2s}
     channels: ${STRATUM_MQ_CHANNELS:16}
     workers: ${STRATUM_MQ_WORKERS:4}
+    consumer:
+      enabled: ${STRATUM_MQ_CONSUMER_ENABLED:false}
+      concurrency: ${STRATUM_MQ_CONSUMER_CONCURRENCY:1}
+      prefetch: ${STRATUM_MQ_CONSUMER_PREFETCH:16}
+      shutdown-timeout: ${STRATUM_MQ_CONSUMER_SHUTDOWN_TIMEOUT:5s}
   auth:
     jwt:
       enabled: ${STRATUM_AUTH_JWT_ENABLED:false}
