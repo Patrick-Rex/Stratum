@@ -43,3 +43,9 @@ dependencies {
 }
 
 configurations.testAnnotationProcessor.extendsFrom(configurations.annotationProcessor)
+
+def gatewayBootJar = project(':stratum-gateway').tasks.named('bootJar')
+tasks.named('integrationTest') {
+    dependsOn gatewayBootJar
+    systemProperty 'stratum.test.gateway-jar', gatewayBootJar.get().archiveFile.get().asFile.absolutePath
+}

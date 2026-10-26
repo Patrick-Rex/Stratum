@@ -954,3 +954,13 @@ Gateway build、33项普通回归与10项真实Redis/HTTP显式集成测试通�
 10项真实Redis/HTTP显式集成测试重新执行通过，0失败/错误/跳过。在两个独立网关及稳定/灰度共享桶场景中，新断言确认灰度POST的429只在实际拒绝的第二个网关形成一个本地Timer样本，另一个网关没有该拒绝样本；真实Prometheus抓取含对应route/status，不暴露请求trace或幂等键。抓取、health及404前后的桶时戳完全相同，原子额度不受观测请求影响。33项普通网关回归沿用f2a实际结果，本节点仅修改组合测试和文档，未重复运行普通回归。
 
 README同步独立Redis连接、启用路由、健康/受保护指标抓取、完整管理CIDR列表、灰度回滚及共享策略，移除“尚无Prometheus入口”的旧说明。已实现能力表同步日志和指标，Starter的同等观测和完整OTel仍按F阶段推进。f2及f完成，Gateway本地入口治理还需g验证真实ERP双进程及全工程；部署、外部负载均衡和外部观测服务不计完成。
+
+## Gateway可执行JAR与ERP闭环（NODE-D04.1g1）
+
+Starter integrationTest仅在任务图依赖Gateway bootJar，并把实际归档路径作为测试系统属性传入；不把Gateway项目加入Starter依赖或扫描路径。GatewayProcessFixture用当前测试JDK25的ProcessBuilder参数列表启动该JAR，端口由Netty实际随机绑定并从有界输出识别；直连health就绪探测约30秒内完成，退出先等待10秒、必要时仅强制退出自身进程并再等5秒。使用稳定Process.waitFor(Duration)，不使用Thread.sleep。
+
+子进程测试资源限制为256MiB堆、64MiB直接内存及2个可见CPU；日志每次读取最多1MiB，启动失败保留临时输出，成功关闭删除输出。排除继承的Stratum/Spring/OTel及JVM工具选项环境，避免开发者配置干预；Redis口令只通过子进程环境提供，命名空间随机，结束删除自身四键。没有给Gateway提供ERP/RSA/业务数据库凭据。
+
+ErpWorkflowHttpIntegrationTest新增可覆盖的固定业务入口，保留原有全部业务断言；Gateway子类复用两项用例，经独立进程完成四主数据、精确金额、分批采购、库存不足回滚、补货重试、销售出库、幂等、查询与引用保护，及未知API版本写入前拒绝。断言18条同trace Outbox、10份幂等回执与缓存保留，核对实际Gateway JSON日志含同一trace，并验证Starter无法加载GatewayApplication。
+
+4项真实MariaDB/Redis/HTTP测试通过，0失败/错误/跳过（原直连2项、实际独立JAR2项）。资源边界复核后再次重跑4项通过，确认自身Gateway子进程已退出；用户已有Java进程及共享Docker服务保留。仅验证Gateway为独立子进程、ERP运行在真实Starter测试上下文，不冒称两个生产部署实例。g1完成；完整认证/API/仓库实时撤回及限流无ERP副作用由g2验证，全工程验收由g3执行。

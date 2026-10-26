@@ -34,7 +34,7 @@ class ErpWorkflowHttpIntegrationTest extends AuthenticatedHttpIntegrationTest {
     private final VersionedCache cache;
     private final StringRedisTemplate redis;
     private final JsonMapper json = JsonMapper.builder().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
-    private final String trace = UUID.randomUUID().toString();
+    protected final String trace = UUID.randomUUID().toString();
     private final List<String> masterIds = new ArrayList<>();
     private final List<String> orderIds = new ArrayList<>();
     private final List<String> keys = new ArrayList<>();
@@ -103,7 +103,7 @@ class ErpWorkflowHttpIntegrationTest extends AuthenticatedHttpIntegrationTest {
     @Test
     void rejectsUnsupportedVersionBeforeWriting() throws Exception {
         String key = key();
-        var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/erp/masters/CUSTOMER"))
+        var request = HttpRequest.newBuilder(endpoint("/api/erp/masters/CUSTOMER"))
                 .timeout(Duration.ofSeconds(15)).header("Authorization", "Bearer " + accessToken()).header("X-Trace-Id", trace).header("X-API-Version", "2")
                 .header("Idempotency-Key", key).header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(Map.of("code", UUID.randomUUID().toString(), "name", "版本测试")))).build();
@@ -215,7 +215,7 @@ class ErpWorkflowHttpIntegrationTest extends AuthenticatedHttpIntegrationTest {
      * @throws Exception HTTP失败
      */
     private JsonNode send(String method, String path, String key, Object payload, int status) throws Exception {
-        var builder = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path)).timeout(Duration.ofSeconds(15))
+        var builder = HttpRequest.newBuilder(endpoint(path)).timeout(Duration.ofSeconds(15))
                 .header("Authorization", "Bearer " + accessToken()).header("X-Trace-Id", trace).header("X-API-Version", "1").header("Content-Type", "application/json");
         if (key != null) builder.header("Idempotency-Key", key);
         builder.method(method, payload == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(json.writeValueAsString(payload)));
@@ -228,6 +228,13 @@ class ErpWorkflowHttpIntegrationTest extends AuthenticatedHttpIntegrationTest {
             return value;
         }
     }
+
+    /**
+     * 提供业务请求入口，子类可复用全部断言经独立网关执行。
+     * @param path 固定相对业务路径
+     * @return 本机直连入口
+     */
+    protected URI endpoint(String path) { return URI.create("http://127.0.0.1:" + port + path); }
 
     /**
      * 为本次用例记录唯一幂等键。
