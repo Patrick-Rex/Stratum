@@ -46,7 +46,7 @@
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
 
-Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ已接入显式启用的连接配置，持久化Topic/Quorum拓扑及发布确认适配已建立，Relay与消费仍待后续节点；Nacos、Quartz、ShedLock和完整观测组件仍为后续目标设计。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
+Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ已接入显式启用的连接配置，持久化Topic/Quorum拓扑及发布确认适配已建立，Relay、有序消费、死信归档及人工重放闭环已通过E02.5全工程验收；Nacos、Quartz、ShedLock和完整观测组件仍为后续目标设计。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
 
 以下目标基线沿用原项目入口的既有约定，尚未接入时不作为当前依赖版本：
 
@@ -123,7 +123,7 @@ Invoke-RestMethod http://localhost:8080/actuator/health
 
 写用例通过 CommandGateway / UnitOfWork 开启事务，在保存聚合后调用 `OutboxEventWriter.append(event, "erp.material.created")`。写入器使用 MANDATORY 事务传播；事务外调用被拒绝，序列化失败或重复事件使事务回滚。事件信封包含 eventId、eventType、aggregateId、occurredAt、payload、traceId，UUID 归一化，JSON 数据上限 256 KiB，数据库时间按 UTC 保存。
 
-Outbox 当前只做可靠落盘与状态约束；Relay、发送确认、重试、顺序消费与幂等属于 Phase E，不能把写入成功称为消息已送达。
+Outbox已接通有界Relay、发布确认、有序消费、去重、死信归档与人工重放。自动调度仍待E03；写入成功、Broker确认和实际消费是不同证据，状态与运行边界见下文E02.5。
 
 ## 分布式锁使用
 
@@ -149,7 +149,7 @@ Infrastructure 的 `SingleFlight` 合并同键请求，实际加载数量受容�
 
 Application 的 CacheUpdateCoordinator 必须在已有工作单元中调用。它先写入 `stratum.cache.invalidate` Outbox 意图，再登记提交后版本更新或失效；事务回滚不会修改缓存。补偿载荷仅包含键、最低版本及 TTL 参数，不复制业务数据。所有缓存动作都提前登记意图，覆盖数据库提交后进程中断的窗口；即时更新成功也保留意图，由 Phase E 的幂等消费者处理。
 
-更新失败会降级为带版本屏障的失效；Redis 完全不可用时记录 traceId、缓存键与事件 ID，保留已提交的业务结果与补偿意图。删除场景使用 invalidateAfterCommit，最低版本必须高于被删除对象的旧版本。当前已验证补偿落盘，Relay 和消费执行仍待 Phase E，不能宣称自动补偿已运行。
+更新失败会降级为带版本屏障的失效；Redis 完全不可用时记录 traceId、缓存键与事件 ID，保留已提交的业务结果与补偿意图。删除场景使用 invalidateAfterCommit，最低版本必须高于被删除对象的旧版本。补偿落盘、显式Relay与真实消费恢复均已验证；自动Relay调度仍待E03，启用消费不等于启用周期投递。
 
 ## 查询条件基架
 
@@ -1209,3 +1209,13 @@ OutboxReplayRequester由Application实现，入口拒绝已有外层事务，使
 ERP信封用例验证失败前序阻塞后序而其他聚合完成；人工重放后连续两序号只留各一份高精度原文/trace消费凭据，原SENT不倒退，关联意图和归档RESOLVED。缓存用例从生产CacheUpdateCoordinator登记并提交后注入缓存不可用，实际旧Redis值仍在；该补偿经真实DLQ/人工重放后成功失效一次，最低版本屏障与TTL保留，重复人工请求不重置标记或产生第二次效果。包装故障不宣称Redis断网。
 
 再次失败用例让第一次重放真实超限，新的publication-id形成新归档周期；针对新归档再次人工恢复，两个关联意图/归档最终RESOLVED，业务eventId/sequence不变且消费凭据只有一份。非法原体由测试故障入口直接注入Broker，真实隔离后应用请求返回40000且没有投递意图，不作为生产绕过Outbox入口。自身监听、连接、线程和拓扑均退出/清理；用户服务保持运行。E02.4完成，E02.5再全工程回归，不以这4项替代全部模块验收。
+
+## 消息阶段收敛（NODE-E02.5）
+
+2026-10-26执行 `.\gradlew.bat --no-daemon test :stratum-gateway:integrationTest :stratum-starter:integrationTest --rerun-tasks`，39个任务全部重新执行，退出码0。210项单元（Application12、Common9、Domain67、Gateway33、Infrastructure25、Interface10、Query21、Starter33）及542项Starter、10项Gateway显式集成，共762项通过，0失败/错误/跳过；Job尚无测试，不将NO-SOURCE计为通过。使用独立MariaDB11.8/Redis8.2及现有RabbitMQ4.3.6的专用测试用户/vhost。
+
+E01/E02完成。运行时先启用消息连接并提供专用Broker凭据，再按需启用消费；连接与消费均默认关闭。两个业务消费者及两个DLQ消费者随上下文有界关闭；自动Relay尚未接入，显式调用OutboxRelayApplicationService.runBatch才推进待发送记录。人工恢复通过OutboxReplayRequester.request登记持久化意图，当前没有HTTP入口，后续仍由Relay发布原事件身份。登记回执表示请求结果，SENT只表示发布确认，RESOLVED及消费凭据才证明消费完成。
+
+启动前备份数据库并核对Flyway：序号迁移遇到非空未知历史Outbox会显式失败，不能自行猜测顺序；既有Quorum队列参数不兼容时不会自动清空或重建。业务失败按既定上限进入DLQ，归档故障保留有界队列中的证据并原生延迟重试；满队列会拒绝发布，需排查和恢复，不能删除证据绕过。每聚合死信只阻塞自身后序；人工重放必须核验本地原事件，隔离/未知/篡改归档不能执行。所有已提交迁移校验和保持不变。
+
+本轮测试应用、Gateway子进程、监听连接和工作池已退出；独立测试数据库/Redis及专用消息空间仅供后续连续验证，最终结束前清理本轮资源。E03继续Quartz/ShedLock调度，不将此文档收敛计为新增业务实现。
