@@ -41,7 +41,7 @@
 | stratum-query | QuerySpec、Query/Handler/Result/Context、QueryGateway 与 Spring 装配；统一路由及查询指标日志 |
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
 | stratum-infrastructure | 已引入 Easy-Query 3.3.1（Boot 4 starter / MySQL 方言 / 处理器）、MariaDB JDBC、Flyway、Redis、Caffeine；已配置数据源与 Flyway；NODE-B03.2b 已验证真实 MariaDB 提交、回滚和嵌套事务 |
-| stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由、Header灰度、协议透传和代理超时/错误处理；已具备头体防护及管理直连CIDR限制，已绑定直连IP共享Redis限流，访问日志/指标及双进程ERP验收待后续节点 |
+| stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由、Header灰度、协议透传和代理超时/错误处理；已具备头体防护及管理直连CIDR限制，已绑定直连IP共享Redis限流，已提供JSON访问日志及受管理CIDR保护的Prometheus指标；双进程ERP验收待后续节点 |
 | stratum-job | Gradle 模块骨架 |
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
@@ -948,3 +948,9 @@ GatewayMetricsFilter记录stratum.gateway.requests Timer，标签仅method/route
 同时用ServerRequestObservationConvention及GatewayObservationConvention约束入站http.server.requests与出站http.client.requests（含active）。在创建Meter.Id之前归并扩展方法和动态URI，出站仅使用固定路由别名，不输出实际地址或请求URL；不靠事后MeterFilter改标签，避免注册缓存保留无界原ID。关闭重复的原生Gateway计时器，保留原生入站/出站观测与传播；不加入全局静态Registry，防止本地多上下文共享指标状态。
 
 Gateway build、33项普通回归与10项真实Redis/HTTP显式集成测试通过，0失败/错误/跳过。新增3项验证真实Prometheus文本含请求直方图/JVM指标、204/429/503样本、6个自定义方法和6个动态未知路径均不进入任何入站/出站标签、指标来源403且健康仍200、取消后再提交只一条499；原W3C透传、范围、防护、错误与限流回归均通过。所有测试上下文、上游、客户端及Registry已关闭，独立Redis/MariaDB供连续验收。下一f2b补充真实共享桶429与抓取指标的联合断言及README启动说明后，才标记f2/f完成。
+
+## 真实限流指标组合验收（NODE-D04.1f2b）
+
+10项真实Redis/HTTP显式集成测试重新执行通过，0失败/错误/跳过。在两个独立网关及稳定/灰度共享桶场景中，新断言确认灰度POST的429只在实际拒绝的第二个网关形成一个本地Timer样本，另一个网关没有该拒绝样本；真实Prometheus抓取含对应route/status，不暴露请求trace或幂等键。抓取、health及404前后的桶时戳完全相同，原子额度不受观测请求影响。33项普通网关回归沿用f2a实际结果，本节点仅修改组合测试和文档，未重复运行普通回归。
+
+README同步独立Redis连接、启用路由、健康/受保护指标抓取、完整管理CIDR列表、灰度回滚及共享策略，移除“尚无Prometheus入口”的旧说明。已实现能力表同步日志和指标，Starter的同等观测和完整OTel仍按F阶段推进。f2及f完成，Gateway本地入口治理还需g验证真实ERP双进程及全工程；部署、外部负载均衡和外部观测服务不计完成。

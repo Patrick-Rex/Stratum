@@ -10,7 +10,7 @@ Phase D已实现本地账号、环境初始化、BCrypt、RS256登录/刷新、R
 
 D03已完成角色仓库管理与业务读写范围：ALL或指定仓库按多角色取并集；administrator固定全部、普通角色默认无仓库。读取在数据库计数/分页/详情前过滤；创建和履约在命令及回执重放前检查范围。API权限独立，只有履约API及范围也可收发货；无范围创建403、原订单目标404。同一会话立即看到范围变更，旧回执不能绕过撤权。
 
-2026-10-25的D03.5全工程验收重新执行33个任务，140项单元和427项真实MariaDB/Redis/HTTP集成测试全部通过，0失败、错误或跳过。独立网关已提供启动、固定路由、Header灰度、协议透传及代理超时/错误响应；消息投递消费、后台任务及完整可观测性仍待实现；部署相关节点暂缓。准确节点状态见[CONTEXT](docs/CONTEXT.md)，历史验收不代表本次重新执行。
+2026-10-25的D03.5全工程验收重新执行33个任务，140项单元和427项真实MariaDB/Redis/HTTP集成测试全部通过，0失败、错误或跳过。独立网关已提供固定路由/Header灰度、协议透传、代理超时/错误、头体防护、管理来源CIDR、Redis共享限流、结构化访问日志及受保护Prometheus指标；消息投递消费、后台任务及完整可观测性仍待实现；部署相关节点暂缓。准确节点状态见[CONTEXT](docs/CONTEXT.md)，历史验收不代表本次重新执行。
 
 ## 文档入口
 
@@ -34,6 +34,19 @@ D03已完成角色仓库管理与业务读写范围：ALL或指定仓库按多�
 
 当前通过环境变量配置MariaDB、Redis和外部RSA密钥，初始管理员凭据不设默认值；Nacos尚未接入。未配置JWT时ERP端点返回401。启用认证后使用`/auth/login`与`/auth/refresh`，业务请求携带`Authorization: Bearer`；本人退出为`/auth/logout`、全部退出为`/auth/logout-all`。管理员通过`/api/auth/accounts`、`/api/auth/roles`及`/api/auth/permissions`管理账号与角色，通过`/api/auth/roles/{id}/warehouse-scope`的GET/PUT读取和配置角色仓库范围。启动后可检查`http://localhost:8080/actuator/health`，结束时按`Ctrl+C`退出。
 
-Gateway已可作为独立进程启动：另开终端执行 `.\gradlew.bat --no-daemon :stratum-gateway:bootRun`，默认仅监听 `127.0.0.1:8081`，通过 `STRATUM_GATEWAY_ADDRESS` 和 `STRATUM_GATEWAY_PORT` 配置；无需业务数据库凭据。默认仅提供 `/actuator/health`；设置 `STRATUM_GATEWAY_ENABLED=true` 并配置 `STRATUM_GATEWAY_UPSTREAM` 后转发ERP/API文档路径。可用 `STRATUM_GATEWAY_GRAY_ENABLED`、`STRATUM_GATEWAY_GRAY_UPSTREAM` 及精确Header灰度，关闭灰度并重启回到稳定上游。已提供连接/响应超时、有界连接池及安全统一错误，业务响应原样透传；已对请求头、请求体及缓冲并发设置上界，管理账号/角色/权限路径只允许配置的直连CIDR（默认IPv4/IPv6回环）；已按直连IP启用Redis共享令牌桶，默认20/s、突发40；超额429，存储故障拒绝转发。Redis连接由STRATUM_GATEWAY_REDIS_HOST/PORT/PASSWORD配置，所有入口实例需保持相同命名空间和策略；结束时按 `Ctrl+C`退出。
+Gateway与Starter分别运行，默认监听`127.0.0.1:8081`，无需业务数据库凭据；监听地址/端口通过`STRATUM_GATEWAY_ADDRESS`、`STRATUM_GATEWAY_PORT`配置。先用`STRATUM_GATEWAY_REDIS_HOST/PORT/PASSWORD`提供可用Redis连接，再另开终端启动：
 
-启动后可访问 `/v3/api-docs` 获取生成文档、`/doc.html` 查看 Knife4j。当前未提供 Docker Compose 文件或 Prometheus 指标端点。完整的操作说明、验证边界与后续设计见 [开发与迭代](docs/development.md)。
+```powershell
+$env:STRATUM_GATEWAY_ENABLED='true'
+$env:STRATUM_GATEWAY_UPSTREAM='http://127.0.0.1:8080'
+.\gradlew.bat --no-daemon :stratum-gateway:bootRun
+# 在另一终端检查健康与本机指标
+Invoke-WebRequest http://127.0.0.1:8081/actuator/health
+Invoke-WebRequest http://127.0.0.1:8081/actuator/prometheus
+```
+
+未启用路由时不转发ERP/API文档。灰度由`STRATUM_GATEWAY_GRAY_ENABLED`、`STRATUM_GATEWAY_GRAY_UPSTREAM`及精确Header配置，关闭并重启回到稳定上游。已设置连接/响应超时、有界连接池和头体/缓冲上界，业务响应原样透传；管理账号/角色/权限及指标路径受直连CIDR限制，默认只允许IPv4/IPv6回环，可通过`STRATUM_GATEWAY_MANAGEMENT_ALLOWED_CIDRS`配置完整列表。客户端代理来源头不能获得管理资格。
+
+转发按直连IP使用跨实例、跨稳定/灰度共享Redis令牌桶，默认20/s补充、40突发，超额429并返回Retry-After；Redis故障或共享状态不一致拒绝转发。所有入口实例需使用相同命名空间和策略。访问日志输出JSON，指标标签保持有界；完整参数、时延/取消语义和验收边界见[开发与迭代](docs/development.md)。结束各进程时分别按`Ctrl+C`退出。
+
+启动后可访问 `/v3/api-docs` 获取生成文档、`/doc.html` 查看 Knife4j。Gateway已提供上述受保护指标端点；外部观测服务与Docker Compose仍暂缓，尚未对Starter提供同等指标入口。完整的操作说明、验证边界与后续设计见 [开发与迭代](docs/development.md)。

@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @Tag("integration")
 class GatewayRateLimitHttpIntegrationTest extends GatewayHttpIntegrationTest {
     /**
-     * 两网关的稳定与灰度共享同一IP额度，拒绝写请求无上游效果，健康及未知路径不扣令牌。
+     * 两网关的稳定与灰度共享同一IP额度，拒绝写请求无上游效果，健康、指标及未知路径不扣令牌。
      * @throws Exception 本机请求或初始化失败
      */
     @Test void twoGatewaysShareStableAndGrayQuotaAndRejectWrites() throws Exception {
@@ -48,6 +48,14 @@ class GatewayRateLimitHttpIntegrationTest extends GatewayHttpIntegrationTest {
                 assertError(denied, 429, 40002); assertEquals("1", denied.headers().firstValue("Retry-After").orElseThrow());
                 assertEquals(1, stable.requests().get()); assertEquals(1, gray.requests().get());
                 var before = redis.opsForHash().entries(keys(namespace).get(1)).collectMap(Map.Entry::getKey, Map.Entry::getValue).block(Duration.ofSeconds(3));
+                var scrape = request(second, "/actuator/prometheus", Map.of(), null);
+                assertEquals(200, scrape.statusCode()); assertTrue(scrape.body().contains("stratum_gateway_requests_seconds_count"));
+                assertTrue(scrape.body().contains("status=\"429\"")); assertTrue(scrape.body().contains("route=\"gray\""));
+                assertFalse(scrape.body().contains("shared-rate")); assertFalse(scrape.body().contains("uncommitted-write"));
+                var refused = second.getBean(io.micrometer.core.instrument.MeterRegistry.class).find("stratum.gateway.requests")
+                        .tags("method", "POST", "route", "gray", "status", "429").timer();
+                assertNotNull(refused); assertEquals(1, refused.count());
+                assertNull(first.getBean(io.micrometer.core.instrument.MeterRegistry.class).find("stratum.gateway.requests").tag("status", "429").timer());
                 assertEquals(200, request(second, "/actuator/health", Map.of(), null).statusCode());
                 assertEquals(404, request(second, "/unknown", Map.of(), null).statusCode());
                 var after = redis.opsForHash().entries(keys(namespace).get(1)).collectMap(Map.Entry::getKey, Map.Entry::getValue).block(Duration.ofSeconds(3));
