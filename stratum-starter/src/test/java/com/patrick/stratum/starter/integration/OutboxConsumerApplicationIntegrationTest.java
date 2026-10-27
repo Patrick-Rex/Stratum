@@ -2,6 +2,8 @@ package com.patrick.stratum.starter.integration;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -16,17 +18,22 @@ import com.patrick.stratum.common.trace.TraceIdContext;
 import com.patrick.stratum.domain.event.OutboxConsumptionRepository;
 import com.patrick.stratum.domain.event.OutboxConsumer;
 import com.patrick.stratum.domain.event.OutboxMessage;
+import com.patrick.stratum.domain.event.OutboxPublisher;
 import com.patrick.stratum.domain.event.OutboxPublisher.Delivery;
+import com.patrick.stratum.domain.event.OutboxRelayRepository;
 import com.patrick.stratum.domain.event.OutboxRepository;
+import com.patrick.stratum.domain.event.OutboxStatus;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import tools.jackson.databind.json.JsonMapper;
 
 import static com.patrick.stratum.domain.event.OutboxConsumptionRepository.Group.*;
 import static com.patrick.stratum.domain.event.OutboxConsumer.Outcome.*;
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** 真实应用事务与Redis版本屏障组合验证消费副作用、重复及失败重试。 */
@@ -36,6 +43,7 @@ class OutboxConsumerApplicationIntegrationTest extends MariaDbIntegrationTest {
     @Autowired private OutboxRepository outbox;
     @Autowired private OutboxConsumptionRepository consumption;
     @Autowired private OutboxConsumer consumer;
+    @Autowired private OutboxRelayRepository relay;
     @Autowired private VersionedCache cache;
     @Autowired private JsonMapper json;
     @Autowired private JdbcTemplate jdbc;
@@ -112,6 +120,7 @@ class OutboxConsumerApplicationIntegrationTest extends MariaDbIntegrationTest {
         };
         assertThrows(IllegalStateException.class, () -> service(failing, cache).consume(event, CACHE_INVALIDATION));
         assertEquals(0, receipts(event)); assertEquals(0L, progress(event));
+        assertEquals("PENDING", jdbc.queryForObject("SELECT status FROM outbox_event WHERE event_id=?", String.class, event.message().eventId()));
         assertTrue(cache.putIfNewer(key, new VersionedCache.Value(6, "newer"), POLICY));
         assertEquals(CONSUMED, consumer.consume(event, CACHE_INVALIDATION));
         assertEquals("newer", cache.get(key, POLICY, Optional::empty).orElseThrow().payload());
@@ -135,6 +144,100 @@ class OutboxConsumerApplicationIntegrationTest extends MariaDbIntegrationTest {
         assertThrows(IllegalStateException.class,
                 () -> unitOfWork.execute(() -> consumer.consume(event, CACHE_INVALIDATION)));
         assertEquals(0, receipts(event)); assertEquals(0L, progress(event));
+    }
+
+    /** 成功消费尚未确认的PENDING或FAILED原事件时保留来源和失败次数，不伪造发送确认。 */
+    @Test
+    void preservesUnconfirmedOriginWhenConsumptionCommits() {
+        for (String original : List.of("PENDING", "FAILED")) {
+            var event = seed("erp.probe.created", "{}", 1).getFirst();
+            jdbc.update("UPDATE outbox_event SET status=?, retry_count=3 WHERE event_id=?", original, event.message().eventId());
+            assertEquals(CONSUMED, consumer.consume(event, ERP_AUDIT));
+            var row = jdbc.queryForMap("SELECT status, consumed_from_status, retry_count, lease_token FROM outbox_event WHERE event_id=?", event.message().eventId());
+            assertEquals("CONSUMED", row.get("status")); assertEquals(original, row.get("consumed_from_status"));
+            assertEquals(3, ((Number) row.get("retry_count")).intValue()); assertNull(row.get("lease_token"));
+            assertEquals(1, receipts(event)); assertEquals(1L, progress(event));
+        }
+        assertTrue(OutboxStatus.PENDING.canTransitionTo(OutboxStatus.CONSUMED));
+        assertTrue(OutboxStatus.FAILED.canTransitionTo(OutboxStatus.CONSUMED));
+        assertFalse(OutboxStatus.CONSUMED.canTransitionTo(OutboxStatus.SENT));
+    }
+
+    /** 数据库领取夹具中消费先提交但租约仍有效时，保留令牌供模拟的确认结果写入SENT。 */
+    @Test
+    void retainsLiveLeaseForLaterConfirmedSend() {
+        var event = seed("erp.probe.created", "{}", 1).getFirst();
+        var claim = claimedFixture(event, 30);
+        assertEquals(CONSUMED, consumer.consume(event, ERP_AUDIT));
+        var before = jdbc.queryForMap("SELECT status, consumed_from_status, lease_token FROM outbox_event WHERE event_id=?", event.message().eventId());
+        assertEquals("PROCESSING", before.get("status")); assertNull(before.get("consumed_from_status"));
+        assertEquals(claim.token().toString(), before.get("lease_token"));
+        assertTrue(unitOfWork.execute(() -> relay.finish(claim, OutboxPublisher.PublishResult.CONFIRMED, retryPolicy())));
+        var after = jdbc.queryForMap("SELECT status, consumed_from_status, lease_token FROM outbox_event WHERE event_id=?", event.message().eventId());
+        assertEquals("SENT", after.get("status")); assertNull(after.get("consumed_from_status")); assertNull(after.get("lease_token"));
+    }
+
+    /** 先前已持久化的模拟确认保持SENT，不为它添加未知确认来源或修改版本。 */
+    @Test
+    void preservesAlreadyConfirmedStatus() {
+        var event = seed("erp.probe.created", "{}", 1).getFirst();
+        jdbc.update("UPDATE outbox_event SET status='SENT', version=5 WHERE event_id=?", event.message().eventId());
+        assertEquals(CONSUMED, consumer.consume(event, ERP_AUDIT));
+        var row = jdbc.queryForMap("SELECT status, consumed_from_status, version FROM outbox_event WHERE event_id=?", event.message().eventId());
+        assertEquals("SENT", row.get("status")); assertNull(row.get("consumed_from_status"));
+        assertEquals(5L, ((Number) row.get("version")).longValue());
+        assertEquals(1, receipts(event));
+    }
+
+    /** 数据库租约实际到期后消费会清除旧令牌并记录来源，迟到确认无法覆盖消费事实。 */
+    @Test
+    void fencesExpiredLeaseWithoutInventingConfirmation() {
+        var event = seed("erp.probe.created", "{}", 1).getFirst();
+        var claim = claimedFixture(event, 1);
+        await().atMost(Duration.ofSeconds(4)).until(() -> Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT lease_until <= UTC_TIMESTAMP(6) FROM outbox_event WHERE event_id=?", Boolean.class, event.message().eventId())));
+        assertEquals(CONSUMED, consumer.consume(event, ERP_AUDIT));
+        var row = jdbc.queryForMap("SELECT status, consumed_from_status, lease_token, lease_until FROM outbox_event WHERE event_id=?", event.message().eventId());
+        assertEquals("CONSUMED", row.get("status")); assertEquals("PROCESSING", row.get("consumed_from_status"));
+        assertNull(row.get("lease_token")); assertNull(row.get("lease_until"));
+        assertFalse(unitOfWork.execute(() -> relay.finish(claim, OutboxPublisher.PublishResult.CONFIRMED, retryPolicy())));
+        assertEquals(1, receipts(event)); assertEquals(1L, progress(event));
+    }
+
+    /** 新终态必须保存合法来源；版本达到上限时饱和而不阻断真实消费。 */
+    @Test
+    void rejectsInvalidOriginAndSaturatesExhaustedVersion() {
+        var event = seed("erp.probe.created", "{}", 1).getFirst();
+        assertThrows(DataAccessException.class, () -> jdbc.update("UPDATE outbox_event SET status='CONSUMED' WHERE event_id=?", event.message().eventId()));
+        assertThrows(DataAccessException.class, () -> jdbc.update("UPDATE outbox_event SET consumed_from_status='FAILED' WHERE event_id=?", event.message().eventId()));
+        jdbc.update("UPDATE outbox_event SET version=9223372036854775807 WHERE event_id=?", event.message().eventId());
+        assertEquals(CONSUMED, consumer.consume(event, ERP_AUDIT));
+        assertEquals(1, receipts(event)); assertEquals(1L, progress(event));
+        var row = jdbc.queryForMap("SELECT status, consumed_from_status, version FROM outbox_event WHERE event_id=?", event.message().eventId());
+        assertEquals("CONSUMED", row.get("status")); assertEquals("PENDING", row.get("consumed_from_status"));
+        assertEquals(Long.MAX_VALUE, ((Number) row.get("version")).longValue());
+    }
+
+    /**
+     * 仅为随机事件设置真实数据库租约，模拟持久化领取，未真实发布；不扫描或修改其他聚合。
+     * @param event 本测试原事件
+     * @param seconds 数据库秒级租期
+     * @return 与真实行一致的领取证据
+     */
+    private OutboxRelayRepository.Claim claimedFixture(Delivery event, int seconds) {
+        UUID token = UUID.randomUUID();
+        assertEquals(1, jdbc.update("UPDATE outbox_event SET status='PROCESSING', lease_token=?, lease_until=TIMESTAMPADD(SECOND, ?, UTC_TIMESTAMP(6)) WHERE event_id=?",
+                token.toString(), seconds, event.message().eventId()));
+        var expiry = jdbc.queryForObject("SELECT lease_until FROM outbox_event WHERE event_id=?", LocalDateTime.class, event.message().eventId());
+        return new OutboxRelayRepository.Claim(event, token, expiry.toInstant(ZoneOffset.UTC), 0);
+    }
+
+    /**
+     * 构造结果写回所需有界策略，成功分支不使用退避。
+     * @return 固定测试策略
+     */
+    private OutboxRelayRepository.RetryPolicy retryPolicy() {
+        return new OutboxRelayRepository.RetryPolicy(2, Duration.ofSeconds(1), Duration.ofSeconds(1));
     }
 
     /**

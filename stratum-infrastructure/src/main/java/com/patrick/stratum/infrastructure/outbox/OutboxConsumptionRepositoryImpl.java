@@ -93,6 +93,15 @@ public class OutboxConsumptionRepositoryImpl implements OutboxConsumptionReposit
                     WHERE aggregate_id = ? AND consumed_sequence = ?
                     """, delivery.sequence(), delivery.message().aggregateId(), delivery.sequence() - 1);
             if (inserted != 1 || advanced != 1) throw new IllegalStateException("消费凭据或顺序更新失败");
+            // 有效发送租约仍可完成确认；其他情况保留原状态及失败次数，不把消费事实写成SENT。
+            // Outbox更新以行锁、状态和令牌保护，版本上限饱和不回绕；引入版本匹配更新时须重新核验。
+            jdbc.update("""
+                    UPDATE outbox_event SET consumed_from_status = status, status = 'CONSUMED',
+                        lease_token = NULL, lease_until = NULL,
+                        version = CASE WHEN version < 9223372036854775807 THEN version + 1 ELSE version END
+                    WHERE event_id = ? AND (status IN ('PENDING', 'FAILED')
+                        OR (status = 'PROCESSING' AND lease_until <= UTC_TIMESTAMP(6)))
+                    """, delivery.message().eventId());
             jdbc.update("""
                     UPDATE outbox_dead_letter d JOIN outbox_replay_delivery r ON r.dead_id = d.dead_id
                     SET d.status = 'RESOLVED'
