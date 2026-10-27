@@ -7,7 +7,9 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -15,7 +17,17 @@ import java.util.concurrent.TimeUnit;
 
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.application.event.OutboxReconciliationApplicationService;
+import com.patrick.stratum.application.event.OutboxOriginalRecoveryApplicationService;
+import com.patrick.stratum.application.auth.CurrentIdentity;
+import com.patrick.stratum.common.error.CommonErrorCode;
 import com.patrick.stratum.common.error.StratumException;
+import com.patrick.stratum.common.trace.TraceIdContext;
+import com.patrick.stratum.domain.auth.AuthorizationAdministrationRepository;
+import com.patrick.stratum.domain.auth.AuthorizationRole;
+import com.patrick.stratum.domain.auth.AuthorizationRoleRepository;
+import com.patrick.stratum.domain.auth.LocalAccount;
+import com.patrick.stratum.domain.auth.LocalAccountRepository;
+import com.patrick.stratum.domain.auth.PasswordHasher;
 import com.patrick.stratum.domain.event.OutboxConsumer;
 import com.patrick.stratum.domain.event.OutboxMessage;
 import com.patrick.stratum.domain.event.OutboxOriginalRecoveryRepository;
@@ -64,11 +76,17 @@ class OutboxReconciliationIntegrationTest {
     private final OutboxReconciliationRepository reconciliation;
     private final OutboxReconciliationApplicationService reconciliationService;
     private final OutboxOriginalRecoveryRepository originalRecovery;
+    private final AuthorizationAdministrationRepository administration;
+    private final AuthorizationRoleRepository roles;
+    private final LocalAccountRepository accounts;
+    private final PasswordHasher passwords;
     private final OutboxRelayRepository relay;
     private final StringRedisTemplate redis;
     private final List<String> cacheKeys = new ArrayList<>();
     private final List<UUID> recoveryRequests = new ArrayList<>();
     private final List<UUID> replayArchives = new ArrayList<>();
+    private final List<UUID> ownedUsers = new ArrayList<>();
+    private final List<UUID> ownedRoles = new ArrayList<>();
     private boolean verified;
 
     /**
@@ -81,6 +99,10 @@ class OutboxReconciliationIntegrationTest {
      * @param reconciliation 对账存储端口
      * @param reconciliationService 事务外有界批次入口
      * @param originalRecovery 原事件恢复端口
+     * @param administration 权威管理协调仓储
+     * @param roles 角色持久化仓储
+     * @param accounts 本地账号仓储
+     * @param passwords 账号密码散列器
      * @param relay 发送完成端口
      * @param redis 仅清理本测试随机缓存键
      */
@@ -88,12 +110,14 @@ class OutboxReconciliationIntegrationTest {
     OutboxReconciliationIntegrationTest(ApplicationContext context, JdbcTemplate jdbc, UnitOfWork unitOfWork,
             OutboxRepository outbox, OutboxConsumer consumer, OutboxReconciliationRepository reconciliation,
             OutboxRelayRepository relay, StringRedisTemplate redis, OutboxReconciliationApplicationService reconciliationService,
-            OutboxOriginalRecoveryRepository originalRecovery) {
+            OutboxOriginalRecoveryRepository originalRecovery, AuthorizationAdministrationRepository administration,
+            AuthorizationRoleRepository roles, LocalAccountRepository accounts, PasswordHasher passwords) {
         application = (ConfigurableApplicationContext) context;
         this.jdbc = jdbc; this.unitOfWork = unitOfWork; this.outbox = outbox; this.consumer = consumer;
         this.reconciliation = reconciliation; this.relay = relay; this.redis = redis;
         this.reconciliationService = reconciliationService;
         this.originalRecovery = originalRecovery;
+        this.administration = administration; this.roles = roles; this.accounts = accounts; this.passwords = passwords;
     }
 
     /**
@@ -141,6 +165,16 @@ class OutboxReconciliationIntegrationTest {
         for (var id : recoveryRequests) jdbc.update("DELETE FROM outbox_original_recovery_request WHERE request_id=?", id.toString());
         for (var id : replayArchives) jdbc.update("DELETE FROM outbox_replay_delivery WHERE dead_id=?", id.toString());
         for (var id : replayArchives) jdbc.update("DELETE FROM outbox_dead_letter WHERE dead_id=?", id.toString());
+        for (var id : ownedUsers) {
+            jdbc.update("DELETE FROM auth_user_role WHERE user_id=?", id.toString());
+            jdbc.update("DELETE FROM auth_user WHERE id=?", id.toString());
+        }
+        for (var id : ownedRoles) {
+            jdbc.update("DELETE FROM auth_role_permission WHERE role_id=?", id.toString());
+            jdbc.update("DELETE FROM auth_role_warehouse WHERE role_id=?", id.toString());
+            jdbc.update("DELETE FROM auth_role_warehouse_scope WHERE role_id=?", id.toString());
+            jdbc.update("DELETE FROM auth_role WHERE id=?", id.toString());
+        }
         jdbc.update("DELETE FROM outbox_consumption");
         jdbc.update("DELETE FROM outbox_event");
         jdbc.update("DELETE FROM outbox_aggregate_progress");
@@ -233,6 +267,93 @@ class OutboxReconciliationIntegrationTest {
                 jdbc.update("DELETE FROM outbox_original_recovery_request WHERE request_id=?", id);
             }
         }
+    }
+
+    /** 管理员恢复由真实授权仓储判定，旧请求在停用或撤权后同样不可重放。 */
+    @Test
+    void authorizesOriginalRecoveryAndRechecksOldRequests() {
+        UUID role = administratorRole(); UUID administrator = account(); UUID otherAdministrator = account(); UUID ordinary = account();
+        assignRole(administrator, Set.of(role)); assignRole(otherAdministrator, Set.of(role));
+        var event = unpublishedEvents(1).getFirst(); markFailed(event, 6);
+        UUID requestId = UUID.randomUUID(); recoveryRequests.add(requestId);
+        var adminService = recoveryService(administrator);
+        var ordinaryService = recoveryService(ordinary);
+        var denied = assertThrows(StratumException.class, () -> ordinaryService.recover(requestId, UUID.fromString(event.message().eventId())));
+        assertEquals(CommonErrorCode.FORBIDDEN, denied.getErrorCode());
+        assertEquals("FAILED", eventRow(event).status());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_original_recovery_request WHERE request_id=?", Integer.class, requestId.toString()));
+
+        var previousTrace = TraceIdContext.getTraceId();
+        try {
+            TraceIdContext.setTraceId("admin-recovery-test");
+            var receipt = adminService.recover(requestId, UUID.fromString(event.message().eventId()));
+            assertEquals(OutboxOriginalRecoveryRepository.Outcome.RECOVERED, receipt.outcome());
+            assertEquals(administrator, receipt.operatorId()); assertEquals("admin-recovery-test", receipt.traceId());
+            assertEquals(6, receipt.previousFailures().orElseThrow()); assertEquals("PENDING", eventRow(event).status());
+            assertEquals(receipt, adminService.recover(requestId, UUID.fromString(event.message().eventId())));
+        } finally {
+            if (previousTrace.isPresent()) TraceIdContext.setTraceId(previousTrace.orElseThrow()); else TraceIdContext.clear();
+        }
+        unitOfWork.execute(() -> {
+            administration.lock();
+            jdbc.update("UPDATE auth_user SET enabled=0 WHERE id=?", administrator.toString()); return null;
+        });
+        assertEquals(CommonErrorCode.FORBIDDEN, assertThrows(StratumException.class,
+                () -> adminService.recover(requestId, UUID.fromString(event.message().eventId()))).getErrorCode());
+        unitOfWork.execute(() -> {
+            administration.lock();
+            jdbc.update("UPDATE auth_user SET enabled=1 WHERE id=?", administrator.toString());
+            administration.replaceRoleIds(administrator, Set.of()); return null;
+        });
+        assertEquals(CommonErrorCode.FORBIDDEN, assertThrows(StratumException.class,
+                () -> adminService.recover(requestId, UUID.fromString(event.message().eventId()))).getErrorCode());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_original_recovery_request WHERE request_id=?", Integer.class, requestId.toString()));
+        assertEquals("PENDING", eventRow(event).status());
+    }
+
+    /** 应用入口拒绝已有工作单元，避免把恢复结果误报为已提交。 */
+    @Test
+    void applicationRecoveryRejectsExistingTransaction() {
+        UUID administrator = account(); assignRole(administrator, Set.of(administratorRole()));
+        var event = unpublishedEvents(1).getFirst(); markFailed(event, 4);
+        UUID requestId = UUID.randomUUID(); recoveryRequests.add(requestId);
+        var service = recoveryService(administrator);
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> service.recover(requestId, UUID.fromString(event.message().eventId()))));
+        assertEquals("FAILED", eventRow(event).status());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_original_recovery_request WHERE request_id=?", Integer.class, requestId.toString()));
+    }
+
+    /**
+     * 另一事务持有管理锁并撤权时，恢复等待提交后读取最新授权并拒绝。
+     * @throws Exception 并发任务失败或协调超时
+     */
+    @Test
+    void applicationRecoveryWaitsForGuardAndObservesRevocation() throws Exception {
+        UUID role = administratorRole(); UUID administrator = account(); UUID otherAdministrator = account();
+        assignRole(administrator, Set.of(role)); assignRole(otherAdministrator, Set.of(role));
+        var event = unpublishedEvents(1).getFirst(); markFailed(event, 4);
+        UUID requestId = UUID.randomUUID(); recoveryRequests.add(requestId);
+        var service = recoveryService(administrator);
+        var held = new CountDownLatch(1); var started = new CountDownLatch(1); var release = new CountDownLatch(1);
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var owner = workers.submit(() -> unitOfWork.execute(() -> {
+                administration.lock(); administration.replaceRoleIds(administrator, Set.of()); held.countDown();
+                try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+                catch (InterruptedException signal) { Thread.currentThread().interrupt(); throw new IllegalStateException("测试锁等待中断"); }
+                return null;
+            }));
+            try {
+                assertTrue(held.await(5, TimeUnit.SECONDS));
+                var contender = workers.submit(() -> { started.countDown(); return service.recover(requestId, UUID.fromString(event.message().eventId())); });
+                assertTrue(started.await(5, TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.TimeoutException.class, () -> contender.get(300, TimeUnit.MILLISECONDS));
+                release.countDown(); owner.get(5, TimeUnit.SECONDS);
+                var failure = assertThrows(java.util.concurrent.ExecutionException.class, () -> contender.get(5, TimeUnit.SECONDS));
+                assertEquals(CommonErrorCode.FORBIDDEN, assertInstanceOf(StratumException.class, failure.getCause()).getErrorCode());
+            } finally { release.countDown(); }
+        }
+        assertEquals("FAILED", eventRow(event).status());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_original_recovery_request WHERE request_id=?", Integer.class, requestId.toString()));
     }
 
     /** 失败头恢复保留原信封和累计次数；重复请求返回首次回执，异身份不可复用请求。 */
@@ -818,6 +939,54 @@ class OutboxReconciliationIntegrationTest {
             holder.get(5, TimeUnit.SECONDS);
         }
         assertEquals(RECONCILED, scan()); assertEquals("CONSUMED", eventRow(event).status());
+    }
+
+    /**
+     * 在独立事务中准备真实管理员角色，仅登记本测试新建的角色供清理。
+     * @return 管理员角色UUID
+     */
+    private UUID administratorRole() {
+        return unitOfWork.execute(() -> {
+            administration.lock(); roles.registerCatalog();
+            var role = roles.findByCode(AuthorizationRole.ADMINISTRATOR_CODE).orElseGet(() -> {
+                var created = AuthorizationRole.administrator();
+                ownedRoles.add(UUID.fromString(created.getId())); roles.save(created); return created;
+            });
+            return UUID.fromString(role.getId());
+        });
+    }
+
+    /**
+     * 创建随机本地账号，密码只用于创建且及时清除。
+     * @return 已持久化账号UUID
+     */
+    private UUID account() {
+        char[] raw = UUID.randomUUID().toString().toCharArray();
+        try {
+            var account = LocalAccount.create("recovery-it-" + UUID.randomUUID(), passwords.hash(raw), false);
+            UUID id = UUID.fromString(account.getId()); ownedUsers.add(id);
+            unitOfWork.execute(() -> { accounts.insert(account); return null; });
+            return id;
+        } finally { Arrays.fill(raw, '\0'); }
+    }
+
+    /**
+     * 通过真实管理协调仓储在独立事务内分配角色。
+     * @param user 测试账号
+     * @param roleIds 角色集合
+     */
+    private void assignRole(UUID user, Set<UUID> roleIds) {
+        unitOfWork.execute(() -> { administration.lock(); administration.replaceRoleIds(user, roleIds); return null; });
+    }
+
+    /**
+     * 构造服务端可信身份快照，实际管理员资格始终来自权威数据库。
+     * @param user 测试账号UUID
+     * @return 使用真实仓储的应用服务
+     */
+    private OutboxOriginalRecoveryApplicationService recoveryService(UUID user) {
+        CurrentIdentity identity = () -> new CurrentIdentity.Snapshot(user, UUID.randomUUID(), 0);
+        return new OutboxOriginalRecoveryApplicationService(identity, administration, originalRecovery, unitOfWork);
     }
 
     /**
