@@ -18,6 +18,7 @@ import java.util.concurrent.TimeUnit;
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.application.event.OutboxReconciliationApplicationService;
 import com.patrick.stratum.application.event.OutboxRelayControlApplicationService;
+import com.patrick.stratum.application.event.OutboxRelayControlAdministrationService;
 import com.patrick.stratum.application.event.OutboxOriginalRecoveryApplicationService;
 import com.patrick.stratum.application.auth.CurrentIdentity;
 import com.patrick.stratum.common.error.CommonErrorCode;
@@ -312,6 +313,58 @@ class OutboxReconciliationIntegrationTest {
                 () -> adminService.recover(requestId, UUID.fromString(event.message().eventId()))).getErrorCode());
         assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_original_recovery_request WHERE request_id=?", Integer.class, requestId.toString()));
         assertEquals("PENDING", eventRow(event).status());
+    }
+
+    /** 管理入口对每次读取、变更和重复请求重新检查权威管理员资格及观察版本。 */
+    @Test
+    void relayAdministrationRechecksAuthorizationAndVersion() {
+        UUID role = administratorRole(); UUID administrator = account(); UUID otherAdministrator = account(); UUID ordinary = account();
+        assignRole(administrator, Set.of(role)); assignRole(otherAdministrator, Set.of(role));
+        var service = relayAdministration(administrator); var denied = relayAdministration(ordinary);
+        assertEquals(new OutboxRelayControlRepository.State(true, 0), service.current());
+        assertEquals(CommonErrorCode.FORBIDDEN, assertThrows(StratumException.class, denied::current).getErrorCode());
+        assertEquals(CommonErrorCode.FORBIDDEN, assertThrows(StratumException.class, () -> denied.change(0, false)).getErrorCode());
+        assertEquals(new OutboxRelayControlRepository.State(false, 1), service.change(0, false));
+        assertThrows(StratumException.class, () -> service.change(0, true));
+        assertEquals(new OutboxRelayControlRepository.State(false, 1), service.current());
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(service::current));
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> service.change(1, true)));
+        unitOfWork.execute(() -> { administration.lock(); jdbc.update("UPDATE auth_user SET enabled=0 WHERE id=?", administrator.toString()); return null; });
+        assertEquals(CommonErrorCode.FORBIDDEN, assertThrows(StratumException.class, service::current).getErrorCode());
+        unitOfWork.execute(() -> { administration.lock(); jdbc.update("UPDATE auth_user SET enabled=1 WHERE id=?", administrator.toString());
+            administration.replaceRoleIds(administrator, Set.of()); return null; });
+        assertEquals(CommonErrorCode.FORBIDDEN, assertThrows(StratumException.class, () -> service.change(1, false)).getErrorCode());
+        assertEquals(new OutboxRelayControlRepository.State(false, 1), relayAdministration(otherAdministrator).current());
+    }
+
+    /**
+     * 管理员撤权事务持锁期间，暂停操作等待提交并读取撤权后的结果。
+     * @throws Exception 并发任务失败或协调超时
+     */
+    @Test
+    void relayAdministrationWaitsForConcurrentRevocation() throws Exception {
+        UUID role = administratorRole(); UUID administrator = account(); UUID otherAdministrator = account();
+        assignRole(administrator, Set.of(role)); assignRole(otherAdministrator, Set.of(role));
+        var service = relayAdministration(administrator);
+        var held = new CountDownLatch(1); var started = new CountDownLatch(1); var release = new CountDownLatch(1);
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var owner = workers.submit(() -> unitOfWork.execute(() -> {
+                administration.lock(); administration.replaceRoleIds(administrator, Set.of()); held.countDown();
+                try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+                catch (InterruptedException signal) { Thread.currentThread().interrupt(); throw new IllegalStateException("测试锁等待中断"); }
+                return null;
+            }));
+            try {
+                assertTrue(held.await(5, TimeUnit.SECONDS));
+                var contender = workers.submit(() -> { started.countDown(); return service.change(0, false); });
+                assertTrue(started.await(5, TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.TimeoutException.class, () -> contender.get(300, TimeUnit.MILLISECONDS));
+                release.countDown(); owner.get(5, TimeUnit.SECONDS);
+                var failure = assertThrows(java.util.concurrent.ExecutionException.class, () -> contender.get(5, TimeUnit.SECONDS));
+                assertEquals(CommonErrorCode.FORBIDDEN, assertInstanceOf(StratumException.class, failure.getCause()).getErrorCode());
+            } finally { release.countDown(); }
+        }
+        assertEquals(new OutboxRelayControlRepository.State(true, 0), relayAdministration(otherAdministrator).current());
     }
 
     /** 应用入口拒绝已有工作单元，避免把恢复结果误报为已提交。 */
@@ -1138,6 +1191,17 @@ class OutboxReconciliationIntegrationTest {
     private OutboxOriginalRecoveryApplicationService recoveryService(UUID user) {
         CurrentIdentity identity = () -> new CurrentIdentity.Snapshot(user, UUID.randomUUID(), 0);
         return new OutboxOriginalRecoveryApplicationService(identity, administration, originalRecovery, unitOfWork);
+    }
+
+    /**
+     * 为指定身份构造使用真实管理协调与共享状态仓储的入口。
+     * @param user 测试账号UUID
+     * @return 管理入口
+     */
+    private OutboxRelayControlAdministrationService relayAdministration(UUID user) {
+        CurrentIdentity identity = () -> new CurrentIdentity.Snapshot(user, UUID.randomUUID(), 0);
+        return new OutboxRelayControlAdministrationService(identity, administration,
+                application.getBean(OutboxRelayControlRepository.class), unitOfWork);
     }
 
     /**
