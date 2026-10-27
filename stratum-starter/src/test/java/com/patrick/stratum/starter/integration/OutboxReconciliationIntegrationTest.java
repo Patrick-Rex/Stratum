@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit;
 
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.application.event.OutboxReconciliationApplicationService;
+import com.patrick.stratum.application.event.OutboxRelayControlApplicationService;
 import com.patrick.stratum.application.event.OutboxOriginalRecoveryApplicationService;
 import com.patrick.stratum.application.auth.CurrentIdentity;
 import com.patrick.stratum.common.error.CommonErrorCode;
@@ -705,6 +706,22 @@ class OutboxReconciliationIntegrationTest {
         }
         assertThrows(StratumException.class, () -> unitOfWork.execute(() -> control.change(0, true)));
         assertEquals(new OutboxRelayControlRepository.State(false, 1), control.current());
+    }
+
+    /** 应用入口拒绝外层事务，已提交准入遵循数据库共享版本与暂停状态。 */
+    @Test
+    void appliesRelayControlThroughIndependentApplicationUnits() {
+        var service = application.getBean(OutboxRelayControlApplicationService.class);
+        assertEquals(new OutboxRelayControlRepository.State(true, 0), service.current());
+        assertEquals(new OutboxRelayControlRepository.Admission(false, 0), service.tryAdmit());
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(service::current));
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> service.change(0, false)));
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(service::tryAdmit));
+        assertEquals(new OutboxRelayControlRepository.State(false, 1), service.change(0, false));
+        assertEquals(new OutboxRelayControlRepository.Admission(true, 1), service.tryAdmit());
+        assertThrows(StratumException.class, () -> service.change(0, true));
+        assertEquals(new OutboxRelayControlRepository.State(true, 2), service.change(1, true));
+        assertEquals(new OutboxRelayControlRepository.Admission(false, 2), service.tryAdmit());
     }
 
     /** 回滚不保存变更；版本上限不回绕且旧版本不能借相同目标绕过比较。 */
