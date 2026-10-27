@@ -1419,3 +1419,11 @@ Quartz驱动在Relay计划登记及到期查询前核验专用调度器和共享
 ## NODE-E03.5c5c Relay进程故障与暂停
 
 1项独占MariaDB、Redis、RabbitMQ和Quartz进程级集成测试通过，零失败、错误或跳过；独立完整JVM领取事件后在发送前被强制结束，存活实例在共享暂停下等待真实两分钟租约到期，再恢复并以原事件身份发布。验证禁用实例隔离和旧版本拒绝；不声称覆盖已发送后确认丢失。自有子进程、临时目录与独占数据库已退出或清理。E03.5c完成，自动监听组合继续E03.5d。
+
+## NODE-E03.5d 周期Relay真实消费及运行
+
+1项独占MariaDB、Redis、RabbitMQ与Quartz组合测试通过，零失败、错误或跳过；两个启用实例和一个禁用实例与真实自动监听器协作，验证初始暂停、同聚合顺序留痕、缓存版本屏障、恢复及监听器退出。测试使用独占数据库和专用Broker空间，监听关闭后清理自己的拓扑与缓存键。结合E03.5c进程故障验收，E03.5完成；未重新执行全工程回归。
+
+本地运行在既有数据库、Redis、认证和专用Broker配置就绪后，可设置 `STRATUM_JOBS_ENABLED=true`、`STRATUM_JOBS_RELAY_ENABLED=true`、`STRATUM_MQ_ENABLED=true` 和 `STRATUM_MQ_CONSUMER_ENABLED=true`。同集群 `STRATUM_JOBS_NAME` 和Relay周期配置必须一致；默认UTC每分钟、批次与对账各16、任务时限30秒，可分别用Spring属性 `stratum.jobs.relay.cron`、`batch-size`、`reconciliation-limit`、`timeout-sec` 配置。变更持久Quartz目标需先停用并规划迁移，启动不会覆盖已有不一致定义。
+
+共享状态初始暂停，实例启动不会自动恢复；经管理来源及当前启用管理员认证，以版本1 `GET /api/management/outbox/relay` 获取 `revision` 和 `paused`，随后 `PUT` 提交观察版本及目标。旧版本409须重新查询；暂停不取消已准入批次。停用Relay实例不加入专用调度组，普通任务仍可工作。恢复状态下即使没有事件也会保留每次计划的任务历史，默认约1440条/天且不含重试，系统不自动清理。停止本地Starter使用Ctrl+C并等待线程关闭；不删除原有数据库或Broker数据。

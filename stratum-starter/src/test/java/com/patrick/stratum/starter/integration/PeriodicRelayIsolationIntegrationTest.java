@@ -21,6 +21,8 @@ import com.patrick.stratum.application.job.JobExecutionApplicationService;
 import com.patrick.stratum.application.job.JobHandler;
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.common.error.StratumException;
+import com.patrick.stratum.common.base.cache.CacheInvalidation;
+import com.patrick.stratum.common.base.cache.VersionedCache;
 import com.patrick.stratum.domain.event.OutboxConsumer;
 import com.patrick.stratum.domain.event.OutboxConsumptionRepository.Group;
 import com.patrick.stratum.domain.event.OutboxMessage;
@@ -33,6 +35,7 @@ import com.patrick.stratum.domain.job.JobExecutionRepository.Submission;
 import com.patrick.stratum.infrastructure.job.SchedulerConfiguration;
 import com.patrick.stratum.infrastructure.messaging.RabbitMessagingConfiguration;
 import com.patrick.stratum.infrastructure.messaging.RabbitOutboxPublisherConfiguration;
+import com.patrick.stratum.infrastructure.messaging.RabbitOutboxConsumerConfiguration;
 import com.patrick.stratum.job.JobRuntimeConfiguration;
 import com.patrick.stratum.job.OutboxRelayJobConfiguration;
 import com.patrick.stratum.job.QuartzTriggerConfiguration;
@@ -52,6 +55,9 @@ import org.quartz.SchedulerException;
 import org.quartz.listeners.JobListenerSupport;
 import org.springframework.amqp.rabbit.connection.CachingConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
+import org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
@@ -66,6 +72,7 @@ import org.springframework.test.context.junit.jupiter.SpringExtension;
 import tools.jackson.databind.json.JsonMapper;
 
 import static com.patrick.stratum.infrastructure.messaging.RabbitTopologyConfiguration.ERP_QUEUE;
+import static com.patrick.stratum.infrastructure.messaging.RabbitTopologyConfiguration.CACHE_QUEUE;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -317,6 +324,68 @@ class PeriodicRelayIsolationIntegrationTest {
         }
         await().atMost(Duration.ofSeconds(20)).until(() -> "SENT".equals(status(event)));
         assertEquals(event.eventId(), readMessage()); assertTrue(failures(event) >= 6);
+    }
+
+    /**
+     * 周期Relay通过真实Broker和自动监听完成顺序留痕及缓存版本屏障。
+     * @throws Exception Quartz或监听器退出失败
+     */
+    @Test
+    void automaticallyConsumesOrderedEventsAndAppliesCacheFence() throws Exception {
+        publisher.release.countDown();
+        var cache = parent.getBean(VersionedCache.class); var redis = parent.getBean(StringRedisTemplate.class);
+        var policy = new VersionedCache.Policy(Duration.ofMinutes(5), Duration.ZERO);
+        String key = "biz:erp:periodic:" + UUID.randomUUID();
+        var pair = events(2);
+        String payload = parent.getBean(JsonMapper.class).writeValueAsString(new CacheInvalidation(key, 2, policy.ttl().toMillis(), 0));
+        var cacheEvent = new OutboxMessage(UUID.randomUUID().toString(), CacheInvalidation.EVENT_TYPE, UUID.randomUUID().toString(),
+                Instant.parse("2026-10-26T10:00:00.123456Z"), payload, "periodic-relay-test");
+        work.execute(() -> { outbox.append(cacheEvent); return null; });
+        var listeners = new AnnotationConfigApplicationContext(); children.add(listeners);
+        try {
+            assertTrue(cache.putIfNewer(key, new VersionedCache.Value(1, "old"), policy));
+            listeners.setParent(parent);
+            listeners.getEnvironment().getPropertySources().addFirst(new MapPropertySource("periodic-consumer-test", Map.of(
+                    "stratum.messaging.enabled", true, "stratum.messaging.consumer.enabled", true)));
+            listeners.register(RabbitOutboxConsumerConfiguration.class); listeners.refresh();
+            var pool = listeners.getBean("rabbitConsumerExecutor", ThreadPoolTaskExecutor.class).getThreadPoolExecutor();
+            assertTrue(listeners.getBean("erpOutboxListener", SimpleMessageListenerContainer.class).isRunning());
+            assertTrue(listeners.getBean("cacheOutboxListener", SimpleMessageListenerContainer.class).isRunning());
+            var first = instance(true); var second = instance(true); var disabled = instance(false);
+            assertFalse(disabled.containsLocalBean("relayJobScheduler"));
+            var initial = control.current(); assertTrue(initial.paused());
+            var tick = new CountDownLatch(1); watch(first.getBean("relayJobScheduler", Scheduler.class), tick);
+            watch(second.getBean("relayJobScheduler", Scheduler.class), tick); assertTrue(tick.await(15, TimeUnit.SECONDS));
+            assertEquals("PENDING", status(pair.getFirst())); assertEquals("PENDING", status(cacheEvent));
+            assertEquals(0, receiptCount(pair.getFirst()) + receiptCount(pair.get(1)) + receiptCount(cacheEvent));
+            var active = control.change(initial.revision(), false);
+            await().atMost(Duration.ofSeconds(40)).until(() -> receiptCount(pair.getFirst()) == 1
+                    && receiptCount(pair.get(1)) == 1 && receiptCount(cacheEvent) == 1);
+            var paused = control.change(active.revision(), true);
+            assertTrue(paused.paused());
+            assertEquals(List.of(1L, 2L), jdbc.queryForList(
+                    "SELECT event_sequence FROM outbox_consumption WHERE aggregate_id=? ORDER BY event_sequence", Long.class, pair.getFirst().aggregateId()));
+            assertEquals("ERP_AUDIT", jdbc.queryForObject("SELECT consumer_group FROM outbox_consumption WHERE event_id=?", String.class, pair.getFirst().eventId()));
+            assertEquals("CACHE_INVALIDATION", jdbc.queryForObject("SELECT consumer_group FROM outbox_consumption WHERE event_id=?", String.class, cacheEvent.eventId()));
+            assertNull(redis.opsForValue().get(key));
+            assertFalse(cache.putIfNewer(key, new VersionedCache.Value(1, "late"), policy));
+            assertTrue(cache.putIfNewer(key, new VersionedCache.Value(3, "new"), policy));
+            listeners.close(); assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, admin.getQueueInfo(ERP_QUEUE).getMessageCount());
+            assertEquals(0, admin.getQueueInfo(CACHE_QUEUE).getMessageCount());
+        } finally {
+            try { listeners.close(); }
+            finally { redis.delete(List.of(key, "null:" + key.substring(4), "version:" + key.substring(4))); }
+        }
+    }
+
+    /**
+     * 读取本测试事件的真实消费凭据数。
+     * @param event 本次独占库事件
+     * @return 消费记录数
+     */
+    private int receiptCount(OutboxMessage event) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM outbox_consumption WHERE event_id=?", Integer.class, event.eventId());
     }
 
     /**
