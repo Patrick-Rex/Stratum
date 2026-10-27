@@ -588,6 +588,26 @@ class OutboxReconciliationIntegrationTest {
         assertThrows(StratumException.class, () -> unitOfWork.execute(() -> originalRecovery.recover(other)));
     }
 
+    /**
+     * 共享控制表初始暂停，使用连接私有临时表验证单例与状态约束，不修改实际控制行。
+     * @throws Exception 数据库断言失败
+     */
+    @Test
+    void createsPausedSingletonRelayControl() throws Exception {
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM flyway_schema_history WHERE version='202610270005' AND success=1", Integer.class));
+        var row = jdbc.queryForMap("SELECT singleton_id,paused,revision FROM outbox_relay_control");
+        assertEquals(1, ((Number) row.get("singleton_id")).intValue());
+        assertTrue((Boolean) row.get("paused")); assertEquals(0L, ((Number) row.get("revision")).longValue());
+        try (var connection = jdbc.getDataSource().getConnection(); var statement = connection.createStatement()) {
+            statement.execute("CREATE TEMPORARY TABLE test_relay_control LIKE outbox_relay_control");
+            statement.executeUpdate("INSERT INTO test_relay_control VALUES (1,1,0)");
+            assertThrows(SQLException.class, () -> statement.executeUpdate("INSERT INTO test_relay_control VALUES (2,1,0)"));
+            assertThrows(SQLException.class, () -> statement.executeUpdate("UPDATE test_relay_control SET paused=2 WHERE singleton_id=1"));
+            assertThrows(SQLException.class, () -> statement.executeUpdate("UPDATE test_relay_control SET revision=-1 WHERE singleton_id=1"));
+            assertEquals(1, statement.executeUpdate("UPDATE test_relay_control SET paused=0,revision=1 WHERE singleton_id=1"));
+        }
+    }
+
     /** 过期租约在真实凭据与进度一致时收敛，保留旧状态/失败次数，迟到确认不能覆盖。 */
     @Test
     void reconcilesExpiredLeaseAndFencesLateConfirmation() {
