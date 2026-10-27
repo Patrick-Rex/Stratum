@@ -64,7 +64,11 @@
 
 `POST /api/management/outbox/events/{eventId}/recoveries` 使用版本1，`Idempotency-Key` 为请求UUID，不接受操作者或替换事件正文。每次请求均验证当前启用管理员；同一请求UUID绑定原事件和首次操作者，重复调用返回首次回执，绑定不符返回409。`RECOVERED` 表示事件可重新领取，`ALREADY_CONSUMED` 表示已有匹配消费凭据；不代表发布确认。缺少或无效Access返回401，非管理员返回403，不存在返回404，非法参数或版本返回400。成功响应禁止缓存。网关对该路径沿用管理CIDR，直连Starter时仍执行认证和管理员授权。
 
-## 7.2 异步任务接口约束
+## 7.2 Relay共享暂停管理
+
+版本1的 `GET /api/management/outbox/relay` 返回 `paused` 和 `revision`；`PUT` 接收非负观察版本 `revision` 及布尔 `paused`，返回已提交状态。每次均核验当前启用管理员；旧版本返回409，相同版本及目标不递增版本。暂停不取消已准入批次。匿名或无效Access返回401，非管理员返回403，非法参数及接口版本返回400；成功响应禁止缓存。网关对路径沿用管理CIDR，直连Starter仍认证和授权。
+
+## 7.3 异步任务接口约束
 
 - 触发后台任务的接口必须立即返回 taskId
 - 任务状态查询接口必须返回 status、progress、lastError、traceId

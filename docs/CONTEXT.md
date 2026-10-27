@@ -10,8 +10,8 @@
 
 ```
 阶段：Phase E（消息与任务）
-当前节点：NODE-E03.5c5b（待开始）
-上次会话日期：2026-10-27（NODE-E03.5c5a 验收）
+当前节点：NODE-E03.5c5c（待开始）
+上次会话日期：2026-10-27（NODE-E03.5c5b 验收）
 项目状态：NODE-B01 已完成，Domain 核心抽象已建立（AggregateRoot、Entity、ValueObject、Repository、DomainEvent），domain 模块直接声明 common 依赖，源码无框架导入；根构建统一配置 Lombok 编译期依赖；Phase A 与 Phase B 已完成；Phase C 已完成；Phase D 非部署范围已完成，D04.2部署暂缓
 ```
 
@@ -268,12 +268,13 @@
 | NODE-E03.5c4c4 | 验证周期Relay暂停与顺序组合 | 2026-10-27 | 1项真实MariaDB、Redis、RabbitMQ和Quartz组合测试通过，零失败、错误或跳过；覆盖双实例暂停、在途收尾和顺序 |
 | NODE-E03.5c4d | 验证Relay调度隔离与故障活性 | 2026-10-27 | 3项真实MariaDB、Redis、RabbitMQ与Quartz组合测试通过，零失败、错误或跳过；覆盖重启、暂停与真实拒连恢复 |
 | NODE-E03.5c5a | 实现Relay暂停管理员授权 | 2026-10-27 | 43项独占MariaDB集成测试通过，零失败、错误或跳过；验证权限、版本及并发撤权 |
+| NODE-E03.5c5b | 接入Relay暂停管理接口 | 2026-10-27 | 3项真实MariaDB、Redis与HTTP集成测试通过，零失败、错误或跳过；覆盖认证、撤权、版本及OpenAPI |
 
 ---
 
 ## 3. 待执行节点（按顺序）
 
-下一节点为 **NODE-E03.5c5b**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
+下一节点为 **NODE-E03.5c5c**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
 
 ---
 
