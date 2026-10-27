@@ -36,6 +36,7 @@ import com.patrick.stratum.infrastructure.messaging.RabbitOutboxPublisherConfigu
 import com.patrick.stratum.job.JobRuntimeConfiguration;
 import com.patrick.stratum.job.OutboxRelayJobConfiguration;
 import com.patrick.stratum.job.QuartzTriggerConfiguration;
+import com.patrick.stratumtest.job.RelayCrashProcess;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -257,6 +258,39 @@ class PeriodicRelayIsolationIntegrationTest {
         control.change(paused.revision(), false);
         await().atMost(Duration.ofSeconds(35)).until(() -> "SENT".equals(status(waiting)));
         assertEquals(waiting.eventId(), readMessage());
+    }
+
+    /**
+     * 独立JVM真实领取事件后死亡，暂停跨实例保持至真实租约到期；恢复后存活节点发布原事件。
+     * @throws Exception 子进程、Quartz或Broker操作失败
+     */
+    @Test
+    void recoversOriginalEventAfterRelayProcessDiesWhilePaused() throws Exception {
+        publisher.release.countDown(); var event = events(1).getFirst();
+        var initial = control.current(); assertTrue(initial.paused());
+        try (var child = RelayCrashProcess.start(database.jdbcUrl(), database.username(), database.password(), schedulerName)) {
+            var active = control.change(initial.revision(), false);
+            await().atMost(Duration.ofSeconds(50)).until(() -> {
+                assertTrue(child.isAlive(), "独立Relay进程提前退出，检查本次临时进程日志");
+                return child.started(event.eventId()) && "PROCESSING".equals(status(event));
+            });
+            String lease = jdbc.queryForObject("SELECT lease_token FROM outbox_event WHERE event_id=?", String.class, event.eventId());
+            assertNotNull(lease); var paused = control.change(active.revision(), true);
+            var peer = instance(true); var disabled = instance(false);
+            assertFalse(disabled.containsLocalBean("relayJobScheduler"));
+            child.crash(); assertFalse(child.isAlive());
+            var tick = new CountDownLatch(1); watch(peer.getBean("relayJobScheduler", Scheduler.class), tick);
+            assertTrue(tick.await(30, TimeUnit.SECONDS)); assertEquals(paused, control.current());
+            assertThrows(StratumException.class, () -> control.change(active.revision(), false));
+            assertEquals("PROCESSING", status(event));
+            assertEquals(lease, jdbc.queryForObject("SELECT lease_token FROM outbox_event WHERE event_id=?", String.class, event.eventId()));
+            await().atMost(Duration.ofSeconds(140)).until(() -> Boolean.TRUE.equals(jdbc.queryForObject(
+                    "SELECT lease_until <= UTC_TIMESTAMP(6) FROM outbox_event WHERE event_id=?", Boolean.class, event.eventId())));
+            assertEquals("PROCESSING", status(event)); assertEquals(paused, control.current());
+            control.change(paused.revision(), false);
+            await().atMost(Duration.ofSeconds(80)).until(() -> "SENT".equals(status(event)));
+            assertEquals(event.eventId(), readMessage());
+        }
     }
 
     /**
