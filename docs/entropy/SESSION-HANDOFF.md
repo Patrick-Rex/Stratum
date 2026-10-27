@@ -15,6 +15,8 @@
 - unresolved: 原事件恢复HTTP路径及网关来源限制待用户答复；E04异步任务用途及取消边界待用户答复；部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
 - nextNode: NODE-E03.5b5b。
 - 当前节点验收后审查、提交、推送；完成后继续下一节点，不重复请求授权。
-- CONTEXT 已更新。共享 Docker 容器保持运行，仅清理本轮创建的测试资源；测试 JVM 已退出；独立测试容器 stratum-integration-mariadb / stratum-integration-redis 暂留供连续验证，会话结束前清理。连接状态在本机临时目录 stratum-integration-state.json，不提交凭据。
+- CONTEXT 已更新。共享 Docker 容器保持运行；本次独立MariaDB、Redis容器及专用RabbitMQ vhost和账号已清理，测试JVM已退出，临时连接凭据文件已删除。后续真实集成测试须重新创建隔离资源。
 
-- 发布失败恢复与集群暂停策略已由用户确认；周期Relay草稿保存在临时目录，路径见stratum-E03.5-draft-location.txt。测试容器与隔离RabbitMQ资源暂留，最终仅清理本轮资源。
+- 发布失败恢复与集群暂停策略已由用户确认；周期Relay草稿保存在临时目录，路径见stratum-E03.5-draft-location.txt。测试资源已清理；周期草稿仅作参考，不能直接提交。
+
+- 后续集群调度须验证共享状态版本及批次准入、禁用实例不会吞掉周期触发；旧二进制不具备新协议时不能宣称混合版本兼容。对账目前仅支持显式有界调用，周期自动执行尚未接入。
