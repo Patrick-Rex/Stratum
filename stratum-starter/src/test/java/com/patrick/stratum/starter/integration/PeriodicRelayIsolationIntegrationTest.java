@@ -1,6 +1,8 @@
 package com.patrick.stratum.starter.integration;
 
 import java.sql.SQLException;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -29,6 +31,8 @@ import com.patrick.stratum.domain.event.OutboxRepository;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository.Submission;
 import com.patrick.stratum.infrastructure.job.SchedulerConfiguration;
+import com.patrick.stratum.infrastructure.messaging.RabbitMessagingConfiguration;
+import com.patrick.stratum.infrastructure.messaging.RabbitOutboxPublisherConfiguration;
 import com.patrick.stratum.job.JobRuntimeConfiguration;
 import com.patrick.stratum.job.OutboxRelayJobConfiguration;
 import com.patrick.stratum.job.QuartzTriggerConfiguration;
@@ -58,6 +62,7 @@ import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
+import tools.jackson.databind.json.JsonMapper;
 
 import static com.patrick.stratum.infrastructure.messaging.RabbitTopologyConfiguration.ERP_QUEUE;
 import static org.awaitility.Awaitility.await;
@@ -157,6 +162,8 @@ class PeriodicRelayIsolationIntegrationTest {
                 .noneMatch(thread -> thread.isAlive() && schedulerIds.stream().anyMatch(id -> thread.getName().contains(id))));
         if (!verified) return;
         try {
+            var state = control.current();
+            if (!state.paused()) control.change(state.revision(), true);
             jdbc.update("DELETE FROM job_replay_request"); jdbc.update("DELETE FROM dead_job");
             jdbc.update("DELETE FROM job_attempt"); jdbc.update("DELETE FROM job_execution");
             jdbc.update("DELETE FROM outbox_consumption"); jdbc.update("DELETE FROM outbox_event");
@@ -217,6 +224,80 @@ class PeriodicRelayIsolationIntegrationTest {
             await().atMost(Duration.ofSeconds(15)).until(() -> "SENT".equals(status(pair.get(1))));
             assertEquals(pair.get(1).eventId(), readMessage());
         } finally { publisher.release.countDown(); }
+    }
+
+    /**
+     * 关闭一个启用实例并重建后，持久暂停不能被启动配置覆盖，剩余启用实例恢复实际发布。
+     * @throws Exception Quartz或Broker操作失败
+     */
+    @Test
+    void keepsPauseAcrossRestartAndAllowsEnabledPeerToProgress() throws Exception {
+        publisher.release.countDown();
+        var first = instance(true); var second = instance(true); var disabled = instance(false);
+        var relayOne = first.getBean("relayJobScheduler", Scheduler.class);
+        var relayTwo = second.getBean("relayJobScheduler", Scheduler.class);
+        String disabledId = disabled.getBean(Scheduler.class).getSchedulerInstanceId();
+        assertNotEquals(disabledId, relayOne.getSchedulerInstanceId());
+        assertNotEquals(disabledId, relayTwo.getSchedulerInstanceId());
+        var initial = control.current(); var active = control.change(initial.revision(), false);
+        var original = events(1).getFirst();
+        await().atMost(Duration.ofSeconds(20)).until(() -> "SENT".equals(status(original)));
+        assertEquals(original.eventId(), readMessage());
+        var paused = control.change(active.revision(), true);
+        first.close();
+        var restarted = instance(true);
+        assertEquals(paused, control.current());
+        assertThrows(StratumException.class, () -> control.change(active.revision(), false));
+        assertFalse(disabled.containsLocalBean("relayJobScheduler"));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM STRATUM_QRTZ_SCHEDULER_STATE WHERE SCHED_NAME=? AND INSTANCE_NAME=?",
+                Integer.class, relayTwo.getSchedulerName(), disabledId));
+        var waiting = events(1).getFirst();
+        var tick = new CountDownLatch(1); watch(relayTwo, tick); watch(restarted.getBean("relayJobScheduler", Scheduler.class), tick);
+        assertTrue(tick.await(15, TimeUnit.SECONDS)); assertEquals("PENDING", status(waiting));
+        control.change(paused.revision(), false);
+        await().atMost(Duration.ofSeconds(35)).until(() -> "SENT".equals(status(waiting)));
+        assertEquals(waiting.eventId(), readMessage());
+    }
+
+    /**
+     * 实际连接拒绝超过发布失败阈值仍可重试，Broker恢复后沿用原事件身份。
+     * @throws Exception 本机端口或Broker操作失败
+     */
+    @Test
+    void keepsRetryingActualConnectionFailureUntilBrokerRecovers() throws Exception {
+        publisher.release.countDown(); var event = events(1).getFirst();
+        try (var socket = new Socket()) {
+            socket.bind(new InetSocketAddress("127.0.0.1", 0));
+            try (var faulty = faultContext(socket.getLocalPort())) {
+                publisher.override = faulty.getBean(OutboxPublisher.class);
+                try {
+                    instance(true); var state = control.current(); control.change(state.revision(), false);
+                    for (int count = 1; count <= 6; count++) {
+                        int expected = count;
+                        await().atMost(Duration.ofSeconds(15)).until(() -> failures(event) >= expected);
+                        assertEquals("PENDING", status(event));
+                        jdbc.update("UPDATE outbox_event SET next_retry_at='2000-01-01 00:00:00' WHERE event_id=?", event.eventId());
+                    }
+                } finally { publisher.override = null; }
+            }
+        }
+        await().atMost(Duration.ofSeconds(20)).until(() -> "SENT".equals(status(event)));
+        assertEquals(event.eventId(), readMessage()); assertTrue(failures(event) >= 6);
+    }
+
+    /**
+     * 创建只用于本机拒连故障的独立发布上下文，不更改真实Broker。
+     * @param port 已绑定但未监听的本机端口
+     * @return 调用方负责关闭的上下文
+     */
+    private AnnotationConfigApplicationContext faultContext(int port) {
+        var properties = RabbitIntegrationSupport.connectionProperties(); properties.put("stratum.messaging.port", port);
+        var context = new AnnotationConfigApplicationContext();
+        context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("periodic-publisher-fault", properties));
+        context.registerBean(JsonMapper.class, () -> JsonMapper.builder().build());
+        context.register(RabbitMessagingConfiguration.class, RabbitOutboxPublisherConfiguration.class);
+        try { context.refresh(); return context; }
+        catch (RuntimeException failure) { context.close(); throw failure; }
     }
 
     /**
@@ -307,6 +388,15 @@ class PeriodicRelayIsolationIntegrationTest {
     private String status(OutboxMessage event) { return jdbc.queryForObject("SELECT status FROM outbox_event WHERE event_id=?", String.class, event.eventId()); }
 
     /**
+     * 读取原事件累计发布失败次数。
+     * @param event 本测试事件
+     * @return 当前失败次数
+     */
+    private int failures(OutboxMessage event) {
+        return jdbc.queryForObject("SELECT retry_count FROM outbox_event WHERE event_id=?", Integer.class, event.eventId());
+    }
+
+    /**
      * 读取本用例普通任务状态。
      * @param id 任务UUID
      * @return 持久化状态
@@ -328,6 +418,7 @@ class PeriodicRelayIsolationIntegrationTest {
         private final AtomicBoolean first = new AtomicBoolean(true);
         private final CountDownLatch entered = new CountDownLatch(1);
         private final CountDownLatch release = new CountDownLatch(1);
+        private volatile OutboxPublisher override;
         /**
          * 包装实际生产发布器，不改变消息身份。
          * @param delegate 当前专用Broker发布端口
@@ -340,7 +431,7 @@ class PeriodicRelayIsolationIntegrationTest {
                 try { if (!release.await(20, TimeUnit.SECONDS)) throw new IllegalStateException("测试发布等待超时"); }
                 catch (InterruptedException signal) { Thread.currentThread().interrupt(); return PublishResult.UNAVAILABLE; }
             }
-            return delegate.publish(delivery);
+            var selected = override; return (selected == null ? delegate : selected).publish(delivery);
         }
     }
 
