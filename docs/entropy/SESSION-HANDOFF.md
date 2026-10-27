@@ -13,9 +13,11 @@
   - `stratum-starter/src/test/java/com/patrick/stratum/starter/integration/OutboxReconciliationIntegrationTest.java`
 
 - validations: Application23项单元及41项独占MariaDB集成测试通过，零失败、错误或跳过；覆盖提交失败、外层事务及实际状态。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
-- unresolved: E04异步任务用途及取消边界待用户答复；部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
+- unresolved: E03.5c4的Quartz调度隔离方案及E04异步任务用途与取消边界待用户答复；部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
 - nextNode: NODE-E03.5c4。
 - 当前节点验收后审查、提交、推送；完成后继续下一节点，不重复请求授权。
-- CONTEXT 已更新。共享 Docker 容器保持运行，仅清理本轮创建的测试资源；测试 JVM 已退出；独立测试容器 stratum-integration-mariadb / stratum-integration-redis 暂留供连续验证，会话结束前清理。连接状态在本机临时目录 stratum-integration-state.json，不提交凭据。
+- CONTEXT 已更新。用户原有Docker容器保持运行；本轮独立MariaDB、Redis容器及RabbitMQ专用vhost/账号已清理，测试JVM已退出，临时连接凭据文件已删除。后续真实集成测试须重新创建隔离资源。
 
-- 周期Relay草稿路径见临时目录stratum-E03.5-draft-location.txt，仅供参考；独立数据库、Redis容器及RabbitMQ测试空间暂留，结束前清理。
+- 周期Relay草稿路径见临时目录stratum-E03.5-draft-location.txt，仅供参考；本轮测试资源已清理。
+
+- 当前任务停在E03.5c4：用户已确认共享暂停规则，独立Relay Quartz调度组方案待用户答复；不将禁用节点吞掉共享触发视作验收通过。
