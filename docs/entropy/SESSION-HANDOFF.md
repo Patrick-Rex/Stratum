@@ -19,3 +19,5 @@
 - CONTEXT 已更新。共享 Docker 容器保持运行，仅清理本轮创建的测试资源；测试 JVM 已退出；独立测试容器 stratum-integration-mariadb / stratum-integration-redis 暂留供连续验证，会话结束前清理。连接状态在本机临时目录 stratum-integration-state.json，不提交凭据。
 
 - 发布失败恢复与集群暂停策略已由用户确认；周期Relay草稿保存在临时目录，路径见stratum-E03.5-draft-location.txt。测试容器与隔离RabbitMQ资源暂留，最终仅清理本轮资源。
+
+- 文档维护：明确发布失败阈值使用现有累计失败次数（包括临时故障）；E03.5b2仍在实现和验收中，不计为已完成。
