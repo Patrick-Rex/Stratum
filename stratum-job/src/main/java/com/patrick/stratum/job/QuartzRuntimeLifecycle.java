@@ -21,6 +21,7 @@ import org.springframework.context.SmartLifecycle;
 public final class QuartzRuntimeLifecycle extends JobListenerSupport implements SmartLifecycle {
     private final List<Scheduler> schedulers;
     private final JobTaskExecutor executor;
+    private final boolean startRelay;
     private final ReentrantLock completion = new ReentrantLock();
     private final Condition changed = completion.newCondition();
     private volatile boolean running;
@@ -29,13 +30,17 @@ public final class QuartzRuntimeLifecycle extends JobListenerSupport implements 
      * 绑定本实例全部调度器及共享执行器，不在构造中启动线程。
      * @param schedulers 普通调度器及可选的Relay调度器
      * @param executor 私有共享工作执行器
-     * @throws IllegalArgumentException 调度器列表为空
+     * @param startRelay 是否在目标核验后启动第二个Relay调度器
+     * @throws IllegalArgumentException 调度器数量与启动要求不一致
+     * @throws NullPointerException 调度器列表或执行器为空
      * @apiNote 示例：由Spring注入普通调度器和可选Relay调度器。
      */
-    public QuartzRuntimeLifecycle(List<Scheduler> schedulers, JobTaskExecutor executor) {
+    public QuartzRuntimeLifecycle(List<Scheduler> schedulers, JobTaskExecutor executor, boolean startRelay) {
         this.schedulers = List.copyOf(schedulers);
-        if (this.schedulers.isEmpty()) throw new IllegalArgumentException("必须绑定至少一个调度器");
-        this.executor = java.util.Objects.requireNonNull(executor);
+        if (this.schedulers.isEmpty() || this.schedulers.size() > 2 || (startRelay && this.schedulers.size() != 2)) {
+            throw new IllegalArgumentException("调度器数量与Relay启动要求不一致");
+        }
+        this.executor = java.util.Objects.requireNonNull(executor); this.startRelay = startRelay;
     }
 
     /** {@inheritDoc} */
@@ -58,9 +63,14 @@ public final class QuartzRuntimeLifecycle extends JobListenerSupport implements 
     @Override
     public boolean isRunning() { return running; }
 
-    /** {@inheritDoc} */
+    /** 在固定目标核验完成后启动已配置Relay调度器，不改变共享暂停状态。 */
     @Override
-    public void start() { running = true; }
+    public void start() {
+        if (running) return;
+        running = true;
+        try { if (startRelay) schedulers.getLast().start(); }
+        catch (SchedulerException failure) { running = false; throw new IllegalStateException("Relay调度器启动失败", failure); }
+    }
 
     /**
      * 两组Scheduler先进入standby并中断借用线程，再关闭共享执行器并有限等待代理完成。

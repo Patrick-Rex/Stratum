@@ -15,14 +15,18 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.patrick.stratum.application.event.OutboxRelayControlApplicationService;
+import com.patrick.stratum.application.event.OutboxRelayApplicationService;
 import com.patrick.stratum.application.job.JobExecutionApplicationService;
 import com.patrick.stratum.application.job.JobHandler;
 import com.patrick.stratum.application.transaction.UnitOfWork;
+import com.patrick.stratum.domain.event.OutboxPublisher;
+import com.patrick.stratum.domain.event.OutboxRelayRepository;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository.Submission;
 import com.patrick.stratum.domain.job.JobRecoveryRepository.ReplayRequest;
 import com.patrick.stratum.infrastructure.job.SchedulerConfiguration;
 import com.patrick.stratum.job.JobRuntimeConfiguration;
+import com.patrick.stratum.job.OutboxRelayJobConfiguration;
 import com.patrick.stratum.job.JobExecutionResult;
 import com.patrick.stratum.job.JobTaskExecutor;
 import com.patrick.stratum.job.QuartzDispatchJob;
@@ -60,6 +64,7 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
     private final List<AnnotationConfigApplicationContext> contexts = new ArrayList<>();
     private final List<String> schedulerIds = new ArrayList<>();
     private Boolean originalRelayPaused;
+    private boolean collectRelayExecutions;
 
     /**
      * 注入生产Application与已迁移数据源，Quartz独立实例只共享持久化基础设施。
@@ -88,13 +93,18 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
             jdbc.update("DELETE FROM job_attempt WHERE execution_id=?", id);
             jdbc.update("DELETE FROM job_execution WHERE execution_id=?", id);
         }
+        if (collectRelayExecutions) {
+            for (String id : jdbc.queryForList("SELECT execution_id FROM job_execution WHERE job_code='outbox.relay'", String.class)) {
+                var parsed = UUID.fromString(id); if (!relayExecutions.contains(parsed)) relayExecutions.add(parsed);
+            }
+        }
         for (var id : relayExecutions) {
             jdbc.update("DELETE FROM job_replay_request WHERE execution_id=?", id.toString());
             jdbc.update("DELETE FROM dead_job WHERE execution_id=?", id.toString());
             jdbc.update("DELETE FROM job_attempt WHERE execution_id=?", id.toString());
             jdbc.update("DELETE FROM job_execution WHERE execution_id=?", id.toString());
         }
-        if (!relayExecutions.isEmpty()) {
+        if (collectRelayExecutions || !relayExecutions.isEmpty()) {
             for (String prefix : List.of("lock:job:", "lock:job:trigger:run.", "lock:job:trigger:schedule.")) {
                 jdbc.update("DELETE FROM stratum_shedlock WHERE name=?", prefix + "outbox.relay");
             }
@@ -141,9 +151,10 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
      */
     @Test
     void registersRelayOnlyInItsDedicatedCluster() throws Exception {
+        setRelayPaused(true);
         var first = context(true, true); var second = context(true, true);
         var primary = first.getBean(Scheduler.class); var relay = first.getBean("relayJobScheduler", Scheduler.class);
-        assertTrue(relay.isInStandbyMode());
+        assertFalse(relay.isInStandbyMode());
         assertEquals(java.util.Set.of(new JobKey("run." + probe.code, GROUP)), primary.getJobKeys(GroupMatcher.jobGroupEquals(GROUP)));
         var expected = java.util.Set.of(new JobKey("run.outbox.relay", GROUP), new JobKey("schedule.outbox.relay", GROUP));
         assertEquals(expected, relay.getJobKeys(GroupMatcher.jobGroupEquals(GROUP)));
@@ -153,7 +164,7 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
         assertFalse(disabled.containsBean("relayJobScheduler"));
         assertEquals(java.util.Set.of(new JobKey("run." + probe.code, GROUP)), disabled.getBean(Scheduler.class).getJobKeys(GroupMatcher.jobGroupEquals(GROUP)));
         var restarted = context(true, true).getBean("relayJobScheduler", Scheduler.class);
-        assertTrue(restarted.isInStandbyMode()); assertEquals(expected, restarted.getJobKeys(GroupMatcher.jobGroupEquals(GROUP)));
+        assertFalse(restarted.isInStandbyMode()); assertEquals(expected, restarted.getJobKeys(GroupMatcher.jobGroupEquals(GROUP)));
     }
 
     /**
@@ -302,6 +313,10 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
     void rejectsRelayJobFromOrdinaryScheduler() throws Exception {
         setRelayPaused(false); relayProbe.periodic = false;
         var context = context(true, true); var ordinary = context.getBean(Scheduler.class);
+        var relay = context.getBean("relayJobScheduler", Scheduler.class); relay.standby();
+        await().atMost(Duration.ofSeconds(10)).until(() -> relay.getCurrentlyExecutingJobs().isEmpty()
+                && jdbc.queryForObject("SELECT COUNT(*) FROM stratum_shedlock WHERE name=? AND lock_until>UTC_TIMESTAMP(6)",
+                        Integer.class, "lock:job:trigger:run.outbox.relay") == 0);
         var fired = new CountDownLatch(1); var failure = new AtomicReference<JobExecutionException>();
         watch(ordinary, "run.outbox.relay", fired, failure);
         var key = new JobKey("run.outbox.relay", GROUP);
@@ -309,6 +324,32 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
                 .usingJobData("jobCode", "outbox.relay").usingJobData("mode", "run").build(), false);
         var id = registerRelay(); ordinary.triggerJob(key);
         assertTrue(fired.await(10, TimeUnit.SECONDS)); assertNotNull(failure.get()); assertEquals("WAITING", state(id));
+    }
+
+    /**
+     * 真正的Relay处理器在目标核验后自动启动专用调度，暂停时不运行，禁用实例继续普通任务。
+     * @throws Exception 调度或数据库断言失败
+     */
+    @Test
+    void startsRealRelayOnlyAfterRegistrationAndRespectsSharedPause() throws Exception {
+        setRelayPaused(true);
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM job_execution WHERE job_code='outbox.relay'", Integer.class));
+        collectRelayExecutions = true;
+        var enabled = context(true, false, true);
+        var relay = enabled.getBean("relayJobScheduler", Scheduler.class);
+        assertFalse(relay.isInStandbyMode());
+        var fired = new CountDownLatch(1); var failure = new AtomicReference<JobExecutionException>();
+        watch(relay, "run.outbox.relay", fired, failure);
+        assertTrue(fired.await(10, TimeUnit.SECONDS)); assertNull(failure.get());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM job_execution WHERE job_code='outbox.relay'", Integer.class));
+        enabled.getBean(Scheduler.class).standby();
+        var disabled = context(false, false); assertFalse(disabled.containsBean("relayJobScheduler"));
+        var ordinaryId = register();
+        await().atMost(Duration.ofSeconds(15)).until(() -> "SUCCEEDED".equals(state(ordinaryId)));
+        setRelayPaused(false);
+        await().atMost(Duration.ofSeconds(15)).until(() -> jdbc.queryForObject(
+                "SELECT COUNT(*) FROM job_execution WHERE job_code='outbox.relay' AND state='SUCCEEDED'", Integer.class) > 0);
+        assertTrue(relay.isStarted());
     }
 
     /** 两个真实Scheduler共享固定轮询，失败后按数据库退避再次执行，不创建每次重试触发器。 */
@@ -508,13 +549,32 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
      * @throws Exception Scheduler身份读取失败
      */
     private AnnotationConfigApplicationContext context(boolean relayEnabled, boolean relayHandler) throws Exception {
+        return context(relayEnabled, relayHandler, false);
+    }
+
+    /**
+     * 创建真实Relay配置或无副作用探针，用例完成后按专用数据库清理。
+     * @param relayEnabled 是否创建Relay调度器
+     * @param relayHandler 是否登记测试探针
+     * @param actualRelay 是否登记真实Relay处理器和受控发布端口
+     * @return 必须关闭的上下文
+     * @throws Exception 调度器身份读取失败
+     */
+    private AnnotationConfigApplicationContext context(boolean relayEnabled, boolean relayHandler, boolean actualRelay) throws Exception {
         var context = new AnnotationConfigApplicationContext(); contexts.add(context);
         context.setParent(parent);
         context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("trigger-test", Map.of(
                 "stratum.jobs.enabled", true, "stratum.jobs.name", name, "stratum.jobs.workers", 2,
-                "stratum.jobs.relay.enabled", relayEnabled)));
+                "stratum.jobs.relay.enabled", relayEnabled, "stratum.messaging.enabled", actualRelay,
+                "stratum.jobs.relay.cron", "0/1 * * * * ?")));
         context.registerBean(JobHandler.class, () -> probe);
         if (relayHandler) context.registerBean("relayTestHandler", JobHandler.class, () -> relayProbe);
+        if (actualRelay) {
+            context.registerBean("testPublisher", OutboxPublisher.class, () -> delivery -> OutboxPublisher.PublishResult.CONFIRMED);
+            context.registerBean(OutboxRelayApplicationService.class, () -> new OutboxRelayApplicationService(
+                    parent.getBean(UnitOfWork.class), parent.getBean(OutboxRelayRepository.class), context.getBeanProvider(OutboxPublisher.class)));
+            context.register(OutboxRelayJobConfiguration.class);
+        }
         context.register(SchedulerConfiguration.class, JobRuntimeConfiguration.class, QuartzTriggerConfiguration.class);
         try {
             context.refresh();

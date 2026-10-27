@@ -64,16 +64,17 @@ public class QuartzTriggerConfiguration {
      * @param scheduler 所属调度器
      * @param relay 可选的Relay调度器
      * @param executor 两组调度器共享的实际工作执行器
+     * @param registry 固定处理器注册表
      * @return 停止于Bean销毁前的有界生命周期
      */
     @Bean
     QuartzRuntimeLifecycle quartzRuntimeLifecycle(Scheduler scheduler,
-            @Qualifier("relayJobScheduler") ObjectProvider<Scheduler> relay, JobTaskExecutor executor) {
+            @Qualifier("relayJobScheduler") ObjectProvider<Scheduler> relay, JobTaskExecutor executor, JobHandlerRegistry registry) {
         var schedulers = new java.util.ArrayList<Scheduler>();
         schedulers.add(scheduler);
         var relayScheduler = relay.getIfAvailable();
         if (relayScheduler != null) schedulers.add(relayScheduler);
-        return new QuartzRuntimeLifecycle(schedulers, executor);
+        return new QuartzRuntimeLifecycle(schedulers, executor, !registry.relayCodes().isEmpty());
     }
 
     /**

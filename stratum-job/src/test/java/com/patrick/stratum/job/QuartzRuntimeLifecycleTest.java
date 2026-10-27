@@ -26,11 +26,24 @@ class QuartzRuntimeLifecycleTest {
         var relay = scheduler("relay", false, calls);
         var registry = new JobHandlerRegistry(List.of(new Probe()));
         var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null), registry, 1);
-        var lifecycle = new QuartzRuntimeLifecycle(List.of(primary, relay), executor);
+        var lifecycle = new QuartzRuntimeLifecycle(List.of(primary, relay), executor, false);
         lifecycle.start(); lifecycle.stop();
         assertEquals(List.of("ordinary", "relay"), calls);
         assertFalse(lifecycle.isRunning());
         assertEquals(JobExecutionResult.CLOSED, executor.execute("probe", UUID.randomUUID()));
+    }
+
+    /** 只在存在已核验Relay目标且专用调度器齐备时启动该调度器。 */
+    @Test
+    void startsOnlyConfiguredRelayScheduler() {
+        var calls = new ArrayList<String>();
+        var primary = scheduler("ordinary", false, calls); var relay = scheduler("relay", false, calls);
+        var registry = new JobHandlerRegistry(List.of(new Probe()));
+        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null), registry, 1);
+        assertThrows(IllegalArgumentException.class, () -> new QuartzRuntimeLifecycle(List.of(primary), executor, true));
+        var lifecycle = new QuartzRuntimeLifecycle(List.of(primary, relay), executor, true);
+        lifecycle.start(); assertEquals(List.of("start-relay"), calls);
+        lifecycle.stop(); assertEquals(List.of("start-relay", "ordinary", "relay"), calls);
     }
 
     /**
@@ -43,6 +56,7 @@ class QuartzRuntimeLifecycleTest {
     private Scheduler scheduler(String name, boolean fail, List<String> calls) {
         return (Scheduler) Proxy.newProxyInstance(Scheduler.class.getClassLoader(), new Class<?>[] { Scheduler.class },
                 (proxy, method, args) -> switch (method.getName()) {
+                    case "start" -> { calls.add("start-" + name); yield null; }
                     case "standby" -> { calls.add(name); if (fail) throw new SchedulerException("controlled"); yield null; }
                     case "getCurrentlyExecutingJobs" -> List.of();
                     default -> throw new UnsupportedOperationException("测试未使用的方法");
