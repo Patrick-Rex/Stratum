@@ -35,6 +35,7 @@ import com.patrick.stratum.domain.event.OutboxPublisher;
 import com.patrick.stratum.domain.event.OutboxPublisher.Delivery;
 import com.patrick.stratum.domain.event.OutboxReconciliationRepository;
 import com.patrick.stratum.domain.event.OutboxRelayRepository;
+import com.patrick.stratum.domain.event.OutboxRelayControlRepository;
 import com.patrick.stratum.domain.event.OutboxRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -179,6 +180,7 @@ class OutboxReconciliationIntegrationTest {
         jdbc.update("DELETE FROM outbox_event");
         jdbc.update("DELETE FROM outbox_aggregate_progress");
         jdbc.update("UPDATE outbox_reconciliation_cursor SET consumed_at=NULL, event_id=NULL, consumer_group=NULL, cycle_upper_bound=NULL WHERE cursor_id=1");
+        jdbc.update("UPDATE outbox_relay_control SET paused=1, revision=0 WHERE singleton_id=1");
         for (var key : cacheKeys) redis.delete(List.of(key, "null:" + key.substring(4), "version:" + key.substring(4)));
     }
 
@@ -606,6 +608,118 @@ class OutboxReconciliationIntegrationTest {
             assertThrows(SQLException.class, () -> statement.executeUpdate("UPDATE test_relay_control SET revision=-1 WHERE singleton_id=1"));
             assertEquals(1, statement.executeUpdate("UPDATE test_relay_control SET paused=0,revision=1 WHERE singleton_id=1"));
         }
+    }
+
+    /** 共享控制使用观察版本更新，旧版本拒绝覆盖且重复目标不递增。 */
+    @Test
+    void controlsRelayWithMonotonicVersionsAndIdempotentState() {
+        var control = application.getBean(OutboxRelayControlRepository.class);
+        assertEquals(new OutboxRelayControlRepository.State(true, 0), control.current());
+        assertThrows(IllegalStateException.class, () -> control.change(0, false));
+        assertThrows(IllegalStateException.class, control::tryAdmit);
+        assertEquals(new OutboxRelayControlRepository.State(false, 1), unitOfWork.execute(() -> control.change(0, false)));
+        assertEquals(new OutboxRelayControlRepository.State(false, 1), unitOfWork.execute(() -> control.change(1, false)));
+        assertThrows(StratumException.class, () -> unitOfWork.execute(() -> control.change(0, true)));
+        assertEquals(new OutboxRelayControlRepository.Admission(true, 1), unitOfWork.execute(control::tryAdmit));
+        assertEquals(new OutboxRelayControlRepository.State(true, 2), unitOfWork.execute(() -> control.change(1, true)));
+        assertEquals(new OutboxRelayControlRepository.Admission(false, 2), unitOfWork.execute(control::tryAdmit));
+    }
+
+    /**
+     * 准入与暂停持同一数据库行锁，竞争失败关闭，已提交顺序决定后续批次资格。
+     * @throws Exception 并发任务失败或等待超时
+     */
+    @Test
+    void ordersAdmissionAndPauseUsingDatabaseLock() throws Exception {
+        var control = application.getBean(OutboxRelayControlRepository.class);
+        unitOfWork.execute(() -> control.change(0, false));
+        var held = new CountDownLatch(1); var release = new CountDownLatch(1);
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var admitted = workers.submit(() -> unitOfWork.execute(() -> {
+                var result = control.tryAdmit(); held.countDown();
+                try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+                catch (InterruptedException failure) { Thread.currentThread().interrupt(); throw new IllegalStateException("准入测试中断"); }
+                return result;
+            }));
+            try {
+                assertTrue(held.await(5, TimeUnit.SECONDS));
+                var pause = workers.submit(() -> unitOfWork.execute(() -> control.change(1, true)));
+                var failure = assertThrows(java.util.concurrent.ExecutionException.class, () -> pause.get(5, TimeUnit.SECONDS));
+                assertInstanceOf(StratumException.class, failure.getCause());
+            } finally { release.countDown(); }
+            assertEquals(new OutboxRelayControlRepository.Admission(true, 1), admitted.get(5, TimeUnit.SECONDS));
+        }
+        assertEquals(new OutboxRelayControlRepository.State(true, 2), unitOfWork.execute(() -> control.change(1, true)));
+        assertEquals(new OutboxRelayControlRepository.Admission(false, 2), unitOfWork.execute(control::tryAdmit));
+    }
+
+    /**
+     * 暂停事务先持锁时准入失败关闭，暂停提交后不再授予批次。
+     * @throws Exception 并发任务失败或等待超时
+     */
+    @Test
+    void refusesAdmissionWhilePauseCommits() throws Exception {
+        var control = application.getBean(OutboxRelayControlRepository.class);
+        unitOfWork.execute(() -> control.change(0, false));
+        var held = new CountDownLatch(1); var release = new CountDownLatch(1);
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var pause = workers.submit(() -> unitOfWork.execute(() -> {
+                var result = control.change(1, true); held.countDown();
+                try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+                catch (InterruptedException failure) { Thread.currentThread().interrupt(); throw new IllegalStateException("暂停测试中断"); }
+                return result;
+            }));
+            try {
+                assertTrue(held.await(5, TimeUnit.SECONDS));
+                var admission = workers.submit(() -> unitOfWork.execute(control::tryAdmit));
+                var failure = assertThrows(java.util.concurrent.ExecutionException.class, () -> admission.get(5, TimeUnit.SECONDS));
+                assertInstanceOf(StratumException.class, failure.getCause());
+            } finally { release.countDown(); }
+            assertEquals(new OutboxRelayControlRepository.State(true, 2), pause.get(5, TimeUnit.SECONDS));
+        }
+        assertEquals(new OutboxRelayControlRepository.Admission(false, 2), unitOfWork.execute(control::tryAdmit));
+    }
+
+    /**
+     * 两个实例使用同一观察版本时只有一个变更可提交，旧版本不能恢复覆盖。
+     * @throws Exception 并发任务失败或等待超时
+     */
+    @Test
+    void rejectsConcurrentStaleControlUpdate() throws Exception {
+        var control = application.getBean(OutboxRelayControlRepository.class);
+        var held = new CountDownLatch(1); var release = new CountDownLatch(1);
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var first = workers.submit(() -> unitOfWork.execute(() -> {
+                var result = control.change(0, false); held.countDown();
+                try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+                catch (InterruptedException failure) { Thread.currentThread().interrupt(); throw new IllegalStateException("版本测试中断"); }
+                return result;
+            }));
+            try {
+                assertTrue(held.await(5, TimeUnit.SECONDS));
+                var second = workers.submit(() -> unitOfWork.execute(() -> control.change(0, true)));
+                var failure = assertThrows(java.util.concurrent.ExecutionException.class, () -> second.get(5, TimeUnit.SECONDS));
+                assertInstanceOf(StratumException.class, failure.getCause());
+            } finally { release.countDown(); }
+            assertEquals(new OutboxRelayControlRepository.State(false, 1), first.get(5, TimeUnit.SECONDS));
+        }
+        assertThrows(StratumException.class, () -> unitOfWork.execute(() -> control.change(0, true)));
+        assertEquals(new OutboxRelayControlRepository.State(false, 1), control.current());
+    }
+
+    /** 回滚不保存变更；版本上限不回绕且旧版本不能借相同目标绕过比较。 */
+    @Test
+    void rollsBackControlChangesAndRefusesVersionOverflow() {
+        var control = application.getBean(OutboxRelayControlRepository.class);
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
+            control.change(0, false); throw new IllegalStateException("模拟回滚");
+        }));
+        assertEquals(new OutboxRelayControlRepository.State(true, 0), control.current());
+        jdbc.update("UPDATE outbox_relay_control SET revision=? WHERE singleton_id=1", Long.MAX_VALUE);
+        assertEquals(new OutboxRelayControlRepository.State(true, Long.MAX_VALUE), unitOfWork.execute(() -> control.change(Long.MAX_VALUE, true)));
+        assertThrows(StratumException.class, () -> unitOfWork.execute(() -> control.change(Long.MAX_VALUE, false)));
+        assertThrows(StratumException.class, () -> unitOfWork.execute(() -> control.change(0, true)));
+        assertEquals(new OutboxRelayControlRepository.State(true, Long.MAX_VALUE), control.current());
     }
 
     /** 过期租约在真实凭据与进度一致时收敛，保留旧状态/失败次数，迟到确认不能覆盖。 */
