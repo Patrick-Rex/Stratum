@@ -50,6 +50,33 @@ class GatewayManagementTest extends GatewayHttpIntegrationTest {
         }
     }
 
+    /**
+     * Outbox管理路径及编码子路径沿用真实直连来源控制，不信任伪造代理头。
+     * @throws Exception 本机HTTP失败
+     */
+    @Test void outboxManagementUsesSameTrustedPeerPolicy() throws Exception {
+        var deny = filter();
+        for (String path : List.of("/api/management/outbox", "/api/management/outbox/events/abc/recoveries",
+                "/api/management/%6futbox/events", "/api/management/outbox;v=1/events", "/api//management/outbox/events")) {
+            assertDenied(deny, request(path, "192.0.2.1"), 403);
+        }
+        assertAllowed(filter("127.0.0.0/8"), request("/api/management/outbox/events/id", "127.0.0.1"));
+        assertAllowed(filter("::1/128"), request("/api/management/outbox/events/id", "::1"));
+        assertAllowed(deny, request("/api/management/outbox-export", "192.0.2.1"));
+        assertDenied(deny, request("/api/management/outbox%2fevents", "127.0.0.1"), 400);
+        try (var upstream = upstream(exchange -> exchange.sendResponseHeaders(401, -1));
+             var gateway = gateway(upstream, upstream, true, false, "",
+                     "--stratum.gateway.management.allowed-cidrs=192.0.2.0/24")) {
+            for (String path : List.of("/api/management/outbox", "/api/management/%6futbox/events/id/recoveries")) {
+                var response = request(gateway, path, Map.of("Forwarded", "for=192.0.2.42", "X-Forwarded-For", "192.0.2.42"), null);
+                assertEquals(403, response.statusCode());
+            }
+            assertEquals(0, upstream.requests().get());
+            assertEquals(401, request(gateway, "/api/management/outbox-export", Map.of(), null).statusCode());
+            assertEquals(1, upstream.requests().get());
+        }
+    }
+
     /** IPv4与IPv6前缀按真实对端字节匹配，缺失及未解析来源拒绝，不使用任何转发头。 */
     @Test void literalIpv4AndIpv6CidrsMatchOnlyRealPeers() {
         var filter = filter("192.0.2.128/25", "2001:db8:1234::/48", "::1/128", "127.0.0.0/8");
