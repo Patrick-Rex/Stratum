@@ -1,6 +1,7 @@
 package com.patrick.stratum.job;
 
 import java.util.Set;
+import java.util.List;
 import java.util.HashSet;
 import java.util.TimeZone;
 
@@ -19,6 +20,8 @@ import org.quartz.Trigger;
 import org.quartz.TriggerBuilder;
 import org.quartz.impl.matchers.GroupMatcher;
 import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.config.ConfigurableBeanFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -59,44 +62,63 @@ public class QuartzTriggerConfiguration {
     }
 
     /**
-     * 在任何Lifecycle自动启动之前登记监听器及至多128个固定JobDetail/Trigger对。
-     * @param scheduler 持久化调度器
+     * 按固定代码隔离普通和Relay调度器，在自动启动前核验持久化目标。
+     * @param scheduler 普通持久化调度器
+     * @param relay 可选的待机Relay调度器
      * @param registry 启动时固定处理器快照
-     * @param lifecycle 代理收尾监听与停止协调
+     * @param lifecycle 普通调度器收尾监听
      * @return Spring单例初始化完成回调
      */
     @Bean
-    SmartInitializingSingleton fixedQuartzTriggers(Scheduler scheduler, JobHandlerRegistry registry, QuartzRuntimeLifecycle lifecycle) {
+    SmartInitializingSingleton fixedQuartzTriggers(Scheduler scheduler,
+            @Qualifier("relayJobScheduler") ObjectProvider<Scheduler> relay,
+            JobHandlerRegistry registry, QuartzRuntimeLifecycle lifecycle) {
         return () -> {
             try {
                 scheduler.getListenerManager().addJobListener(lifecycle);
-                var allowed = new HashSet<JobKey>();
-                for (String code : registry.codes()) {
-                    allowed.add(new JobKey("run." + code, GROUP));
-                    if (registry.periodicDefinition(code).isPresent()) allowed.add(new JobKey("schedule." + code, GROUP));
+                registerAll(scheduler, registry, registry.ordinaryCodes());
+                var relayScheduler = relay.getIfAvailable();
+                if (relayScheduler == null && !registry.relayCodes().isEmpty()) {
+                    throw new IllegalStateException("Relay处理器缺少专用调度器");
                 }
-                if (!allowed.containsAll(scheduler.getJobKeys(GroupMatcher.jobGroupEquals(GROUP)))
-                        || scheduler.getTriggerKeys(GroupMatcher.triggerGroupEquals(GROUP)).stream()
-                                .anyMatch(key -> !allowed.contains(new JobKey(key.getName(), key.getGroup())))) {
-                    throw new IllegalStateException("已存储固定任务包含未登记目标");
-                }
-                for (String code : registry.codes()) {
-                    var run = detail(code, "run");
-                    var poll = TriggerBuilder.newTrigger().withIdentity(run.getKey().getName(), GROUP).forJob(run)
-                            .withSchedule(SimpleScheduleBuilder.simpleSchedule().withIntervalInSeconds(1).repeatForever()
-                                    .withMisfireHandlingInstructionNextWithRemainingCount()).build();
-                    register(scheduler, run, poll);
-                    var periodic = registry.periodicDefinition(code);
-                    if (periodic.isPresent()) {
-                        var schedule = detail(code, "schedule");
-                        var cron = TriggerBuilder.newTrigger().withIdentity(schedule.getKey().getName(), GROUP).forJob(schedule)
-                                .withSchedule(CronScheduleBuilder.cronSchedule(periodic.orElseThrow().cron().orElseThrow())
-                                        .inTimeZone(TimeZone.getTimeZone("UTC")).withMisfireHandlingInstructionDoNothing()).build();
-                        register(scheduler, schedule, cron);
-                    }
-                }
+                if (relayScheduler != null) registerAll(relayScheduler, registry, registry.relayCodes());
             } catch (SchedulerException failure) { throw new IllegalStateException("固定任务触发器登记失败"); }
         };
+    }
+
+    /**
+     * 只核验和登记当前调度器所属代码，不覆盖多余或不一致目标。
+     * @param scheduler 对应的持久化调度器
+     * @param registry 固定处理器注册表
+     * @param codes 该调度器允许的代码集合
+     * @throws SchedulerException Quartz读取或登记失败
+     */
+    private void registerAll(Scheduler scheduler, JobHandlerRegistry registry, List<String> codes) throws SchedulerException {
+        var allowed = new HashSet<JobKey>();
+        for (String code : codes) {
+            allowed.add(new JobKey("run." + code, GROUP));
+            if (registry.periodicDefinition(code).isPresent()) allowed.add(new JobKey("schedule." + code, GROUP));
+        }
+        if (!allowed.containsAll(scheduler.getJobKeys(GroupMatcher.jobGroupEquals(GROUP)))
+                || scheduler.getTriggerKeys(GroupMatcher.triggerGroupEquals(GROUP)).stream()
+                        .anyMatch(key -> !allowed.contains(new JobKey(key.getName(), key.getGroup())))) {
+            throw new IllegalStateException("已存储固定任务包含未登记目标");
+        }
+        for (String code : codes) {
+            var run = detail(code, "run");
+            var poll = TriggerBuilder.newTrigger().withIdentity(run.getKey().getName(), GROUP).forJob(run)
+                    .withSchedule(SimpleScheduleBuilder.simpleSchedule().withIntervalInSeconds(1).repeatForever()
+                            .withMisfireHandlingInstructionNextWithRemainingCount()).build();
+            register(scheduler, run, poll);
+            var periodic = registry.periodicDefinition(code);
+            if (periodic.isPresent()) {
+                var schedule = detail(code, "schedule");
+                var cron = TriggerBuilder.newTrigger().withIdentity(schedule.getKey().getName(), GROUP).forJob(schedule)
+                        .withSchedule(CronScheduleBuilder.cronSchedule(periodic.orElseThrow().cron().orElseThrow())
+                                .inTimeZone(TimeZone.getTimeZone("UTC")).withMisfireHandlingInstructionDoNothing()).build();
+                register(scheduler, schedule, cron);
+            }
+        }
     }
 
     /**

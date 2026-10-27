@@ -39,6 +39,19 @@ class JobHandlerRegistryTest {
         assertThrows(UnsupportedOperationException.class, () -> registry.codes().add("other"));
     }
 
+    /** Relay固定代码只出现在专用调度器，普通代码不会被隐式转移或创造。 */
+    @Test
+    void partitionsFixedRelayFromOrdinaryHandlers() {
+        var relay = new Probe("outbox.relay", Optional.empty());
+        var ordinary = new Probe("warehouse.sync", Optional.empty());
+        var registry = new JobHandlerRegistry(List.of(relay, ordinary));
+        assertEquals(List.of("warehouse.sync"), registry.ordinaryCodes());
+        assertEquals(List.of("outbox.relay"), registry.relayCodes());
+        assertSame(relay, registry.handler("outbox.relay"));
+        assertTrue(new JobHandlerRegistry(List.of(ordinary)).relayCodes().isEmpty());
+        assertThrows(UnsupportedOperationException.class, () -> registry.relayCodes().clear());
+    }
+
     /** 处理器数量最多64，不为多余输入分配无界注册结构。 */
     @Test
     void boundsHandlerCount() {

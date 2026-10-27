@@ -74,13 +74,15 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
             jdbc.update("DELETE FROM job_attempt WHERE execution_id=?", id);
             jdbc.update("DELETE FROM job_execution WHERE execution_id=?", id);
         }
-        jdbc.update("DELETE FROM STRATUM_QRTZ_SIMPLE_TRIGGERS WHERE SCHED_NAME=?", name);
-        jdbc.update("DELETE FROM STRATUM_QRTZ_CRON_TRIGGERS WHERE SCHED_NAME=?", name);
-        jdbc.update("DELETE FROM STRATUM_QRTZ_TRIGGERS WHERE SCHED_NAME=?", name);
-        jdbc.update("DELETE FROM STRATUM_QRTZ_JOB_DETAILS WHERE SCHED_NAME=?", name);
-        jdbc.update("DELETE FROM STRATUM_QRTZ_FIRED_TRIGGERS WHERE SCHED_NAME=?", name);
-        jdbc.update("DELETE FROM STRATUM_QRTZ_LOCKS WHERE SCHED_NAME=?", name);
-        jdbc.update("DELETE FROM STRATUM_QRTZ_SCHEDULER_STATE WHERE SCHED_NAME=?", name);
+        for (String schedulerName : List.of(name, "relay:" + name)) {
+            jdbc.update("DELETE FROM STRATUM_QRTZ_SIMPLE_TRIGGERS WHERE SCHED_NAME=?", schedulerName);
+            jdbc.update("DELETE FROM STRATUM_QRTZ_CRON_TRIGGERS WHERE SCHED_NAME=?", schedulerName);
+            jdbc.update("DELETE FROM STRATUM_QRTZ_TRIGGERS WHERE SCHED_NAME=?", schedulerName);
+            jdbc.update("DELETE FROM STRATUM_QRTZ_JOB_DETAILS WHERE SCHED_NAME=?", schedulerName);
+            jdbc.update("DELETE FROM STRATUM_QRTZ_FIRED_TRIGGERS WHERE SCHED_NAME=?", schedulerName);
+            jdbc.update("DELETE FROM STRATUM_QRTZ_LOCKS WHERE SCHED_NAME=?", schedulerName);
+            jdbc.update("DELETE FROM STRATUM_QRTZ_SCHEDULER_STATE WHERE SCHED_NAME=?", schedulerName);
+        }
         for (String prefix : List.of("lock:job:", "lock:job:trigger:run.", "lock:job:trigger:schedule.")) {
             jdbc.update("DELETE FROM stratum_shedlock WHERE name=?", prefix + probe.code);
         }
@@ -101,6 +103,42 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
         var id = register();
         await().atMost(Duration.ofSeconds(15)).until(() -> "SUCCEEDED".equals(state(id)));
         assertEquals(1, probe.calls.get());
+    }
+
+    /**
+     * 普通与Relay目标只登记到各自持久空间；双实例及重启核验相同定义，禁用实例不加入Relay。
+     * @throws Exception 调度器或存储操作失败
+     */
+    @Test
+    void registersRelayOnlyInItsDedicatedCluster() throws Exception {
+        var first = context(true, true); var second = context(true, true);
+        var primary = first.getBean(Scheduler.class); var relay = first.getBean("relayJobScheduler", Scheduler.class);
+        assertTrue(relay.isInStandbyMode());
+        assertEquals(java.util.Set.of(new JobKey("run." + probe.code, GROUP)), primary.getJobKeys(GroupMatcher.jobGroupEquals(GROUP)));
+        var expected = java.util.Set.of(new JobKey("run.outbox.relay", GROUP), new JobKey("schedule.outbox.relay", GROUP));
+        assertEquals(expected, relay.getJobKeys(GroupMatcher.jobGroupEquals(GROUP)));
+        assertEquals(expected, second.getBean("relayJobScheduler", Scheduler.class).getJobKeys(GroupMatcher.jobGroupEquals(GROUP)));
+        first.close(); second.close();
+        var disabled = context(false, false);
+        assertFalse(disabled.containsBean("relayJobScheduler"));
+        assertEquals(java.util.Set.of(new JobKey("run." + probe.code, GROUP)), disabled.getBean(Scheduler.class).getJobKeys(GroupMatcher.jobGroupEquals(GROUP)));
+        var restarted = context(true, true).getBean("relayJobScheduler", Scheduler.class);
+        assertTrue(restarted.isInStandbyMode()); assertEquals(expected, restarted.getJobKeys(GroupMatcher.jobGroupEquals(GROUP)));
+    }
+
+    /**
+     * 已存储未知Relay目标或缺少专用调度器均拒绝启动，不执行处理器。
+     * @throws Exception 调度器或存储操作失败
+     */
+    @Test
+    void refusesUnknownRelayTargetAndHandlerWithoutScheduler() throws Exception {
+        assertThrows(RuntimeException.class, () -> context(false, true));
+        var initial = context(true, true); var relay = initial.getBean("relayJobScheduler", Scheduler.class);
+        relay.addJob(JobBuilder.newJob(QuartzDispatchJob.class).withIdentity("run.unregistered", GROUP)
+                .usingJobData("jobCode", "unregistered").usingJobData("mode", "run").storeDurably().build(), false);
+        initial.close();
+        assertThrows(RuntimeException.class, () -> context(true, true));
+        assertEquals(0, probe.calls.get());
     }
 
     /** 两个真实Scheduler共享固定轮询，失败后按数据库退避再次执行，不创建每次重试触发器。 */
@@ -289,12 +327,24 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
      * @throws Exception Scheduler身份读取失败
      */
     private AnnotationConfigApplicationContext context(boolean relayEnabled) throws Exception {
+        return context(relayEnabled, false);
+    }
+
+    /**
+     * 按测试参数创建真实调度装配和可选的固定Relay处理器。
+     * @param relayEnabled 是否创建Relay调度器
+     * @param relayHandler 是否登记Relay探针
+     * @return 由本用例清理的独立上下文
+     * @throws Exception Scheduler身份读取失败
+     */
+    private AnnotationConfigApplicationContext context(boolean relayEnabled, boolean relayHandler) throws Exception {
         var context = new AnnotationConfigApplicationContext(); contexts.add(context);
         context.setParent(parent);
         context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("trigger-test", Map.of(
                 "stratum.jobs.enabled", true, "stratum.jobs.name", name, "stratum.jobs.workers", 2,
                 "stratum.jobs.relay.enabled", relayEnabled)));
         context.registerBean(JobHandler.class, () -> probe);
+        if (relayHandler) context.registerBean("relayTestHandler", JobHandler.class, RelayProbe::new);
         context.register(SchedulerConfiguration.class, JobRuntimeConfiguration.class, QuartzTriggerConfiguration.class);
         try {
             context.refresh();
@@ -344,6 +394,20 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
      * @return 当前持久化状态
      */
     private String state(UUID id) { return jdbc.queryForObject("SELECT state FROM job_execution WHERE execution_id=?", String.class, id.toString()); }
+
+    /** 待机调度器内的固定Relay探针，不执行真实副作用。 */
+    private static final class RelayProbe implements JobHandler {
+        /** {@inheritDoc} */
+        @Override public String jobCode() { return "outbox.relay"; }
+        /** {@inheritDoc} */
+        @Override public Optional<JobDefinition> periodicDefinition() {
+            return Optional.of(new JobDefinition("outbox.relay", JobDefinition.Type.CRON, Optional.of("0/5 * * * * ?"),
+                    Optional.empty(), 30, new JobDefinition.RetryPolicy(3, Duration.ofSeconds(1), Duration.ofSeconds(30)),
+                    JobDefinition.IdempotencyRule.SCHEDULE_TIME));
+        }
+        /** {@inheritDoc} */
+        @Override public void execute(Submission submission) { throw new IllegalStateException("待机探针不应执行"); }
+    }
 
     /** 只有实际调用次数、受控失败和中断阻塞，不替代生产调度器/锁/事务。 */
     private final class Probe implements JobHandler {
