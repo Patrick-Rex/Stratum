@@ -34,6 +34,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.annotation.DirtiesContext;
@@ -157,6 +158,68 @@ class OutboxReconciliationIntegrationTest {
             });
             try (var connection = DriverManager.getConnection(other.jdbcUrl(), other.username(), other.password())) {
                 assertEquals(other.jdbcUrl().substring(other.jdbcUrl().lastIndexOf('/') + 1), connection.getCatalog());
+            }
+        }
+    }
+
+    /** 独占库验证恢复回执迁移、请求幂等和约束，写入后按本测试请求ID清理。 */
+    @Test
+    void validatesOriginalRecoveryReceiptSchemaAndIdempotency() {
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM flyway_schema_history WHERE version='202610270004' AND success=1", Integer.class));
+        assertEquals(List.of("event_id", "created_at", "request_id"), jdbc.queryForList("""
+                SELECT COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE()
+                    AND TABLE_NAME='outbox_original_recovery_request' AND INDEX_NAME='idx_original_recovery_event'
+                ORDER BY SEQ_IN_INDEX
+                """, String.class));
+        assertEquals(0, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=DATABASE()
+                    AND TABLE_NAME='outbox_original_recovery_request' AND REFERENCED_TABLE_NAME IS NOT NULL
+                """, Integer.class));
+
+        String first = UUID.randomUUID().toString(); String second = UUID.randomUUID().toString();
+        String rolledBack = UUID.randomUUID().toString();
+        String eventId = UUID.randomUUID().toString(); String operator = UUID.randomUUID().toString();
+        String token = UUID.randomUUID().toString();
+        String insert = """
+                INSERT INTO outbox_original_recovery_request
+                    (request_id,event_id,operator_id,registration_token,outcome,previous_failures,trace_id)
+                VALUES (?,?,?,?,?,?,?)
+                """;
+        try {
+            var before = jdbc.queryForObject("SELECT UTC_TIMESTAMP(6)", LocalDateTime.class);
+            assertEquals(1, jdbc.update(insert, first, eventId, operator, token, "RECOVERED", 7, "recovery-trace"));
+            var after = jdbc.queryForObject("SELECT UTC_TIMESTAMP(6)", LocalDateTime.class);
+            var created = jdbc.queryForObject("SELECT created_at FROM outbox_original_recovery_request WHERE request_id=?", LocalDateTime.class, first);
+            assertFalse(created.isBefore(before)); assertFalse(created.isAfter(after));
+            assertThrows(DataIntegrityViolationException.class, () -> jdbc.update(insert, first, UUID.randomUUID().toString(),
+                    UUID.randomUUID().toString(), UUID.randomUUID().toString(), "REGISTERING", null, "other-trace"));
+            assertEquals(eventId, jdbc.queryForObject("SELECT event_id FROM outbox_original_recovery_request WHERE request_id=?", String.class, first));
+            assertEquals(operator, jdbc.queryForObject("SELECT operator_id FROM outbox_original_recovery_request WHERE request_id=?", String.class, first));
+            assertEquals(1, jdbc.update(insert, second, eventId, operator, UUID.randomUUID().toString(), "ALREADY_CONSUMED", null, "other-trace"));
+            assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_original_recovery_request WHERE event_id=?", Integer.class, eventId));
+            assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
+                jdbc.update(insert, rolledBack, eventId, operator, UUID.randomUUID().toString(), "REGISTERING", null, "rollback-trace");
+                throw new IllegalStateException("模拟工作单元回滚");
+            }));
+            assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_original_recovery_request WHERE request_id=?", Integer.class, rolledBack));
+
+            assertThrows(DataIntegrityViolationException.class, () -> jdbc.update("UPDATE outbox_original_recovery_request SET outcome='UNKNOWN' WHERE request_id=?", first));
+            assertThrows(DataIntegrityViolationException.class, () -> jdbc.update("UPDATE outbox_original_recovery_request SET outcome='RECOVERED ' WHERE request_id=?", first));
+            assertThrows(DataIntegrityViolationException.class, () -> jdbc.update("UPDATE outbox_original_recovery_request SET previous_failures=NULL WHERE request_id=?", first));
+            assertThrows(DataIntegrityViolationException.class, () -> jdbc.update("UPDATE outbox_original_recovery_request SET previous_failures=-1 WHERE request_id=?", first));
+            assertThrows(DataIntegrityViolationException.class, () -> jdbc.update("UPDATE outbox_original_recovery_request SET previous_failures=1 WHERE request_id=?", second));
+            assertThrows(DataIntegrityViolationException.class, () -> jdbc.update("UPDATE outbox_original_recovery_request SET request_id='invalid' WHERE request_id=?", first));
+            assertThrows(DataIntegrityViolationException.class, () -> jdbc.update("UPDATE outbox_original_recovery_request SET event_id='invalid' WHERE request_id=?", first));
+            assertThrows(DataIntegrityViolationException.class, () -> jdbc.update("UPDATE outbox_original_recovery_request SET operator_id='invalid' WHERE request_id=?", first));
+            assertThrows(DataIntegrityViolationException.class, () -> jdbc.update("UPDATE outbox_original_recovery_request SET registration_token='invalid' WHERE request_id=?", first));
+            assertThrows(DataIntegrityViolationException.class, () -> jdbc.update("UPDATE outbox_original_recovery_request SET trace_id='bad trace' WHERE request_id=?", first));
+            assertThrows(DataIntegrityViolationException.class, () -> jdbc.update("UPDATE outbox_original_recovery_request SET trace_id='recovery-trace ' WHERE request_id=?", first));
+            assertThrows(DataIntegrityViolationException.class, () -> jdbc.update("UPDATE outbox_original_recovery_request SET trace_id=? WHERE request_id=?", "valid\n", first));
+            assertEquals("RECOVERED", jdbc.queryForObject("SELECT outcome FROM outbox_original_recovery_request WHERE request_id=?", String.class, first));
+            assertEquals(7, jdbc.queryForObject("SELECT previous_failures FROM outbox_original_recovery_request WHERE request_id=?", Integer.class, first));
+        } finally {
+            for (String id : List.of(first, second, rolledBack)) {
+                jdbc.update("DELETE FROM outbox_original_recovery_request WHERE request_id=?", id);
             }
         }
     }
