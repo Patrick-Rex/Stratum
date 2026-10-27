@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.HashSet;
 import java.util.TimeZone;
 
+import com.patrick.stratum.application.event.OutboxRelayControlApplicationService;
 import com.patrick.stratum.application.job.JobExecutionApplicationService;
 import org.quartz.CronScheduleBuilder;
 import org.quartz.CronTrigger;
@@ -42,12 +43,20 @@ public class QuartzTriggerConfiguration {
      * @param jobs Application状态入口
      * @param registry 已核验处理器注册表
      * @param executor 本实例私有执行器
+     * @param control Relay共享暂停准入
+     * @param ordinary 普通任务调度器
+     * @param relay 可选的Relay调度器
      * @return 唯一触发实例，由现有JobFactory查找其代理
+     * @throws SchedulerException 无法读取调度器身份
      */
     @Bean
     @Scope(ConfigurableBeanFactory.SCOPE_PROTOTYPE)
-    QuartzDispatchJob quartzDispatchJob(JobExecutionApplicationService jobs, JobHandlerRegistry registry, JobTaskExecutor executor) {
-        return new QuartzDispatchJob(jobs, registry, executor);
+    QuartzDispatchJob quartzDispatchJob(JobExecutionApplicationService jobs, JobHandlerRegistry registry, JobTaskExecutor executor,
+            OutboxRelayControlApplicationService control, Scheduler ordinary,
+            @Qualifier("relayJobScheduler") ObjectProvider<Scheduler> relay) throws SchedulerException {
+        var relayScheduler = relay.getIfAvailable();
+        return new QuartzDispatchJob(jobs, registry, executor, control, ordinary.getSchedulerName(),
+                relayScheduler == null ? null : relayScheduler.getSchedulerName());
     }
 
     /**

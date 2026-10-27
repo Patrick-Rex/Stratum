@@ -12,10 +12,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import com.patrick.stratum.application.event.OutboxRelayControlApplicationService;
 import com.patrick.stratum.application.job.JobExecutionApplicationService;
 import com.patrick.stratum.application.job.JobHandler;
+import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository.Submission;
 import com.patrick.stratum.domain.job.JobRecoveryRepository.ReplayRequest;
@@ -30,6 +32,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.quartz.JobBuilder;
 import org.quartz.JobKey;
+import org.quartz.JobExecutionContext;
+import org.quartz.JobExecutionException;
+import org.quartz.SchedulerException;
+import org.quartz.listeners.JobListenerSupport;
 import org.quartz.Scheduler;
 import org.quartz.impl.matchers.GroupMatcher;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -220,6 +226,89 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
         var later = registerRelay();
         assertEquals(JobExecutionResult.SKIPPED, executor.execute("outbox.relay", later));
         assertEquals("WAITING", state(later));
+    }
+
+    /**
+     * 两个Relay调度实例共享暂停，暂停时计划与到期查询不领取；已准入工作仍可收尾。
+     * @throws Exception 调度或并发协调失败
+     */
+    @Test
+    void gatesDedicatedQuartzAcrossInstancesAndFinishesAdmittedWork() throws Exception {
+        setRelayPaused(true); relayProbe.cron = "0 0 0 1 1 ? 2099"; relayProbe.block = true;
+        var first = context(true, true); var second = context(true, true);
+        var one = first.getBean("relayJobScheduler", Scheduler.class);
+        var two = second.getBean("relayJobScheduler", Scheduler.class);
+        var scheduled = new CountDownLatch(1); var queried = new CountDownLatch(1);
+        var failure = new AtomicReference<JobExecutionException>();
+        watch(one, "schedule.outbox.relay", scheduled, failure); watch(two, "schedule.outbox.relay", scheduled, failure);
+        watch(one, "run.outbox.relay", queried, failure); watch(two, "run.outbox.relay", queried, failure);
+        var relayId = registerRelay();
+        one.start(); two.start(); one.triggerJob(new JobKey("schedule.outbox.relay", GROUP));
+        assertTrue(scheduled.await(10, TimeUnit.SECONDS)); assertTrue(queried.await(10, TimeUnit.SECONDS));
+        assertNull(failure.get()); assertEquals("WAITING", state(relayId));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM job_execution WHERE job_code='outbox.relay'", Integer.class));
+        var ordinaryId = register();
+        await().atMost(Duration.ofSeconds(15)).until(() -> "SUCCEEDED".equals(state(ordinaryId)));
+        setRelayPaused(false);
+        try {
+            assertTrue(relayProbe.entered.await(10, TimeUnit.SECONDS));
+            setRelayPaused(true); assertEquals("RUNNING", state(relayId));
+        } finally { relayProbe.release.countDown(); }
+        await().atMost(Duration.ofSeconds(10)).until(() -> "SUCCEEDED".equals(state(relayId)));
+        var resumed = new CountDownLatch(1); var resumedFailure = new AtomicReference<JobExecutionException>();
+        watch(one, "schedule.outbox.relay", resumed, resumedFailure);
+        watch(two, "schedule.outbox.relay", resumed, resumedFailure);
+        setRelayPaused(false); one.triggerJob(new JobKey("schedule.outbox.relay", GROUP));
+        assertTrue(resumed.await(10, TimeUnit.SECONDS)); assertNull(resumedFailure.get());
+        var created = jdbc.queryForList("SELECT execution_id FROM job_execution WHERE job_code='outbox.relay' AND execution_id<>?", String.class, relayId.toString());
+        assertEquals(1, created.size()); relayExecutions.add(UUID.fromString(created.getFirst()));
+    }
+
+    /**
+     * 共享控制行被其他事务占用时计划登记失败关闭，不创建Relay执行。
+     * @throws Exception 调度或并发协调失败
+     */
+    @Test
+    void refusesRelayScheduleWhileControlRowIsLocked() throws Exception {
+        setRelayPaused(false); relayProbe.cron = "0 0 0 1 1 ? 2099";
+        var context = context(true, true); var scheduler = context.getBean("relayJobScheduler", Scheduler.class);
+        var fired = new CountDownLatch(1); var failure = new AtomicReference<JobExecutionException>();
+        watch(scheduler, "schedule.outbox.relay", fired, failure);
+        var held = new CountDownLatch(1); var release = new CountDownLatch(1);
+        var work = parent.getBean(UnitOfWork.class);
+        try (var threads = Executors.newVirtualThreadPerTaskExecutor()) {
+            var lock = threads.submit(() -> work.execute(() -> {
+                jdbc.queryForObject("SELECT revision FROM outbox_relay_control WHERE singleton_id=1 FOR UPDATE", Long.class);
+                held.countDown();
+                try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+                catch (InterruptedException signal) { Thread.currentThread().interrupt(); throw new IllegalStateException("控制锁测试中断"); }
+                return null;
+            }));
+            try {
+                assertTrue(held.await(5, TimeUnit.SECONDS)); scheduler.start();
+                scheduler.triggerJob(new JobKey("schedule.outbox.relay", GROUP));
+                assertTrue(fired.await(10, TimeUnit.SECONDS)); assertNotNull(failure.get());
+                assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM job_execution WHERE job_code='outbox.relay'", Integer.class));
+            } finally { release.countDown(); }
+            lock.get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * 普通调度器中出现伪造Relay目标时拒绝执行，不读取或领取该任务。
+     * @throws Exception Quartz调用失败
+     */
+    @Test
+    void rejectsRelayJobFromOrdinaryScheduler() throws Exception {
+        setRelayPaused(false); relayProbe.periodic = false;
+        var context = context(true, true); var ordinary = context.getBean(Scheduler.class);
+        var fired = new CountDownLatch(1); var failure = new AtomicReference<JobExecutionException>();
+        watch(ordinary, "run.outbox.relay", fired, failure);
+        var key = new JobKey("run.outbox.relay", GROUP);
+        ordinary.addJob(JobBuilder.newJob(QuartzDispatchJob.class).withIdentity(key).storeDurably()
+                .usingJobData("jobCode", "outbox.relay").usingJobData("mode", "run").build(), false);
+        var id = registerRelay(); ordinary.triggerJob(key);
+        assertTrue(fired.await(10, TimeUnit.SECONDS)); assertNotNull(failure.get()); assertEquals("WAITING", state(id));
     }
 
     /** 两个真实Scheduler共享固定轮询，失败后按数据库退避再次执行，不创建每次重试触发器。 */
@@ -436,6 +525,27 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
     }
 
     /**
+     * 监听本测试固定任务的实际Quartz执行，不将监听当作工作线程退出证据。
+     * @param scheduler 当前测试调度器
+     * @param keyName 固定JobKey名称
+     * @param fired 执行结束信号
+     * @param failure 记录Quartz错误
+     * @throws SchedulerException 监听器登记失败
+     */
+    private void watch(Scheduler scheduler, String keyName, CountDownLatch fired,
+            AtomicReference<JobExecutionException> failure) throws SchedulerException {
+        scheduler.getListenerManager().addJobListener(new JobListenerSupport() {
+            private final String name = "probe-" + UUID.randomUUID();
+            /** {@inheritDoc} */
+            @Override public String getName() { return name; }
+            /** {@inheritDoc} */
+            @Override public void jobWasExecuted(JobExecutionContext context, JobExecutionException error) {
+                if (keyName.equals(context.getJobDetail().getKey().getName())) { failure.set(error); fired.countDown(); }
+            }
+        });
+    }
+
+    /**
      * 显式切换本独占测试数据库中的共享暂停状态，并记录测试前状态供恢复。
      * @param paused 目标状态
      */
@@ -505,13 +615,14 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
         private final CountDownLatch entered = new CountDownLatch(1);
         private final CountDownLatch release = new CountDownLatch(1);
         private volatile boolean periodic = true;
+        private volatile String cron = "0/5 * * * * ?";
         private volatile boolean block;
         /** {@inheritDoc} */
         @Override public String jobCode() { return "outbox.relay"; }
         /** {@inheritDoc} */
         @Override public Optional<JobDefinition> periodicDefinition() {
             if (!periodic) return Optional.empty();
-            return Optional.of(new JobDefinition("outbox.relay", JobDefinition.Type.CRON, Optional.of("0/5 * * * * ?"),
+            return Optional.of(new JobDefinition("outbox.relay", JobDefinition.Type.CRON, Optional.of(cron),
                     Optional.empty(), 30, new JobDefinition.RetryPolicy(3, Duration.ofSeconds(1), Duration.ofSeconds(30)),
                     JobDefinition.IdempotencyRule.SCHEDULE_TIME));
         }

@@ -1,8 +1,10 @@
 package com.patrick.stratum.job;
 
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
 
+import com.patrick.stratum.application.event.OutboxRelayControlApplicationService;
 import com.patrick.stratum.application.job.JobExecutionApplicationService;
 import com.patrick.stratum.common.trace.CorrelationIdPolicy;
 import com.patrick.stratum.domain.job.JobExecutionRepository.Submission;
@@ -14,6 +16,7 @@ import org.quartz.DisallowConcurrentExecution;
 import org.quartz.InterruptableJob;
 import org.quartz.JobExecutionContext;
 import org.quartz.JobExecutionException;
+import org.quartz.SchedulerException;
 
 /**
  * 固定处理器的Quartz驱动；只登记计划或查询一个到期候选，不保存内存重试队列。
@@ -26,6 +29,9 @@ public class QuartzDispatchJob implements InterruptableJob {
     private final JobExecutionApplicationService jobs;
     private final JobHandlerRegistry registry;
     private final JobTaskExecutor executor;
+    private final OutboxRelayControlApplicationService relayControl;
+    private final String ordinarySchedulerName;
+    private final String relaySchedulerName;
     private final ReentrantLock phase = new ReentrantLock();
     private Thread owner;
     private boolean stopped;
@@ -54,6 +60,13 @@ public class QuartzDispatchJob implements InterruptableJob {
                     || !detail.getKey().getName().equals(mode + "." + code)) {
                 throw new IllegalArgumentException("持久化调度目标不匹配");
             }
+            boolean relay = JobHandlerRegistry.RELAY_JOB_CODE.equals(code);
+            String expectedScheduler = relay ? relaySchedulerName : ordinarySchedulerName;
+            if (expectedScheduler == null || !Objects.equals(expectedScheduler, context.getScheduler().getSchedulerName())) {
+                throw new IllegalArgumentException("固定任务与调度器不匹配");
+            }
+            if (Thread.currentThread().isInterrupted()) return;
+            if (relay && !relayControl.tryAdmit().allowed()) return;
             if (Thread.currentThread().isInterrupted()) return;
             if ("run".equals(mode)) {
                 var due = jobs.due(code, 1);
@@ -63,7 +76,7 @@ public class QuartzDispatchJob implements InterruptableJob {
                 var time = context.getScheduledFireTime().toInstant();
                 jobs.register(new Submission(UUID.randomUUID(), definition, time, code + ":" + time, "{}", CorrelationIdPolicy.resolve(null)));
             }
-        } catch (RuntimeException failure) {
+        } catch (SchedulerException | RuntimeException failure) {
             log.atWarn().addKeyValue("errorType", failure.getClass().getSimpleName())
                     .log("固定调度驱动失败 errorType={}", failure.getClass().getSimpleName());
             throw new JobExecutionException("固定调度驱动失败");
