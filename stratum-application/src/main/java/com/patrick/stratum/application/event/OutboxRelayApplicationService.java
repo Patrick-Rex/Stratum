@@ -83,7 +83,7 @@ public class OutboxRelayApplicationService {
             return publisher.publish(claim.delivery());
         } catch (IllegalArgumentException failure) {
             logFailure(claim, failure, "invalid-envelope");
-            return OutboxPublisher.PublishResult.REJECTED;
+            return OutboxPublisher.PublishResult.INVALID_ENVELOPE;
         } catch (RuntimeException failure) {
             logFailure(claim, failure, "publisher-unavailable");
             return OutboxPublisher.PublishResult.UNAVAILABLE;

@@ -11,16 +11,21 @@ public interface OutboxPublisher {
     /**
      * 发布已持久化且被Relay领取的完整事件，等待有界确认，不自行重试业务消息。
      * @param delivery 复用Outbox信封与数据库持久化序号
-     * @return 确认、不可路由、否定、超时或不可用结果；后四者均不得标记发送成功
+     * @return 确认、不可路由、Broker否定、超时、不可用或非法信封；除确认外均不得标记发送成功
      * @throws IllegalArgumentException 投递内容为空、格式损坏或不在支持的事件路由范围
      * @throws IllegalStateException 调用方仍处于业务写事务
      * @apiNote 示例：PublishResult result = publisher.publish(new Delivery(message, 1L))。
      */
     PublishResult publish(Delivery delivery);
 
-    /** 发布结果值对象枚举；超时和不可用可能已经到达Broker，重试必须沿用同一eventId。 */
+    /** 发布结果值对象枚举；结果不确定时重试必须沿用同一eventId。 */
     enum PublishResult {
-        CONFIRMED, RETURNED, REJECTED, TIMED_OUT, UNAVAILABLE
+        /** Broker确认。 */ CONFIRMED,
+        /** Broker退回不可路由消息。 */ RETURNED,
+        /** Broker否定确认，可能由暂时性容量限制引起。 */ REJECTED,
+        /** 发布确认超时，实际投递结果不确定。 */ TIMED_OUT,
+        /** 发布器不可用，实际投递结果可能不确定。 */ UNAVAILABLE,
+        /** 本地校验确认信封无效。 */ INVALID_ENVELOPE
     }
 
     /**

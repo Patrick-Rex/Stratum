@@ -47,19 +47,20 @@ class OutboxRelayApplicationServiceTest {
         assertEquals(1, repository.queue.size());
     }
 
-    /** 发布异常安全分类；租约状态未更新不计入已记录条数。 */
+    /** 本地非法信封、Broker 否定确认和暂时不可用分别分类；未更新的租约不计入已记录条数。 */
     @Test
     void classifiesFailuresAndCountsOnlyPersistedOutcomes() {
-        var repository = new RepositoryFake(3);
-        repository.finishReplies.addAll(List.of(true, false, true));
+        var repository = new RepositoryFake(4);
+        repository.finishReplies.addAll(List.of(true, false, true, true));
         var attempts = new AtomicInteger();
         var service = service(repository, delivery -> switch (attempts.getAndIncrement()) {
             case 0 -> throw new IllegalArgumentException("private-payload");
             case 1 -> throw new IllegalStateException("private-password");
+            case 2 -> REJECTED;
             default -> TIMED_OUT;
         });
-        assertEquals(2, service.runBatch(request(3), policy));
-        assertEquals(List.of(REJECTED, UNAVAILABLE, TIMED_OUT), repository.outcomes);
+        assertEquals(3, service.runBatch(request(4), policy));
+        assertEquals(List.of(INVALID_ENVELOPE, UNAVAILABLE, REJECTED, TIMED_OUT), repository.outcomes);
     }
 
     /** 未启用消息或外部仍在事务中时，不能开始领取。 */
