@@ -1427,3 +1427,9 @@ Quartz驱动在Relay计划登记及到期查询前核验专用调度器和共享
 本地运行在既有数据库、Redis、认证和专用Broker配置就绪后，可设置 `STRATUM_JOBS_ENABLED=true`、`STRATUM_JOBS_RELAY_ENABLED=true`、`STRATUM_MQ_ENABLED=true` 和 `STRATUM_MQ_CONSUMER_ENABLED=true`。同集群 `STRATUM_JOBS_NAME` 和Relay周期配置必须一致；默认UTC每分钟、批次与对账各16、任务时限30秒，可分别用Spring属性 `stratum.jobs.relay.cron`、`batch-size`、`reconciliation-limit`、`timeout-sec` 配置。变更持久Quartz目标需先停用并规划迁移，启动不会覆盖已有不一致定义。
 
 共享状态初始暂停，实例启动不会自动恢复；经管理来源及当前启用管理员认证，以版本1 `GET /api/management/outbox/relay` 获取 `revision` 和 `paused`，随后 `PUT` 提交观察版本及目标。旧版本409须重新查询；暂停不取消已准入批次。停用Relay实例不加入专用调度组，普通任务仍可工作。恢复状态下即使没有事件也会保留每次计划的任务历史，默认约1440条/天且不含重试，系统不自动清理。停止本地Starter使用Ctrl+C并等待线程关闭；不删除原有数据库或Broker数据。
+
+## NODE-E03.6 调度阶段全工程回归
+
+执行 `test :stratum-gateway:integrationTest :stratum-starter:integrationTest --rerun-tasks`，42个任务全部实际执行，258项单元、10项Gateway集成和680项Starter集成共948项通过，零失败、错误或跳过。覆盖独立Quartz命名空间、共享暂停、真实进程故障、RabbitMQ自动消费、缓存屏障、日志及关闭；不包含部署验收。
+
+首轮回归发现Outbox管理接口显式错误响应未生成统一错误模型；修复后保留原描述并统一模型，增加PUT及管理缓存头OpenAPI检查。修复针对性13项Starter HTTP集成和接口模块单元测试通过，再以上述命令完整重跑。E03完成；E04任务用途及取消边界仍待用户确认。

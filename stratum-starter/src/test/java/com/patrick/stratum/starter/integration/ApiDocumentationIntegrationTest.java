@@ -197,7 +197,7 @@ class ApiDocumentationIntegrationTest extends AuthenticatedHttpIntegrationTest {
             }
             for (var entry : document.path("paths").properties()) {
                 if (!entry.getKey().startsWith("/api/")) continue;
-                for (String method : List.of("get", "post", "patch", "delete")) {
+                for (String method : List.of("get", "post", "put", "patch", "delete")) {
                     var operation = entry.getValue().path(method);
                     if (operation.isMissingNode()) continue;
                     assertTrue(operation.path("security").get(0).has("bearerAuth"), entry.getKey());
@@ -207,6 +207,16 @@ class ApiDocumentationIntegrationTest extends AuthenticatedHttpIntegrationTest {
                         assertEquals(Integer.parseInt(status) * 100, schema.path("properties").path("code").path("example").asInt());
                         assertTrue(error.path("headers").has("X-Trace-Id"));
                     }
+                }
+            }
+            for (var path : List.of("/api/management/outbox/relay", "/api/management/outbox/events/{eventId}/recoveries")) {
+                var item = document.path("paths").path(path);
+                for (var method : List.of("get", "post", "put")) {
+                    var operation = item.path(method);
+                    if (operation.isMissingNode()) continue;
+                    var success = operation.path("responses").path("200");
+                    assertTrue(success.path("headers").has("Cache-Control"));
+                    assertTrue(success.path("headers").has("Pragma"));
                 }
             }
             var anonymous = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/erp/masters/MATERIAL"))

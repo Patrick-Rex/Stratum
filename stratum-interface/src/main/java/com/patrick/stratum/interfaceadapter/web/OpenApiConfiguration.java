@@ -85,7 +85,7 @@ public class OpenApiConfiguration {
         return document -> {
             if (document.getPaths() == null) return;
             document.getPaths().forEach((path, item) -> {
-                if (!path.startsWith("/api/auth/")) return;
+                if (!path.startsWith("/api/auth/") && !path.startsWith("/api/management/outbox/")) return;
                 item.readOperationsMap().forEach((method, operation) -> operation.getResponses().forEach((status, response) -> {
                     if (!status.matches("2[0-9]{2}")) return;
                     response.addHeaderObject("Cache-Control", new Header().schema(new StringSchema().example("no-store")));
@@ -211,16 +211,17 @@ public class OpenApiConfiguration {
     }
 
     /**
-     * 补齐未显式声明的通用错误，不覆盖业务注解的更具体描述。
+     * 统一通用错误模型并保留业务注解的更具体描述。
      * @param operation 当前操作
      * @param status HTTP状态
      * @param description 对客户端安全的描述
      * @param error 对应错误码及默认消息
      */
     private void addErrorResponse(Operation operation, String status, String description, CommonErrorCode error) {
-        operation.getResponses().putIfAbsent(status, new io.swagger.v3.oas.models.responses.ApiResponse()
-                .description(description).addHeaderObject("X-Trace-Id", new Header().schema(new StringSchema()))
-                .content(new Content().addMediaType("application/json",
-                        new io.swagger.v3.oas.models.media.MediaType().schema(envelope(null, error)))));
+        var response = operation.getResponses().computeIfAbsent(status,
+                ignored -> new io.swagger.v3.oas.models.responses.ApiResponse().description(description));
+        response.addHeaderObject("X-Trace-Id", new Header().schema(new StringSchema()));
+        response.setContent(new Content().addMediaType("application/json",
+                new io.swagger.v3.oas.models.media.MediaType().schema(envelope(null, error))));
     }
 }
