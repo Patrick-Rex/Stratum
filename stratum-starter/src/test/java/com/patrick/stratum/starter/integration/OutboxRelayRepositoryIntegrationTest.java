@@ -181,7 +181,7 @@ class OutboxRelayRepositoryIntegrationTest extends MariaDbIntegrationTest {
                 () -> jdbc.update("UPDATE outbox_event SET lease_until = NULL WHERE event_id = ?", event.eventId()));
     }
 
-    /** 极大失败计数保持INT上限而不溢出，失败结果仍进入FAILED。 */
+    /** 临时故障的极大失败计数保持INT上限，并继续按封顶间隔重试。 */
     @Test
     void saturatesCorruptlyLargeFailureCountWithoutOverflow() {
         var event = seed(1).getFirst();
@@ -189,7 +189,7 @@ class OutboxRelayRepositoryIntegrationTest extends MariaDbIntegrationTest {
         var claim = claim(1).getFirst();
         assertTrue(finish(claim, UNAVAILABLE));
         assertEquals(Integer.MAX_VALUE, retries(claim));
-        assertEquals("FAILED", status(claim));
+        assertEquals("PENDING", status(claim));
     }
 
     /**

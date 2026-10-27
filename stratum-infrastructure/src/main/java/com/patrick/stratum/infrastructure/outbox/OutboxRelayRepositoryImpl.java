@@ -87,7 +87,8 @@ public class OutboxRelayRepositoryImpl implements OutboxRelayRepository {
                 UUID token = UUID.randomUUID();
                 LocalDateTime expires = head.databaseNow().plusNanos(request.leaseDuration().toNanos());
                 int changed = jdbc.update("""
-                        UPDATE outbox_event SET status = 'PROCESSING', lease_token = ?, lease_until = ?, version = version + 1
+                        UPDATE outbox_event SET status = 'PROCESSING', lease_token = ?, lease_until = ?,
+                            version = CASE WHEN version < 9223372036854775807 THEN version + 1 ELSE version END
                         WHERE event_id = ?
                         """, token.toString(), expires, head.delivery().message().eventId());
                 if (changed != 1) throw new StratumException(CommonErrorCode.CONFLICT);
@@ -108,7 +109,9 @@ public class OutboxRelayRepositoryImpl implements OutboxRelayRepository {
         Objects.requireNonNull(retryPolicy, "重试策略不能为空");
         boolean confirmed = result == OutboxPublisher.PublishResult.CONFIRMED;
         int failures = confirmed ? claim.retryCount() : (int) Math.min(Integer.MAX_VALUE, (long) claim.retryCount() + 1);
-        String target = confirmed ? "SENT" : failures >= retryPolicy.maxFailures() ? "FAILED" : "PENDING";
+        boolean definite = result == OutboxPublisher.PublishResult.RETURNED
+                || result == OutboxPublisher.PublishResult.INVALID_ENVELOPE;
+        String target = confirmed ? "SENT" : definite && failures >= retryPolicy.maxFailures() ? "FAILED" : "PENDING";
         long delayMicros = target.equals("PENDING") ? retryPolicy.delayForFailure(failures).toNanos() / 1000 : 0;
         var delivery = claim.delivery();
         try {
@@ -117,11 +120,16 @@ public class OutboxRelayRepositoryImpl implements OutboxRelayRepository {
                     WHERE event_id = ? AND status = 'PROCESSING' AND lease_token = ?
                     FOR UPDATE SKIP LOCKED
                     """, String.class, delivery.message().eventId(), claim.token().toString());
-            if (locked.isEmpty()) return finishReplay(claim, target, failures, delayMicros);
+            if (locked.isEmpty()) {
+                String replayTarget = confirmed ? "SENT" : failures >= retryPolicy.maxFailures() ? "FAILED" : "PENDING";
+                long replayDelayMicros = replayTarget.equals("PENDING") ? retryPolicy.delayForFailure(failures).toNanos() / 1000 : 0;
+                return finishReplay(claim, replayTarget, failures, replayDelayMicros);
+            }
             return jdbc.update("""
                     UPDATE outbox_event SET status = ?, retry_count = ?,
                         next_retry_at = TIMESTAMPADD(MICROSECOND, ?, UTC_TIMESTAMP(6)),
-                        lease_token = NULL, lease_until = NULL, version = version + 1
+                        lease_token = NULL, lease_until = NULL,
+                        version = CASE WHEN version < 9223372036854775807 THEN version + 1 ELSE version END
                     WHERE event_id = ? AND aggregate_id = ? AND event_sequence = ?
                       AND status = 'PROCESSING' AND lease_token = ? AND retry_count = ?
                       AND lease_until > UTC_TIMESTAMP(6)

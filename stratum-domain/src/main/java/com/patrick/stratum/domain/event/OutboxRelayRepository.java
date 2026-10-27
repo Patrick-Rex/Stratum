@@ -87,8 +87,8 @@ public interface OutboxRelayRepository {
     }
 
     /**
-     * 值对象：有界发送失败重试，达到maxFailures即FAILED而不跳过聚合头。
-     * @param maxFailures 最大失败次数
+     * 值对象：发布失败退避和累计失败次数阈值，不跳过聚合头。累计次数包含临时故障。原事件的临时或不确定故障持续封顶重试；消费死信重放使用原有阈值策略。
+     * @param maxFailures 明确故障或消费重放判断所用的累计失败次数阈值
      * @param initialDelay 首次重试延迟
      * @param maxDelay 指数退避上限
      */

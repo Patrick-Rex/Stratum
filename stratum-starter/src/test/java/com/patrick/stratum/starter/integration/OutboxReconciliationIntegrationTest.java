@@ -376,6 +376,103 @@ class OutboxReconciliationIntegrationTest {
         assertEquals(event.message().eventId(), jdbc.queryForObject("SELECT event_id FROM outbox_reconciliation_cursor WHERE cursor_id=1", String.class));
     }
 
+    /** 临时故障超过失败阈值后仍按数据库时间封顶退避，原身份和聚合顺序保持不变。 */
+    @Test
+    void retriesTransientPublicationFailuresBeyondLimitWithCappedDelay() {
+        var events = unpublishedEvents(2);
+        var policy = new OutboxRelayRepository.RetryPolicy(2, Duration.ofSeconds(1), Duration.ofSeconds(2));
+        var request = new OutboxRelayRepository.ClaimRequest(1, Duration.ofSeconds(30));
+        var outcomes = List.of(OutboxPublisher.PublishResult.TIMED_OUT, OutboxPublisher.PublishResult.UNAVAILABLE,
+                OutboxPublisher.PublishResult.REJECTED);
+        for (int i = 0; i < outcomes.size(); i++) {
+            var claim = unitOfWork.execute(() -> relay.claim(request)).getFirst();
+            assertEquals(events.getFirst(), claim.delivery());
+            assertEquals(i, claim.retryCount());
+            var before = jdbc.queryForObject("SELECT UTC_TIMESTAMP(6)", LocalDateTime.class);
+            assertTrue(unitOfWork.execute(() -> relay.finish(claim, outcomes.get(claim.retryCount()), policy)));
+            var after = jdbc.queryForObject("SELECT UTC_TIMESTAMP(6)", LocalDateTime.class);
+            var retryAt = jdbc.queryForObject("SELECT next_retry_at FROM outbox_event WHERE event_id=?", LocalDateTime.class, events.getFirst().message().eventId());
+            long delay = i == 0 ? 1 : 2;
+            assertFalse(retryAt.isBefore(before.plusSeconds(delay)));
+            assertFalse(retryAt.isAfter(after.plusSeconds(delay)));
+            assertEquals("PENDING", eventRow(events.getFirst()).status());
+            assertEquals(i + 1, eventRow(events.getFirst()).retryCount());
+            assertEquals("PENDING", eventRow(events.get(1)).status());
+            jdbc.update("UPDATE outbox_event SET next_retry_at='2100-01-01 00:00:00' WHERE event_id=?", events.getFirst().message().eventId());
+            assertTrue(unitOfWork.execute(() -> relay.claim(request)).isEmpty());
+            jdbc.update("UPDATE outbox_event SET next_retry_at='2000-01-01 00:00:00' WHERE event_id=?", events.getFirst().message().eventId());
+        }
+        var retry = unitOfWork.execute(() -> relay.claim(request)).getFirst();
+        assertEquals(events.getFirst(), retry.delivery());
+        assertTrue(unitOfWork.execute(() -> relay.finish(retry, OutboxPublisher.PublishResult.CONFIRMED, policy)));
+        assertEquals("SENT", eventRow(events.getFirst()).status());
+        assertTrue(unitOfWork.execute(() -> relay.claim(request)).isEmpty());
+        assertEquals(OutboxConsumer.Outcome.CONSUMED, consumer.consume(events.getFirst(), ERP_AUDIT));
+        assertEquals(events.get(1), unitOfWork.execute(() -> relay.claim(request)).getFirst().delivery());
+    }
+
+    /** 不可路由或非法信封达到阈值后保留失败头，另一聚合仍可领取。 */
+    @Test
+    void stopsDefinitivePublicationFailuresAtThresholdWithoutSkippingHead() {
+        var policy = new OutboxRelayRepository.RetryPolicy(2, Duration.ofSeconds(1), Duration.ofSeconds(2));
+        var request = new OutboxRelayRepository.ClaimRequest(1, Duration.ofSeconds(30));
+        for (var result : List.of(OutboxPublisher.PublishResult.RETURNED, OutboxPublisher.PublishResult.INVALID_ENVELOPE)) {
+            var events = unpublishedEvents(2);
+            var first = unitOfWork.execute(() -> relay.claim(request)).getFirst();
+            assertEquals(events.getFirst(), first.delivery());
+            assertTrue(unitOfWork.execute(() -> relay.finish(first, result, policy)));
+            assertEquals("PENDING", eventRow(events.getFirst()).status());
+            jdbc.update("UPDATE outbox_event SET next_retry_at='2000-01-01 00:00:00' WHERE event_id=?", events.getFirst().message().eventId());
+            var second = unitOfWork.execute(() -> relay.claim(request)).getFirst();
+            assertEquals(events.getFirst(), second.delivery());
+            assertTrue(unitOfWork.execute(() -> relay.finish(second, result, policy)));
+            assertEquals("FAILED", eventRow(events.getFirst()).status());
+            assertEquals(2, eventRow(events.getFirst()).retryCount());
+            assertEquals("PENDING", eventRow(events.get(1)).status());
+            assertTrue(unitOfWork.execute(() -> relay.claim(request)).isEmpty());
+        }
+        var other = unpublishedEvents(1).getFirst();
+        assertEquals(other, unitOfWork.execute(() -> relay.claim(request)).getFirst().delivery());
+    }
+
+    /** 暂时故障也计入累计失败次数，后续明确故障按累计阈值转入FAILED。 */
+    @Test
+    void usesCumulativeFailureCountWhenDefinitiveFailureFollowsTransientFailures() {
+        var event = unpublishedEvents(1).getFirst();
+        var policy = new OutboxRelayRepository.RetryPolicy(2, Duration.ofSeconds(1), Duration.ofSeconds(2));
+        var request = new OutboxRelayRepository.ClaimRequest(1, Duration.ofSeconds(30));
+        for (var result : List.of(OutboxPublisher.PublishResult.UNAVAILABLE, OutboxPublisher.PublishResult.TIMED_OUT)) {
+            var claim = unitOfWork.execute(() -> relay.claim(request)).getFirst();
+            assertTrue(unitOfWork.execute(() -> relay.finish(claim, result, policy)));
+            assertEquals("PENDING", eventRow(event).status());
+            jdbc.update("UPDATE outbox_event SET next_retry_at='2000-01-01 00:00:00' WHERE event_id=?", event.message().eventId());
+        }
+        assertEquals(2, eventRow(event).retryCount());
+        var claim = unitOfWork.execute(() -> relay.claim(request)).getFirst();
+        assertEquals(event, claim.delivery());
+        assertTrue(unitOfWork.execute(() -> relay.finish(claim, OutboxPublisher.PublishResult.RETURNED, policy)));
+        assertEquals("FAILED", eventRow(event).status());
+        assertEquals(3, eventRow(event).retryCount());
+        assertTrue(unitOfWork.execute(() -> relay.claim(request)).isEmpty());
+    }
+
+    /** 失败次数及版本达到存储上限时仍能接管和封顶重试，过期令牌不可覆盖新领取。 */
+    @Test
+    void saturatesCountersAndFencesReplacedLeaseForTransientFailure() {
+        var event = unpublishedEvents(1).getFirst();
+        var request = new OutboxRelayRepository.ClaimRequest(1, Duration.ofSeconds(30));
+        jdbc.update("UPDATE outbox_event SET retry_count=?, version=? WHERE event_id=?", Integer.MAX_VALUE, Long.MAX_VALUE, event.message().eventId());
+        var old = unitOfWork.execute(() -> relay.claim(request)).getFirst();
+        jdbc.update("UPDATE outbox_event SET lease_until='2000-01-01 00:00:00' WHERE event_id=?", event.message().eventId());
+        var current = unitOfWork.execute(() -> relay.claim(request)).getFirst();
+        assertNotEquals(old.token(), current.token());
+        assertFalse(unitOfWork.execute(() -> relay.finish(old, OutboxPublisher.PublishResult.CONFIRMED, retryPolicy())));
+        assertTrue(unitOfWork.execute(() -> relay.finish(current, OutboxPublisher.PublishResult.UNAVAILABLE, retryPolicy())));
+        assertEquals("PENDING", eventRow(event).status());
+        assertEquals(Integer.MAX_VALUE, eventRow(event).retryCount());
+        assertEquals(Long.MAX_VALUE, jdbc.queryForObject("SELECT version FROM outbox_event WHERE event_id=?", Long.class, event.message().eventId()));
+    }
+
     /** 两个事务争用数据库单例游标时仅一个收敛，令牌行锁而非进程内同步提供资格。 */
     @Test
     void coordinatesConcurrentInstancesWithDatabaseCursor() throws Exception {
@@ -415,6 +512,23 @@ class OutboxReconciliationIntegrationTest {
             holder.get(5, TimeUnit.SECONDS);
         }
         assertEquals(RECONCILED, scan()); assertEquals("CONSUMED", eventRow(event).status());
+    }
+
+    /**
+     * 在独占库中同事务追加同一聚合的未消费事件。
+     * @param count 事件数量
+     * @return 按数据库顺序构造的原始事件
+     */
+    private List<Delivery> unpublishedEvents(int count) {
+        String aggregate = UUID.randomUUID().toString();
+        var events = new ArrayList<Delivery>();
+        for (int i = 0; i < count; i++) {
+            var message = new OutboxMessage(UUID.randomUUID().toString(), "erp.probe.created", aggregate,
+                    Instant.parse("2026-10-26T10:00:00.123456Z"), "{}", "relay-isolated-trace");
+            events.add(new Delivery(message, i + 1L));
+        }
+        unitOfWork.execute(() -> { events.forEach(event -> outbox.append(event.message())); return null; });
+        return events;
     }
 
     /**
