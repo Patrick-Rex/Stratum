@@ -15,8 +15,10 @@ import java.util.concurrent.TimeUnit;
 
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.application.event.OutboxReconciliationApplicationService;
+import com.patrick.stratum.common.error.StratumException;
 import com.patrick.stratum.domain.event.OutboxConsumer;
 import com.patrick.stratum.domain.event.OutboxMessage;
+import com.patrick.stratum.domain.event.OutboxOriginalRecoveryRepository;
 import com.patrick.stratum.domain.event.OutboxPublisher;
 import com.patrick.stratum.domain.event.OutboxPublisher.Delivery;
 import com.patrick.stratum.domain.event.OutboxReconciliationRepository;
@@ -61,9 +63,12 @@ class OutboxReconciliationIntegrationTest {
     private final OutboxConsumer consumer;
     private final OutboxReconciliationRepository reconciliation;
     private final OutboxReconciliationApplicationService reconciliationService;
+    private final OutboxOriginalRecoveryRepository originalRecovery;
     private final OutboxRelayRepository relay;
     private final StringRedisTemplate redis;
     private final List<String> cacheKeys = new ArrayList<>();
+    private final List<UUID> recoveryRequests = new ArrayList<>();
+    private final List<UUID> replayArchives = new ArrayList<>();
     private boolean verified;
 
     /**
@@ -75,17 +80,20 @@ class OutboxReconciliationIntegrationTest {
      * @param consumer 实际消费凭据入口
      * @param reconciliation 对账存储端口
      * @param reconciliationService 事务外有界批次入口
+     * @param originalRecovery 原事件恢复端口
      * @param relay 发送完成端口
      * @param redis 仅清理本测试随机缓存键
      */
     @Autowired
     OutboxReconciliationIntegrationTest(ApplicationContext context, JdbcTemplate jdbc, UnitOfWork unitOfWork,
             OutboxRepository outbox, OutboxConsumer consumer, OutboxReconciliationRepository reconciliation,
-            OutboxRelayRepository relay, StringRedisTemplate redis, OutboxReconciliationApplicationService reconciliationService) {
+            OutboxRelayRepository relay, StringRedisTemplate redis, OutboxReconciliationApplicationService reconciliationService,
+            OutboxOriginalRecoveryRepository originalRecovery) {
         application = (ConfigurableApplicationContext) context;
         this.jdbc = jdbc; this.unitOfWork = unitOfWork; this.outbox = outbox; this.consumer = consumer;
         this.reconciliation = reconciliation; this.relay = relay; this.redis = redis;
         this.reconciliationService = reconciliationService;
+        this.originalRecovery = originalRecovery;
     }
 
     /**
@@ -130,6 +138,9 @@ class OutboxReconciliationIntegrationTest {
     @AfterEach
     void cleanupRecords() {
         if (!verified) return;
+        for (var id : recoveryRequests) jdbc.update("DELETE FROM outbox_original_recovery_request WHERE request_id=?", id.toString());
+        for (var id : replayArchives) jdbc.update("DELETE FROM outbox_replay_delivery WHERE dead_id=?", id.toString());
+        for (var id : replayArchives) jdbc.update("DELETE FROM outbox_dead_letter WHERE dead_id=?", id.toString());
         jdbc.update("DELETE FROM outbox_consumption");
         jdbc.update("DELETE FROM outbox_event");
         jdbc.update("DELETE FROM outbox_aggregate_progress");
@@ -222,6 +233,238 @@ class OutboxReconciliationIntegrationTest {
                 jdbc.update("DELETE FROM outbox_original_recovery_request WHERE request_id=?", id);
             }
         }
+    }
+
+    /** 失败头恢复保留原信封和累计次数；重复请求返回首次回执，异身份不可复用请求。 */
+    @Test
+    void recoversOriginalHeadAndReplaysOnlyTheSameRequestIdentity() {
+        var event = unpublishedEvents(1).getFirst();
+        markFailed(event, 7);
+        var request = recoveryRequest(event);
+        var receipt = unitOfWork.execute(() -> originalRecovery.recover(request));
+        assertEquals(OutboxOriginalRecoveryRepository.Outcome.RECOVERED, receipt.outcome());
+        assertEquals(7, receipt.previousFailures().orElseThrow());
+        assertEquals(request.requestId(), receipt.requestId()); assertEquals(request.operatorId(), receipt.operatorId());
+        assertEquals("PENDING", eventRow(event).status()); assertEquals(7, eventRow(event).retryCount());
+        var original = jdbc.queryForMap("SELECT event_id,event_type,aggregate_id,event_sequence,payload,trace_id FROM outbox_event WHERE event_id=?", event.message().eventId());
+        assertEquals(event.message().eventId(), original.get("event_id")); assertEquals(event.message().eventType(), original.get("event_type"));
+        assertEquals(event.message().aggregateId(), original.get("aggregate_id")); assertEquals(event.sequence(), ((Number) original.get("event_sequence")).longValue());
+        assertEquals(event.message().payload(), original.get("payload")); assertEquals(event.message().traceId(), original.get("trace_id"));
+        var repeated = new OutboxOriginalRecoveryRepository.Request(request.requestId(), request.eventId(), request.operatorId(), "later-trace");
+        assertEquals(receipt, unitOfWork.execute(() -> originalRecovery.recover(repeated)));
+        var otherEvent = unpublishedEvents(1).getFirst();
+        var changedEvent = new OutboxOriginalRecoveryRepository.Request(request.requestId(), UUID.fromString(otherEvent.message().eventId()), request.operatorId(), "other-trace");
+        var changedActor = new OutboxOriginalRecoveryRepository.Request(request.requestId(), request.eventId(), UUID.randomUUID(), "other-trace");
+        assertThrows(StratumException.class, () -> unitOfWork.execute(() -> originalRecovery.recover(changedEvent)));
+        assertThrows(StratumException.class, () -> unitOfWork.execute(() -> originalRecovery.recover(changedActor)));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_original_recovery_request WHERE request_id=?", Integer.class, request.requestId().toString()));
+    }
+
+    /** 非聚合头、待发布或已发送但无消费证据不能恢复，也不留下登记回执。 */
+    @Test
+    void refusesNonHeadAndIneligibleOriginalStates() {
+        var events = unpublishedEvents(2); markFailed(events.get(1), 2);
+        var nonHead = recoveryRequest(events.get(1));
+        assertThrows(StratumException.class, () -> unitOfWork.execute(() -> originalRecovery.recover(nonHead)));
+        var pending = recoveryRequest(events.getFirst());
+        assertThrows(StratumException.class, () -> unitOfWork.execute(() -> originalRecovery.recover(pending)));
+        jdbc.update("UPDATE outbox_event SET status='SENT' WHERE event_id=?", events.getFirst().message().eventId());
+        var sent = recoveryRequest(events.getFirst());
+        assertThrows(StratumException.class, () -> unitOfWork.execute(() -> originalRecovery.recover(sent)));
+        jdbc.update("UPDATE outbox_event SET status='CONSUMED',consumed_from_status='PENDING' WHERE event_id=?", events.getFirst().message().eventId());
+        var unsupportedConsumed = recoveryRequest(events.getFirst());
+        assertThrows(StratumException.class, () -> unitOfWork.execute(() -> originalRecovery.recover(unsupportedConsumed)));
+        for (var request : List.of(nonHead, pending, sent, unsupportedConsumed)) assertEquals(0, recoveryCount(request));
+        assertEquals("FAILED", eventRow(events.get(1)).status());
+    }
+
+    /** 回执和恢复状态随外层写工作单元一起回滚，随后同一请求可以重新执行。 */
+    @Test
+    void rollsBackOriginalRecoveryReceiptAndStateTogether() {
+        var event = unpublishedEvents(1).getFirst(); markFailed(event, 4);
+        var request = recoveryRequest(event);
+        assertThrows(IllegalStateException.class, () -> originalRecovery.recover(request));
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
+            assertEquals(OutboxOriginalRecoveryRepository.Outcome.RECOVERED, originalRecovery.recover(request).outcome());
+            throw new IllegalStateException("模拟恢复后回滚");
+        }));
+        assertEquals("FAILED", eventRow(event).status()); assertEquals(4, eventRow(event).retryCount());
+        assertEquals(0, recoveryCount(request));
+        assertEquals(OutboxOriginalRecoveryRepository.Outcome.RECOVERED, unitOfWork.execute(() -> originalRecovery.recover(request)).outcome());
+    }
+
+    /** 已消费凭据与原始信封匹配才返回已消费，损坏凭据不得冒充成功。 */
+    @Test
+    void verifiesConsumptionEvidenceBeforeReportingAlreadyConsumed() {
+        var event = consumed();
+        var request = recoveryRequest(event);
+        var result = unitOfWork.execute(() -> originalRecovery.recover(request));
+        assertEquals(OutboxOriginalRecoveryRepository.Outcome.ALREADY_CONSUMED, result.outcome());
+        assertTrue(result.previousFailures().isEmpty()); assertEquals("CONSUMED", eventRow(event).status());
+        assertEquals(result, unitOfWork.execute(() -> originalRecovery.recover(request)));
+
+        var corrupt = consumed();
+        jdbc.update("UPDATE outbox_consumption SET payload='{\"tampered\":true}' WHERE event_id=?", corrupt.message().eventId());
+        var invalid = recoveryRequest(corrupt);
+        assertThrows(StratumException.class, () -> unitOfWork.execute(() -> originalRecovery.recover(invalid)));
+        assertEquals(0, recoveryCount(invalid));
+    }
+
+    /** 凭据各字段或消费进度与原事件不一致时不登记已消费回执。 */
+    @Test
+    void refusesEveryMismatchedConsumptionEvidenceFieldAndLaggingProgress() {
+        var changes = List.of(
+                "UPDATE outbox_consumption SET aggregate_id=CONCAT(aggregate_id,'x') WHERE event_id=?",
+                "UPDATE outbox_consumption SET event_sequence=2 WHERE event_id=?",
+                "UPDATE outbox_consumption SET event_type='ERP.probe.created' WHERE event_id=?",
+                "UPDATE outbox_consumption SET occurred_at=TIMESTAMPADD(MICROSECOND,1,occurred_at) WHERE event_id=?",
+                "UPDATE outbox_consumption SET payload='{\"tampered\":true}' WHERE event_id=?",
+                "UPDATE outbox_consumption SET trace_id=CONCAT(trace_id,' ') WHERE event_id=?",
+                "UPDATE outbox_consumption SET consumer_group='CACHE_INVALIDATION' WHERE event_id=?");
+        for (String change : changes) {
+            var event = consumed();
+            assertEquals(1, jdbc.update(change, event.message().eventId()));
+            var request = recoveryRequest(event);
+            assertThrows(StratumException.class, () -> unitOfWork.execute(() -> originalRecovery.recover(request)));
+            assertEquals(0, recoveryCount(request)); assertEquals("CONSUMED", eventRow(event).status());
+        }
+        var lagging = consumed();
+        jdbc.update("UPDATE outbox_aggregate_progress SET consumed_sequence=0 WHERE aggregate_id=?", lagging.message().aggregateId());
+        var request = recoveryRequest(lagging);
+        assertThrows(StratumException.class, () -> unitOfWork.execute(() -> originalRecovery.recover(request)));
+        assertEquals(0, recoveryCount(request)); assertEquals("CONSUMED", eventRow(lagging).status());
+    }
+
+    /** 活动重放意图存在时不能把失败原事件重新置为待发布，避免两条并发发送路径。 */
+    @Test
+    void refusesOriginalRecoveryWhileReplayIntentIsActive() {
+        var event = unpublishedEvents(1).getFirst(); markFailed(event, 3);
+        UUID archive = insertReplayArchive(event); replayArchives.add(archive);
+        String intent = UUID.randomUUID().toString();
+        jdbc.update("""
+                INSERT INTO outbox_replay_delivery (delivery_id,dead_id,event_id,aggregate_id,event_sequence,consumer_group,status)
+                VALUES (?,?,?,?,?,'ERP_AUDIT','PENDING')
+                """, intent, archive.toString(), event.message().eventId(), event.message().aggregateId(), event.sequence());
+        for (String status : List.of("PENDING", "PROCESSING", "SENT")) {
+            if (status.equals("PROCESSING")) jdbc.update("""
+                    UPDATE outbox_replay_delivery SET status='PROCESSING',lease_token=?,lease_until=TIMESTAMPADD(SECOND,30,UTC_TIMESTAMP(6))
+                    WHERE delivery_id=?
+                    """, UUID.randomUUID().toString(), intent);
+            if (status.equals("SENT")) jdbc.update("UPDATE outbox_replay_delivery SET status='SENT',lease_token=NULL,lease_until=NULL WHERE delivery_id=?", intent);
+            var request = recoveryRequest(event);
+            assertThrows(StratumException.class, () -> unitOfWork.execute(() -> originalRecovery.recover(request)));
+            assertEquals(0, recoveryCount(request)); assertEquals("FAILED", eventRow(event).status());
+        }
+    }
+
+    /**
+     * 活动重放行被另一事务持有时立即拒绝恢复，不能把锁忙当成不存在重放。
+     * @throws Exception 并发任务失败或协调超时
+     */
+    @Test
+    void refusesRecoveryWhenActiveReplayRowIsLocked() throws Exception {
+        var event = unpublishedEvents(1).getFirst(); markFailed(event, 3);
+        UUID archive = insertReplayArchive(event); replayArchives.add(archive);
+        String intent = UUID.randomUUID().toString();
+        jdbc.update("""
+                INSERT INTO outbox_replay_delivery (delivery_id,dead_id,event_id,aggregate_id,event_sequence,consumer_group,status)
+                VALUES (?,?,?,?,?,'ERP_AUDIT','PENDING')
+                """, intent, archive.toString(), event.message().eventId(), event.message().aggregateId(), event.sequence());
+        var request = recoveryRequest(event); var held = new CountDownLatch(1); var release = new CountDownLatch(1);
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var owner = workers.submit(() -> unitOfWork.execute(() -> {
+                jdbc.queryForObject("SELECT delivery_id FROM outbox_replay_delivery WHERE delivery_id=? FOR UPDATE", String.class, intent);
+                held.countDown();
+                try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+                catch (InterruptedException signal) { Thread.currentThread().interrupt(); throw new IllegalStateException("测试锁等待中断"); }
+                return null;
+            }));
+            try {
+                assertTrue(held.await(5, TimeUnit.SECONDS));
+                var competitor = workers.submit(() -> unitOfWork.execute(() -> originalRecovery.recover(request)));
+                var failure = assertThrows(java.util.concurrent.ExecutionException.class, () -> competitor.get(5, TimeUnit.SECONDS));
+                assertInstanceOf(StratumException.class, failure.getCause());
+            } finally { release.countDown(); }
+            owner.get(5, TimeUnit.SECONDS);
+        }
+        assertEquals("FAILED", eventRow(event).status()); assertEquals(0, recoveryCount(request));
+    }
+
+    /** 恢复后的版本到达上限时饱和，失败计数和原事件身份仍保留。 */
+    @Test
+    void saturatesOriginalVersionOnRecovery() {
+        var event = unpublishedEvents(1).getFirst(); markFailed(event, 8);
+        jdbc.update("UPDATE outbox_event SET version=? WHERE event_id=?", Long.MAX_VALUE, event.message().eventId());
+        var request = recoveryRequest(event);
+        var receipt = unitOfWork.execute(() -> originalRecovery.recover(request));
+        assertEquals(OutboxOriginalRecoveryRepository.Outcome.RECOVERED, receipt.outcome());
+        assertEquals(8, receipt.previousFailures().orElseThrow()); assertEquals(8, eventRow(event).retryCount());
+        assertEquals("PENDING", eventRow(event).status());
+        assertEquals(Long.MAX_VALUE, jdbc.queryForObject("SELECT version FROM outbox_event WHERE event_id=?", Long.class, event.message().eventId()));
+    }
+
+    /**
+     * 同请求并发时后者等待首次事务提交，并复用首次回执；事件删除后回执仍可重放。
+     * @throws Exception 并发任务失败或协调超时
+     */
+    @Test
+    void replaysSameRequestAfterConcurrentCommitAndOriginalDeletion() throws Exception {
+        var event = unpublishedEvents(1).getFirst(); markFailed(event, 3);
+        var request = recoveryRequest(event); var held = new CountDownLatch(1);
+        var started = new CountDownLatch(1); var release = new CountDownLatch(1);
+        OutboxOriginalRecoveryRepository.Receipt receipt;
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var owner = workers.submit(() -> unitOfWork.execute(() -> {
+                var result = originalRecovery.recover(request); held.countDown();
+                try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+                catch (InterruptedException signal) { Thread.currentThread().interrupt(); throw new IllegalStateException("测试锁等待中断"); }
+                return result;
+            }));
+            try {
+                assertTrue(held.await(5, TimeUnit.SECONDS));
+                var competitor = workers.submit(() -> {
+                    started.countDown();
+                    return unitOfWork.execute(() -> originalRecovery.recover(request));
+                });
+                assertTrue(started.await(5, TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.TimeoutException.class, () -> competitor.get(300, TimeUnit.MILLISECONDS));
+                release.countDown();
+                receipt = owner.get(5, TimeUnit.SECONDS);
+                assertEquals(receipt, competitor.get(5, TimeUnit.SECONDS));
+            } finally { release.countDown(); }
+        }
+        assertEquals(1, recoveryCount(request));
+        assertEquals(1, jdbc.update("DELETE FROM outbox_event WHERE event_id=?", event.message().eventId()));
+        assertEquals(receipt, unitOfWork.execute(() -> originalRecovery.recover(request)));
+        assertEquals(1, recoveryCount(request));
+    }
+
+    /**
+     * 并发不同请求只允许一条恢复，持锁事务释放后失败状态不会被重复恢复。
+     * @throws Exception 并发任务失败或协调超时
+     */
+    @Test
+    void coordinatesConcurrentRecoveryTransactions() throws Exception {
+        var event = unpublishedEvents(1).getFirst(); markFailed(event, 5);
+        var first = recoveryRequest(event); var other = recoveryRequest(event);
+        var held = new CountDownLatch(1); var release = new CountDownLatch(1);
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var owner = workers.submit(() -> unitOfWork.execute(() -> {
+                var receipt = originalRecovery.recover(first); held.countDown();
+                try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+                catch (InterruptedException signal) { Thread.currentThread().interrupt(); throw new IllegalStateException("测试锁等待中断"); }
+                return receipt;
+            }));
+            try {
+                assertTrue(held.await(5, TimeUnit.SECONDS));
+                var competitor = workers.submit(() -> unitOfWork.execute(() -> originalRecovery.recover(other)));
+                var failure = assertThrows(java.util.concurrent.ExecutionException.class, () -> competitor.get(5, TimeUnit.SECONDS));
+                assertInstanceOf(StratumException.class, failure.getCause());
+            } finally { release.countDown(); }
+            assertEquals(OutboxOriginalRecoveryRepository.Outcome.RECOVERED, owner.get(5, TimeUnit.SECONDS).outcome());
+        }
+        assertEquals("PENDING", eventRow(event).status()); assertEquals(1, recoveryCount(first)); assertEquals(0, recoveryCount(other));
+        assertThrows(StratumException.class, () -> unitOfWork.execute(() -> originalRecovery.recover(other)));
     }
 
     /** 过期租约在真实凭据与进度一致时收敛，保留旧状态/失败次数，迟到确认不能覆盖。 */
@@ -575,6 +818,51 @@ class OutboxReconciliationIntegrationTest {
             holder.get(5, TimeUnit.SECONDS);
         }
         assertEquals(RECONCILED, scan()); assertEquals("CONSUMED", eventRow(event).status());
+    }
+
+    /**
+     * 创建本测试的原事件恢复请求并登记清理身份。
+     * @param event 原事件
+     * @return 随机请求与服务端操作者
+     */
+    private OutboxOriginalRecoveryRepository.Request recoveryRequest(Delivery event) {
+        UUID id = UUID.randomUUID(); recoveryRequests.add(id);
+        return new OutboxOriginalRecoveryRepository.Request(id, UUID.fromString(event.message().eventId()), UUID.randomUUID(), "recovery-test");
+    }
+
+    /**
+     * 查询本测试请求是否持久化。
+     * @param request 原请求
+     * @return 回执行数
+     */
+    private int recoveryCount(OutboxOriginalRecoveryRepository.Request request) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM outbox_original_recovery_request WHERE request_id=?", Integer.class, request.requestId().toString());
+    }
+
+    /**
+     * 在独占库中构造符合已有约束的失败原事件。
+     * @param event 测试事件
+     * @param failures 累计失败次数
+     */
+    private void markFailed(Delivery event, int failures) {
+        jdbc.update("UPDATE outbox_event SET status='FAILED',retry_count=? WHERE event_id=?", failures, event.message().eventId());
+    }
+
+    /**
+     * 创建本测试用归档行，支持构造活动重放意图。
+     * @param event 本独占库事件
+     * @return 归档身份
+     */
+    private UUID insertReplayArchive(Delivery event) {
+        UUID archive = UUID.randomUUID();
+        String fingerprint = UUID.randomUUID().toString().replace("-", "") + UUID.randomUUID().toString().replace("-", "");
+        jdbc.update("""
+                INSERT INTO outbox_dead_letter (dead_id,consumer_group,fingerprint,body,metadata_json,event_id,aggregate_id,
+                    event_sequence,event_type,occurred_at,payload,trace_id,category,status,failure_count)
+                SELECT ?,'ERP_AUDIT',?,X'7B7D','{}',event_id,aggregate_id,event_sequence,event_type,occurred_at,payload,trace_id,
+                    'RETRIES_EXHAUSTED','DEAD',3 FROM outbox_event WHERE event_id=?
+                """, archive.toString(), fingerprint, event.message().eventId());
+        return archive;
     }
 
     /**
