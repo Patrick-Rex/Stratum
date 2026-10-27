@@ -53,12 +53,18 @@ public class QuartzTriggerConfiguration {
     /**
      * 创建停止顺序协调器；Scheduler默认最大phase先standby，本组件随后清理实际任务。
      * @param scheduler 所属调度器
-     * @param executor 实际工作执行器
+     * @param relay 可选的Relay调度器
+     * @param executor 两组调度器共享的实际工作执行器
      * @return 停止于Bean销毁前的有界生命周期
      */
     @Bean
-    QuartzRuntimeLifecycle quartzRuntimeLifecycle(Scheduler scheduler, JobTaskExecutor executor) {
-        return new QuartzRuntimeLifecycle(scheduler, executor);
+    QuartzRuntimeLifecycle quartzRuntimeLifecycle(Scheduler scheduler,
+            @Qualifier("relayJobScheduler") ObjectProvider<Scheduler> relay, JobTaskExecutor executor) {
+        var schedulers = new java.util.ArrayList<Scheduler>();
+        schedulers.add(scheduler);
+        var relayScheduler = relay.getIfAvailable();
+        if (relayScheduler != null) schedulers.add(relayScheduler);
+        return new QuartzRuntimeLifecycle(schedulers, executor);
     }
 
     /**
@@ -81,7 +87,10 @@ public class QuartzTriggerConfiguration {
                 if (relayScheduler == null && !registry.relayCodes().isEmpty()) {
                     throw new IllegalStateException("Relay处理器缺少专用调度器");
                 }
-                if (relayScheduler != null) registerAll(relayScheduler, registry, registry.relayCodes());
+                if (relayScheduler != null) {
+                    relayScheduler.getListenerManager().addJobListener(lifecycle);
+                    registerAll(relayScheduler, registry, registry.relayCodes());
+                }
             } catch (SchedulerException failure) { throw new IllegalStateException("固定任务触发器登记失败"); }
         };
     }
