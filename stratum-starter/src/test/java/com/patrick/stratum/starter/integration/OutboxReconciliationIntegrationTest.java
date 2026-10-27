@@ -14,6 +14,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import com.patrick.stratum.application.transaction.UnitOfWork;
+import com.patrick.stratum.application.event.OutboxReconciliationApplicationService;
 import com.patrick.stratum.domain.event.OutboxConsumer;
 import com.patrick.stratum.domain.event.OutboxMessage;
 import com.patrick.stratum.domain.event.OutboxPublisher;
@@ -58,6 +59,7 @@ class OutboxReconciliationIntegrationTest {
     private final OutboxRepository outbox;
     private final OutboxConsumer consumer;
     private final OutboxReconciliationRepository reconciliation;
+    private final OutboxReconciliationApplicationService reconciliationService;
     private final OutboxRelayRepository relay;
     private final StringRedisTemplate redis;
     private final List<String> cacheKeys = new ArrayList<>();
@@ -71,16 +73,18 @@ class OutboxReconciliationIntegrationTest {
      * @param outbox 同事务事件追加
      * @param consumer 实际消费凭据入口
      * @param reconciliation 对账存储端口
+     * @param reconciliationService 事务外有界批次入口
      * @param relay 发送完成端口
      * @param redis 仅清理本测试随机缓存键
      */
     @Autowired
     OutboxReconciliationIntegrationTest(ApplicationContext context, JdbcTemplate jdbc, UnitOfWork unitOfWork,
             OutboxRepository outbox, OutboxConsumer consumer, OutboxReconciliationRepository reconciliation,
-            OutboxRelayRepository relay, StringRedisTemplate redis) {
+            OutboxRelayRepository relay, StringRedisTemplate redis, OutboxReconciliationApplicationService reconciliationService) {
         application = (ConfigurableApplicationContext) context;
         this.jdbc = jdbc; this.unitOfWork = unitOfWork; this.outbox = outbox; this.consumer = consumer;
         this.reconciliation = reconciliation; this.relay = relay; this.redis = redis;
+        this.reconciliationService = reconciliationService;
     }
 
     /**
@@ -299,6 +303,77 @@ class OutboxReconciliationIntegrationTest {
         assertEquals("PENDING", eventRow(event).status());
         assertNull(jdbc.queryForObject("SELECT consumed_at FROM outbox_reconciliation_cursor WHERE cursor_id=1", LocalDateTime.class));
         assertEquals(RECONCILED, scan());
+    }
+
+    /** 批次按扫描数而非修复数限额，错误凭据修复后由下一轮重访。 */
+    @Test
+    void batchLimitsScannedReceiptsAndRevisitsInvalidEvidence() {
+        var invalid = consumed(); var valid = consumed();
+        setPending(invalid); setPending(valid);
+        jdbc.update("UPDATE outbox_consumption SET consumed_at=TIMESTAMPADD(SECOND,-10,UTC_TIMESTAMP(6)), payload='{\"altered\":true}' WHERE event_id=?", invalid.message().eventId());
+        jdbc.update("UPDATE outbox_consumption SET consumed_at=TIMESTAMPADD(SECOND,-9,UTC_TIMESTAMP(6)) WHERE event_id=?", valid.message().eventId());
+
+        var first = reconciliationService.runBatch(1);
+        assertEquals(1, first.scanned()); assertEquals(0, first.reconciled()); assertEquals("LIMIT", first.termination().name());
+        assertEquals(invalid.message().eventId(), jdbc.queryForObject("SELECT event_id FROM outbox_reconciliation_cursor WHERE cursor_id=1", String.class));
+        assertEquals("PENDING", eventRow(invalid).status()); assertEquals("PENDING", eventRow(valid).status());
+
+        var second = reconciliationService.runBatch(1);
+        assertEquals(1, second.scanned()); assertEquals(1, second.reconciled()); assertEquals("LIMIT", second.termination().name());
+        assertEquals("CONSUMED", eventRow(valid).status());
+        var end = reconciliationService.runBatch(2);
+        assertEquals(0, end.scanned()); assertEquals(0, end.reconciled()); assertEquals("CYCLE_COMPLETE", end.termination().name());
+
+        jdbc.update("UPDATE outbox_consumption SET payload=? WHERE event_id=?", invalid.message().payload(), invalid.message().eventId());
+        var revisit = reconciliationService.runBatch(3);
+        assertEquals(2, revisit.scanned()); assertEquals(1, revisit.reconciled()); assertEquals("CYCLE_COMPLETE", revisit.termination().name());
+        assertEquals("CONSUMED", eventRow(invalid).status());
+        assertNull(jdbc.queryForObject("SELECT event_id FROM outbox_reconciliation_cursor WHERE cursor_id=1", String.class));
+    }
+
+    /**
+     * 批次遇到忙聚合时继续其他项，并在下轮处理释放后的凭据。
+     * @throws Exception 并发测试失败或等待超时
+     */
+    @Test
+    void batchRevisitsBusyAggregateAfterCycle() throws Exception {
+        var busy = consumed(); var valid = consumed();
+        setPending(busy); setPending(valid);
+        jdbc.update("UPDATE outbox_consumption SET consumed_at=TIMESTAMPADD(SECOND,-10,UTC_TIMESTAMP(6)) WHERE event_id=?", busy.message().eventId());
+        jdbc.update("UPDATE outbox_consumption SET consumed_at=TIMESTAMPADD(SECOND,-9,UTC_TIMESTAMP(6)) WHERE event_id=?", valid.message().eventId());
+        var locked = new CountDownLatch(1); var release = new CountDownLatch(1);
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var holder = workers.submit(() -> unitOfWork.execute(() -> {
+                jdbc.queryForObject("SELECT consumed_sequence FROM outbox_aggregate_progress WHERE aggregate_id=? FOR UPDATE", Long.class, busy.message().aggregateId());
+                locked.countDown();
+                try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+                catch (InterruptedException signal) { Thread.currentThread().interrupt(); throw new IllegalStateException("测试锁等待中断"); }
+                return null;
+            }));
+            try {
+                assertTrue(locked.await(5, TimeUnit.SECONDS));
+                var batch = reconciliationService.runBatch(3);
+                assertEquals(2, batch.scanned()); assertEquals(1, batch.reconciled()); assertEquals("CYCLE_COMPLETE", batch.termination().name());
+                assertEquals("PENDING", eventRow(busy).status()); assertEquals("CONSUMED", eventRow(valid).status());
+            } finally { release.countDown(); }
+            holder.get(5, TimeUnit.SECONDS);
+        }
+        var revisit = reconciliationService.runBatch(3);
+        assertEquals(2, revisit.scanned()); assertEquals(1, revisit.reconciled()); assertEquals("CYCLE_COMPLETE", revisit.termination().name());
+        assertEquals("CONSUMED", eventRow(busy).status());
+    }
+
+    /** 批次拒绝外层事务，事务外调用后游标和事件状态真实提交。 */
+    @Test
+    void batchRequiresOutsideTransactionAndPersistsChanges() {
+        var event = consumed(); setPending(event);
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> reconciliationService.runBatch(1)));
+        assertEquals("PENDING", eventRow(event).status());
+        assertNull(jdbc.queryForObject("SELECT event_id FROM outbox_reconciliation_cursor WHERE cursor_id=1", String.class));
+        var batch = reconciliationService.runBatch(1);
+        assertEquals(1, batch.scanned()); assertEquals(1, batch.reconciled()); assertEquals("LIMIT", batch.termination().name());
+        assertEquals("CONSUMED", eventRow(event).status());
+        assertEquals(event.message().eventId(), jdbc.queryForObject("SELECT event_id FROM outbox_reconciliation_cursor WHERE cursor_id=1", String.class));
     }
 
     /** 两个事务争用数据库单例游标时仅一个收敛，令牌行锁而非进程内同步提供资格。 */
