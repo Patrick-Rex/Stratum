@@ -86,6 +86,23 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
         }
     }
 
+    /**
+     * 同一完整装配包含两个调度器时，普通任务仍使用主调度器；Relay待机且不产生任务。
+     * @throws Exception 调度器或任务操作失败
+     */
+    @Test
+    void ordinaryFixedJobRunsWithRelaySchedulerInStandby() throws Exception {
+        var context = context(true);
+        var primary = context.getBean(Scheduler.class);
+        var relay = context.getBean("relayJobScheduler", Scheduler.class);
+        assertEquals(name, primary.getSchedulerName());
+        assertEquals("relay:" + name, relay.getSchedulerName()); assertTrue(relay.isInStandbyMode());
+        assertTrue(relay.getJobKeys(GroupMatcher.anyJobGroup()).isEmpty());
+        var id = register();
+        await().atMost(Duration.ofSeconds(15)).until(() -> "SUCCEEDED".equals(state(id)));
+        assertEquals(1, probe.calls.get());
+    }
+
     /** 两个真实Scheduler共享固定轮询，失败后按数据库退避再次执行，不创建每次重试触发器。 */
     @Test
     void drivesPersistedRetryAcrossTwoSchedulers() throws Exception {
@@ -262,15 +279,27 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
      * @throws Exception Scheduler身份读取失败
      */
     private AnnotationConfigApplicationContext context() throws Exception {
+        return context(false);
+    }
+
+    /**
+     * 构造完整生产调度装配并可选创建待机Relay调度器。
+     * @param relayEnabled 是否创建Relay调度资源
+     * @return 由本用例清理的独立上下文
+     * @throws Exception Scheduler身份读取失败
+     */
+    private AnnotationConfigApplicationContext context(boolean relayEnabled) throws Exception {
         var context = new AnnotationConfigApplicationContext(); contexts.add(context);
         context.setParent(parent);
         context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("trigger-test", Map.of(
-                "stratum.jobs.enabled", true, "stratum.jobs.name", name, "stratum.jobs.workers", 2)));
+                "stratum.jobs.enabled", true, "stratum.jobs.name", name, "stratum.jobs.workers", 2,
+                "stratum.jobs.relay.enabled", relayEnabled)));
         context.registerBean(JobHandler.class, () -> probe);
         context.register(SchedulerConfiguration.class, JobRuntimeConfiguration.class, QuartzTriggerConfiguration.class);
         try {
             context.refresh();
             schedulerIds.add(context.getBean(Scheduler.class).getSchedulerInstanceId());
+            if (relayEnabled) schedulerIds.add(context.getBean("relayJobScheduler", Scheduler.class).getSchedulerInstanceId());
             return context;
         } catch (RuntimeException failure) { context.close(); throw failure; }
     }

@@ -20,6 +20,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 import org.springframework.boot.sql.init.dependency.DependsOnDatabaseInitialization;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.quartz.SchedulerFactoryBean;
 
@@ -55,15 +56,43 @@ public class SchedulerConfiguration {
      * @return 随上下文启动和关闭的独立调度器工厂
      */
     @Bean
+    @Primary
     @DependsOnDatabaseInitialization
     SchedulerFactoryBean jobScheduler(DataSource dataSource, Properties properties, BeanFactory beanFactory) {
+        return scheduler(dataSource, properties.name(), properties.workers(), beanFactory, true);
+    }
+
+    /**
+     * 显式启用时装配专用数据库集群调度器；保持待机直到Relay目标与资格核验完成。
+     * @param dataSource 与普通任务共享的Flyway数据源
+     * @param properties 普通任务命名空间，用于派生不重叠的Relay名称
+     * @param beanFactory 仅查找已登记的Spring作业
+     * @return 一个固定工作线程的独立调度器工厂
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "stratum.jobs.relay", name = "enabled", havingValue = "true")
+    @DependsOnDatabaseInitialization
+    SchedulerFactoryBean relayJobScheduler(DataSource dataSource, Properties properties, BeanFactory beanFactory) {
+        return scheduler(dataSource, "relay:" + properties.name(), 1, beanFactory, false);
+    }
+
+    /**
+     * 创建命名空间独立的集群调度器；业务目标登记和启动由后续配置协调。
+     * @param dataSource Flyway管理的数据源
+     * @param name 数据库中的调度器命名空间
+     * @param workers 固定Quartz工作线程数量
+     * @param beanFactory 只查找已登记Spring作业
+     * @param autoStartup 是否随上下文自动启动
+     * @return 本上下文持有的调度器工厂
+     */
+    private SchedulerFactoryBean scheduler(DataSource dataSource, String name, int workers, BeanFactory beanFactory, boolean autoStartup) {
         String instance = UUID.randomUUID().toString();
         var quartz = new java.util.Properties();
         quartz.setProperty("org.quartz.scheduler.instanceId", instance);
         quartz.setProperty("org.quartz.scheduler.skipUpdateCheck", "true");
         quartz.setProperty("org.quartz.scheduler.interruptJobsOnShutdown", "true");
         quartz.setProperty("org.quartz.scheduler.interruptJobsOnShutdownWithWait", "true");
-        quartz.setProperty("org.quartz.threadPool.threadCount", Integer.toString(properties.workers()));
+        quartz.setProperty("org.quartz.threadPool.threadCount", Integer.toString(workers));
         quartz.setProperty("org.quartz.threadPool.threadNamePrefix", "stratum-quartz-" + instance);
         quartz.setProperty("org.quartz.threadPool.threadsInheritContextClassLoaderOfInitializingThread", "true");
         quartz.setProperty("org.quartz.jobStore.driverDelegateClass", "org.quartz.impl.jdbcjobstore.StdJDBCDelegate");
@@ -75,13 +104,13 @@ public class SchedulerConfiguration {
         quartz.setProperty("org.quartz.scheduler.dbFailureRetryInterval", "5000");
         quartz.setProperty("org.quartz.scheduler.batchTriggerAcquisitionMaxCount", "1");
         var factory = new SchedulerFactoryBean();
-        factory.setSchedulerName(properties.name());
+        factory.setSchedulerName(name);
         factory.setDataSource(dataSource);
         factory.setQuartzProperties(quartz);
         factory.setJobFactory(new RegisteredJobFactory(beanFactory));
         factory.setExposeSchedulerInRepository(false);
         factory.setWaitForJobsToCompleteOnShutdown(false);
-        factory.setAutoStartup(true);
+        factory.setAutoStartup(autoStartup);
         return factory;
     }
 

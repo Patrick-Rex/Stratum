@@ -66,6 +66,8 @@ class SchedulerConfigurationIntegrationTest extends MariaDbIntegrationTest {
     void rejectsInvalidProperties() {
         assertThrows(IllegalArgumentException.class, () -> new SchedulerConfiguration.Properties("bad\nname", 1));
         assertThrows(IllegalArgumentException.class, () -> new SchedulerConfiguration.Properties("a".repeat(65), 1));
+        assertThrows(IllegalArgumentException.class, () -> new SchedulerConfiguration.Properties("relay:ordinary", 1));
+        assertEquals(64, new SchedulerConfiguration.Properties("a".repeat(64), 1).name().length());
         assertThrows(IllegalArgumentException.class, () -> new SchedulerConfiguration.Properties("probe", 0));
         assertThrows(IllegalArgumentException.class, () -> new SchedulerConfiguration.Properties("probe", 9));
     }
@@ -102,6 +104,54 @@ class SchedulerConfigurationIntegrationTest extends MariaDbIntegrationTest {
             awaitStopped(name);
         } finally {
             cleanup(name, key);
+        }
+    }
+
+    /**
+     * Relay集群使用独立持久命名空间，禁用实例只运行普通调度，两个启用实例共享Relay任务。
+     * @throws Exception 调度器启动、执行或关闭失败
+     */
+    @Test
+    void isolatesRelayClusterAndPreservesOrdinaryDisabledInstance() throws Exception {
+        String name = name(); String relayName = "relay:" + name;
+        var relayState = new ProbeState(); var normalState = new ProbeState();
+        JobKey relayKey = new JobKey(UUID.randomUUID().toString(), "test");
+        JobKey normalKey = new JobKey(UUID.randomUUID().toString(), "test");
+        try {
+            try (var first = context(name, relayState, true); var second = context(name, relayState, true);
+                    var disabled = context(name, normalState, false)) {
+                var relayOne = first.getBean("relayJobScheduler", Scheduler.class);
+                var relayTwo = second.getBean("relayJobScheduler", Scheduler.class);
+                var ordinaryOne = first.getBean(Scheduler.class);
+                var ordinaryTwo = second.getBean(Scheduler.class);
+                var ordinaryDisabled = disabled.getBean(Scheduler.class);
+                assertEquals(name, ordinaryDisabled.getSchedulerName());
+                assertEquals(relayName, relayOne.getSchedulerName()); assertEquals(relayName, relayTwo.getSchedulerName());
+                assertTrue(relayOne.isInStandbyMode()); assertTrue(relayTwo.isInStandbyMode());
+                assertFalse(disabled.containsBean("relayJobScheduler"));
+                assertTrue(relayOne.getMetaData().isJobStoreClustered());
+                assertTrue(relayOne.getMetaData().isJobStoreSupportsPersistence());
+                relayOne.addJob(JobBuilder.newJob(ProbeJob.class).withIdentity(relayKey).storeDurably().build(), false);
+                assertNotNull(relayTwo.getJobDetail(relayKey)); assertNull(ordinaryDisabled.getJobDetail(relayKey));
+                relayOne.start(); relayTwo.start();
+                relayOne.scheduleJob(TriggerBuilder.newTrigger().withIdentity("once-relay", "test").forJob(relayKey)
+                        .startAt(new Date(System.currentTimeMillis() + 300)).build());
+                assertTrue(relayState.done.await(10, TimeUnit.SECONDS)); assertEquals(1, relayState.calls.get());
+                ordinaryOne.standby(); ordinaryTwo.standby();
+                ordinaryDisabled.addJob(JobBuilder.newJob(ProbeJob.class).withIdentity(normalKey).storeDurably().build(), false);
+                ordinaryDisabled.scheduleJob(TriggerBuilder.newTrigger().withIdentity("once-normal", "test").forJob(normalKey)
+                        .startAt(new Date(System.currentTimeMillis() + 300)).build());
+                assertTrue(normalState.done.await(10, TimeUnit.SECONDS)); assertEquals(1, normalState.calls.get());
+            }
+            try (var restarted = context(name, relayState, true)) {
+                var relay = restarted.getBean("relayJobScheduler", Scheduler.class);
+                assertTrue(relay.isInStandbyMode()); assertNotNull(relay.getJobDetail(relayKey));
+                relay.deleteJob(relayKey);
+                restarted.getBean(Scheduler.class).deleteJob(normalKey);
+            }
+            awaitStopped(name);
+        } finally {
+            cleanup(relayName, relayKey); cleanup(name, normalKey);
         }
     }
 
@@ -146,15 +196,28 @@ class SchedulerConfigurationIntegrationTest extends MariaDbIntegrationTest {
      * @return 已启动且必须关闭的子上下文
      */
     private AnnotationConfigApplicationContext context(String name, ProbeState state) {
+        return context(name, state, false);
+    }
+
+    /**
+     * 构造独立上下文，并按测试参数选择是否创建Relay调度器。
+     * @param name 普通调度器唯一名称
+     * @param state 本实例探针状态
+     * @param relayEnabled 是否启用Relay调度资源
+     * @return 调用方负责关闭的上下文
+     */
+    private AnnotationConfigApplicationContext context(String name, ProbeState state, boolean relayEnabled) {
         var context = new AnnotationConfigApplicationContext();
         context.setParent(parent);
         context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("scheduler-test", Map.of(
-                "stratum.jobs.enabled", true, "stratum.jobs.name", name, "stratum.jobs.workers", 1)));
+                "stratum.jobs.enabled", true, "stratum.jobs.name", name, "stratum.jobs.workers", 1,
+                "stratum.jobs.relay.enabled", relayEnabled)));
         context.registerBean(ProbeJob.class, () -> new ProbeJob(state));
         context.register(SchedulerConfiguration.class);
         try {
             context.refresh();
             instanceIds.add(context.getBean(Scheduler.class).getSchedulerInstanceId());
+            if (relayEnabled) instanceIds.add(context.getBean("relayJobScheduler", Scheduler.class).getSchedulerInstanceId());
             return context;
         } catch (Exception failure) {
             context.close();
