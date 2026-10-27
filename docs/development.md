@@ -1354,4 +1354,8 @@ Application从可信身份获取操作人，在同一工作单元内取得管理
 
 ## NODE-E03.5b5b2 原事件恢复HTTP入口
 
-新增版本1管理员恢复接口 `/api/management/outbox/events/{eventId}/recoveries`，使用UUID格式的 `Idempotency-Key`，返回无缓存的首次回执；路径已由b5b1网关CIDR保护，Starter仍实时核验管理员。4项真实MariaDB、Redis及HTTP集成测试通过，零失败、错误或跳过；验证匿名/Refresh/普通及撤权账号、恢复与已消费、重复键、错误协议和OpenAPI路径。网关与Starter的真实组合仍待b5b后续组合验收。
+新增版本1管理员恢复接口 `/api/management/outbox/events/{eventId}/recoveries`，使用UUID格式的 `Idempotency-Key`，返回无缓存的首次回执；路径已由b5b1网关CIDR保护，Starter仍实时核验管理员。4项真实MariaDB、Redis及HTTP集成测试通过，零失败、错误或跳过；验证匿名/Refresh/普通及撤权账号、恢复与已消费、重复键、错误协议和OpenAPI路径。当时网关与Starter的真实组合尚未验收，后续结果见E03.5b6。
+
+## NODE-E03.5b6 发布恢复组合验收
+
+2项真实MariaDB、Redis、RabbitMQ和HTTP组合测试通过，零失败、错误或跳过；在专用Broker空间验证拒连超过原阈值后以原身份恢复发布、真实不可路由失败后管理员经独立网关恢复、其他聚合推进，以及消费前后序阻塞。测试通过真实消费入口建立凭据，不将手动读取Broker消息当成数据库消费；测试网关进程和专用拓扑均已退出或清理。E03.5b完成，周期调度和集群暂停继续E03.5c。
