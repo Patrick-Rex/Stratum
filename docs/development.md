@@ -1351,3 +1351,7 @@ Application从可信身份获取操作人，在同一工作单元内取得管理
 ## NODE-E03.5b5b1 恢复管理路径来源控制
 
 网关将 `/api/management/outbox` 及其子路径纳入已有管理CIDR过滤，继续只读取直连来源。5项网关管理测试通过，零失败、错误或跳过；覆盖本机HTTP及伪造代理头、编码与矩阵路径、IPv4/IPv6匹配和相似前缀。此节点未开放恢复HTTP接口，应用管理员授权仍独立生效。
+
+## NODE-E03.5b5b2 原事件恢复HTTP入口
+
+新增版本1管理员恢复接口 `/api/management/outbox/events/{eventId}/recoveries`，使用UUID格式的 `Idempotency-Key`，返回无缓存的首次回执；路径已由b5b1网关CIDR保护，Starter仍实时核验管理员。4项真实MariaDB、Redis及HTTP集成测试通过，零失败、错误或跳过；验证匿名/Refresh/普通及撤权账号、恢复与已消费、重复键、错误协议和OpenAPI路径。网关与Starter的真实组合仍待b5b后续组合验收。

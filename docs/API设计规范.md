@@ -60,7 +60,11 @@
 - 涉及创建/支付/扣减库存等接口必须支持 Idempotency-Key
 - 服务端必须存储幂等结果并按 key 返回同结果
 
-## 7.1 异步任务接口约束
+## 7.1 原事件人工恢复
+
+`POST /api/management/outbox/events/{eventId}/recoveries` 使用版本1，`Idempotency-Key` 为请求UUID，不接受操作者或替换事件正文。每次请求均验证当前启用管理员；同一请求UUID绑定原事件和首次操作者，重复调用返回首次回执，绑定不符返回409。`RECOVERED` 表示事件可重新领取，`ALREADY_CONSUMED` 表示已有匹配消费凭据；不代表发布确认。缺少或无效Access返回401，非管理员返回403，不存在返回404，非法参数或版本返回400。成功响应禁止缓存。网关对该路径沿用管理CIDR，直连Starter时仍执行认证和管理员授权。
+
+## 7.2 异步任务接口约束
 
 - 触发后台任务的接口必须立即返回 taskId
 - 任务状态查询接口必须返回 status、progress、lastError、traceId
