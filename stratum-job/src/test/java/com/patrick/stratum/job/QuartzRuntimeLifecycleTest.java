@@ -25,7 +25,7 @@ class QuartzRuntimeLifecycleTest {
         var primary = scheduler("ordinary", true, calls);
         var relay = scheduler("relay", false, calls);
         var registry = new JobHandlerRegistry(List.of(new Probe()));
-        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry), registry, 1);
+        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null), registry, 1);
         var lifecycle = new QuartzRuntimeLifecycle(List.of(primary, relay), executor);
         lifecycle.start(); lifecycle.stop();
         assertEquals(List.of("ordinary", "relay"), calls);

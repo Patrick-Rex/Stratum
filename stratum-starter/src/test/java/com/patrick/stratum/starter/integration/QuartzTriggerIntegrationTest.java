@@ -8,10 +8,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import com.patrick.stratum.application.event.OutboxRelayControlApplicationService;
 import com.patrick.stratum.application.job.JobExecutionApplicationService;
 import com.patrick.stratum.application.job.JobHandler;
 import com.patrick.stratum.domain.job.JobDefinition;
@@ -19,6 +21,8 @@ import com.patrick.stratum.domain.job.JobExecutionRepository.Submission;
 import com.patrick.stratum.domain.job.JobRecoveryRepository.ReplayRequest;
 import com.patrick.stratum.infrastructure.job.SchedulerConfiguration;
 import com.patrick.stratum.job.JobRuntimeConfiguration;
+import com.patrick.stratum.job.JobExecutionResult;
+import com.patrick.stratum.job.JobTaskExecutor;
 import com.patrick.stratum.job.QuartzDispatchJob;
 import com.patrick.stratum.job.QuartzTriggerConfiguration;
 import com.patrick.stratumtest.job.JobCrashProcess;
@@ -49,6 +53,7 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
     private final List<UUID> relayExecutions = new ArrayList<>();
     private final List<AnnotationConfigApplicationContext> contexts = new ArrayList<>();
     private final List<String> schedulerIds = new ArrayList<>();
+    private Boolean originalRelayPaused;
 
     /**
      * 注入生产Application与已迁移数据源，Quartz独立实例只共享持久化基础设施。
@@ -99,6 +104,11 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
         }
         for (String prefix : List.of("lock:job:", "lock:job:trigger:run.", "lock:job:trigger:schedule.")) {
             jdbc.update("DELETE FROM stratum_shedlock WHERE name=?", prefix + probe.code);
+        }
+        if (originalRelayPaused != null) {
+            var control = parent.getBean(OutboxRelayControlApplicationService.class);
+            var current = control.current();
+            if (current.paused() != originalRelayPaused) control.change(current.revision(), originalRelayPaused);
         }
     }
 
@@ -162,6 +172,7 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
     @Test
     void stopsBothSchedulersBeforeClosingSharedWorkers() throws Exception {
         probe.block = true; relayProbe.block = true; relayProbe.periodic = false;
+        setRelayPaused(false);
         var context = context(true, true);
         var relay = context.getBean("relayJobScheduler", Scheduler.class);
         var ordinaryId = register();
@@ -178,6 +189,37 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
         assertEquals(List.of("INTERRUPTED"), results(ordinaryId)); assertEquals(List.of("INTERRUPTED"), results(relayId));
         assertTrue(probe.threads.stream().noneMatch(Thread::isAlive));
         assertTrue(relayProbe.threads.stream().noneMatch(Thread::isAlive));
+    }
+
+    /**
+     * 暂停时Relay工作器不领取；恢复后已准入的任务可在再次暂停后完成，普通任务不受影响。
+     * @throws Exception 并发或数据库断言失败
+     */
+    @Test
+    void gatesRelayWorkerBeforeClaimAndLetsAdmittedWorkFinish() throws Exception {
+        setRelayPaused(true); relayProbe.periodic = false; relayProbe.block = true;
+        var context = context(true, true); var executor = context.getBean(JobTaskExecutor.class);
+        var relayId = registerRelay();
+        assertEquals(JobExecutionResult.SKIPPED, executor.execute("outbox.relay", relayId));
+        assertEquals("WAITING", state(relayId));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM job_attempt WHERE execution_id=?", Integer.class, relayId.toString()));
+        var ordinaryId = register();
+        await().atMost(Duration.ofSeconds(15)).until(() -> "SUCCEEDED".equals(state(ordinaryId)));
+        assertEquals(1, probe.calls.get());
+        setRelayPaused(false);
+        try (var threads = Executors.newVirtualThreadPerTaskExecutor()) {
+            var running = threads.submit(() -> executor.execute("outbox.relay", relayId));
+            try {
+                assertTrue(relayProbe.entered.await(10, TimeUnit.SECONDS));
+                setRelayPaused(true);
+                assertEquals("RUNNING", state(relayId));
+            } finally { relayProbe.release.countDown(); }
+            assertEquals(JobExecutionResult.SUCCEEDED, running.get(10, TimeUnit.SECONDS));
+        }
+        assertEquals("SUCCEEDED", state(relayId));
+        var later = registerRelay();
+        assertEquals(JobExecutionResult.SKIPPED, executor.execute("outbox.relay", later));
+        assertEquals("WAITING", state(later));
     }
 
     /** 两个真实Scheduler共享固定轮询，失败后按数据库退避再次执行，不创建每次重试触发器。 */
@@ -391,6 +433,29 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
             if (relayEnabled) schedulerIds.add(context.getBean("relayJobScheduler", Scheduler.class).getSchedulerInstanceId());
             return context;
         } catch (RuntimeException failure) { context.close(); throw failure; }
+    }
+
+    /**
+     * 显式切换本独占测试数据库中的共享暂停状态，并记录测试前状态供恢复。
+     * @param paused 目标状态
+     */
+    private void setRelayPaused(boolean paused) {
+        var control = parent.getBean(OutboxRelayControlApplicationService.class);
+        var state = control.current();
+        if (originalRelayPaused == null) originalRelayPaused = state.paused();
+        if (state.paused() != paused) control.change(state.revision(), paused);
+    }
+
+    /**
+     * 登记本测试唯一的Relay执行，不启动Relay调度器。
+     * @return 原执行UUID
+     */
+    private UUID registerRelay() {
+        var id = UUID.randomUUID(); relayExecutions.add(id);
+        var time = Instant.parse("2026-01-01T00:00:00Z");
+        var definition = new JobDefinition("outbox.relay", JobDefinition.Type.ONCE, Optional.empty(), Optional.of(time), 30,
+                new JobDefinition.RetryPolicy(3, Duration.ofMillis(100), Duration.ofSeconds(1)), JobDefinition.IdempotencyRule.EXPLICIT_KEY);
+        return jobs.register(new Submission(id, definition, time, id.toString(), "{}", "relay-gate-test"));
     }
 
     /**

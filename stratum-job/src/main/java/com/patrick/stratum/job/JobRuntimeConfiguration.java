@@ -1,5 +1,6 @@
 package com.patrick.stratum.job;
 
+import com.patrick.stratum.application.event.OutboxRelayControlApplicationService;
 import com.patrick.stratum.application.job.JobExecutionApplicationService;
 import com.patrick.stratum.application.job.JobHandler;
 import org.springframework.beans.factory.ObjectProvider;
@@ -33,11 +34,13 @@ public class JobRuntimeConfiguration {
      * 创建可被ShedLock方法代理包装的无执行共享状态工作器。
      * @param jobs Application任务状态入口
      * @param registry 固定处理器注册表
+     * @param relayControl Relay共享暂停准入应用入口
      * @return 由Spring代理管理的工作器
      */
     @Bean
-    ProtectedJobWorker protectedJobWorker(JobExecutionApplicationService jobs, JobHandlerRegistry registry) {
-        return new ProtectedJobWorker(jobs, registry);
+    ProtectedJobWorker protectedJobWorker(JobExecutionApplicationService jobs, JobHandlerRegistry registry,
+            OutboxRelayControlApplicationService relayControl) {
+        return new ProtectedJobWorker(jobs, registry, relayControl);
     }
 
     /**

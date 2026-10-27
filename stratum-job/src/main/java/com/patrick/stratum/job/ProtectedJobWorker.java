@@ -3,6 +3,7 @@ package com.patrick.stratum.job;
 import java.time.Instant;
 import java.util.UUID;
 
+import com.patrick.stratum.application.event.OutboxRelayControlApplicationService;
 import com.patrick.stratum.application.job.JobExecutionApplicationService;
 import com.patrick.stratum.application.job.JobHandler;
 import com.patrick.stratum.common.trace.TraceIdContext;
@@ -22,6 +23,7 @@ import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 public class ProtectedJobWorker {
     private final JobExecutionApplicationService jobs;
     private final JobHandlerRegistry registry;
+    private final OutboxRelayControlApplicationService relayControl;
 
     /**
      * 按固定代码互斥，实际处理和代理解锁结束前始终保留锁与线程。
@@ -37,6 +39,8 @@ public class ProtectedJobWorker {
         try {
             if (control.stopping()) return;
             var handler = registry.handler(code);
+            if (JobHandlerRegistry.RELAY_JOB_CODE.equals(code) && !relayControl.tryAdmit().allowed()) return;
+            if (control.stopping()) return;
             var claim = jobs.claim(executionId);
             if (claim.isEmpty()) return;
             var lease = claim.orElseThrow();
