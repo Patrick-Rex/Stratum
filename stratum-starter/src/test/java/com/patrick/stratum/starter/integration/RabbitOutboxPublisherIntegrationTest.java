@@ -10,6 +10,7 @@ import com.patrick.stratum.domain.event.OutboxPublisher;
 import com.patrick.stratum.infrastructure.messaging.RabbitMessagingConfiguration;
 import com.patrick.stratum.infrastructure.messaging.RabbitOutboxPublisherConfiguration;
 import com.patrick.stratum.infrastructure.messaging.RabbitTopologyConfiguration;
+import com.patrick.stratum.infrastructure.tracing.OpenTelemetryTraceContext;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
@@ -80,6 +81,37 @@ class RabbitOutboxPublisherIntegrationTest {
         assertNull(context.getBean(SimpleMeterRegistry.class).find("stratum.messaging.consumed").counter());
         assertTrue(context.getBean(SimpleMeterRegistry.class).getMeters().stream().allMatch(meter -> meter.getId().getTags().stream()
                 .allMatch(tag -> "result".equals(tag.getKey()))));
+    }
+
+    /**
+     * 无Agent时真实Broker接收规范追踪头，空上下文和非法state不产生伪造字段。
+     * @throws Exception Broker协议失败
+     */
+    @Test
+    void propagatesOnlyValidStandardHeadersWithoutAgent() throws Exception {
+        start(Map.of());
+        var publisher = context.getBean(OutboxPublisher.class); var trace = new OpenTelemetryTraceContext();
+        String parent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        var first = delivery("erp.material.created"); var second = delivery("erp.material.created");
+        var historical = delivery("erp.material.created");
+        try (var ignored = trace.restore(trace.normalize(parent, "vendor=value"))) { assertEquals(CONFIRMED, publisher.publish(first)); }
+        try (var ignored = trace.restore(trace.normalize(parent, "duplicate=one,duplicate=two"))) { assertEquals(CONFIRMED, publisher.publish(second)); }
+        assertEquals(CONFIRMED, publisher.publish(historical));
+        try (var channel = context.getBean(CachingConnectionFactory.class).createConnection().createChannel(false)) {
+            var one = channel.basicGet(ERP_QUEUE, true); var two = channel.basicGet(ERP_QUEUE, true); var three = channel.basicGet(ERP_QUEUE, true);
+            assertNotNull(one); assertNotNull(two); assertNotNull(three);
+            assertEquals(first.message().eventId(), one.getProps().getMessageId());
+            assertEquals(parent, one.getProps().getHeaders().get("traceparent").toString());
+            assertEquals("vendor=value", one.getProps().getHeaders().get("tracestate").toString());
+            assertEquals(parent, two.getProps().getHeaders().get("traceparent").toString());
+            assertFalse(two.getProps().getHeaders().containsKey("tracestate"));
+            assertFalse(three.getProps().getHeaders().containsKey("traceparent"));
+            assertFalse(three.getProps().getHeaders().containsKey("tracestate"));
+            for (var message : new com.rabbitmq.client.GetResponse[]{one, two, three}) {
+                assertFalse(message.getProps().getHeaders().containsKey("baggage"));
+                assertEquals(7, JsonMapper.builder().build().readTree(message.getBody()).size());
+            }
+        }
     }
 
     /** 删除目标后mandatory返回不可路由，修复拓扑后原eventId可以重新发送。 */

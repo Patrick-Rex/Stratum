@@ -10,8 +10,12 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.patrick.stratum.common.trace.CorrelationIdPolicy;
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.event.OutboxPublisher;
+import com.patrick.stratum.infrastructure.tracing.OpenTelemetryTraceContext;
 import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageDeliveryMode;
@@ -43,11 +47,12 @@ public class RabbitOutboxPublisherConfiguration {
      * @param json 应用JSON映射器
      * @param properties 发布并发与确认等待参数
      * @param registries 可选指标注册表，独立装配时允许没有注册表
+     * @param traces 可选标准追踪边界，独立装配时使用默认适配器
      * @return 随容器销毁的Outbox发布端口
      */
     @Bean
     OutboxPublisher outboxPublisher(CachingConnectionFactory factory, JsonMapper json, Properties properties,
-            ObjectProvider<MeterRegistry> registries) {
+            ObjectProvider<MeterRegistry> registries, ObjectProvider<StandardTraceContext> traces) {
         if (!(factory.getPublisherConnectionFactory() instanceof CachingConnectionFactory publisherFactory)) {
             throw new IllegalStateException("消息发布必须使用独立缓存连接工厂");
         }
@@ -55,7 +60,8 @@ public class RabbitOutboxPublisherConfiguration {
         template.setUsePublisherConnection(true);
         template.setMandatory(true);
         template.afterPropertiesSet();
-        return new ObservedPublisher(new Adapter(template, publisherFactory::resetConnection, json, properties),
+        return new ObservedPublisher(new Adapter(template, publisherFactory::resetConnection, json, properties,
+                traces.getIfAvailable(OpenTelemetryTraceContext::new)),
                 new MessageMetrics(registries.getIfAvailable()));
     }
 
@@ -112,10 +118,12 @@ public class RabbitOutboxPublisherConfiguration {
 
     /** 发布适配只持有有界并发和客户端资源，不保存跨实例消息状态。 */
     static final class Adapter implements OutboxPublisher, AutoCloseable {
+        private static final Logger LOG = LoggerFactory.getLogger(Adapter.class);
         private final RabbitTemplate template;
         private final Runnable resetPublisher;
         private final JsonMapper json;
         private final Properties properties;
+        private final StandardTraceContext standardTrace;
         private final Semaphore capacity;
         private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -127,10 +135,24 @@ public class RabbitOutboxPublisherConfiguration {
          * @param properties 已校验参数
          */
         Adapter(RabbitTemplate template, Runnable resetPublisher, JsonMapper json, Properties properties) {
+            this(template, resetPublisher, json, properties, new OpenTelemetryTraceContext());
+        }
+
+        /**
+         * 注入标准上下文边界，供发送时提取有限传播头。
+         * @param template 已启用mandatory的客户端
+         * @param resetPublisher 仅重置发布连接的动作
+         * @param json JSON映射器
+         * @param properties 已校验参数
+         * @param standardTrace 当前线程标准追踪边界
+         * @throws NullPointerException 标准追踪边界为空
+         */
+        Adapter(RabbitTemplate template, Runnable resetPublisher, JsonMapper json, Properties properties, StandardTraceContext standardTrace) {
             this.template = template;
             this.resetPublisher = resetPublisher;
             this.json = json;
             this.properties = properties;
+            this.standardTrace = java.util.Objects.requireNonNull(standardTrace);
             this.capacity = new Semaphore(properties.maxInFlight());
         }
 
@@ -200,7 +222,25 @@ public class RabbitOutboxPublisherConfiguration {
             headers.setHeader("stratum-publication-id", UUID.randomUUID().toString());
             headers.setHeader("stratum-aggregate-id", event.aggregateId());
             headers.setHeader("stratum-event-type", event.eventType());
+            addStandardTrace(headers);
             return new Message(body, headers);
+        }
+
+        /**
+         * 只传播当前有效W3C上下文，不保存或手动传播baggage；提取故障不阻断业务发布。
+         * @param headers 待发送的消息属性
+         */
+        private void addStandardTrace(MessageProperties headers) {
+            try {
+                standardTrace.capture().flatMap(value -> standardTrace.normalize(value.traceparent(), value.tracestate())).ifPresent(value -> {
+                    headers.setHeader("traceparent", value.traceparent());
+                    if (!value.tracestate().isEmpty()) headers.setHeader("tracestate", value.tracestate());
+                });
+            } catch (RuntimeException failure) {
+                headers.getHeaders().remove("traceparent"); headers.getHeaders().remove("tracestate");
+                try { LOG.atWarn().addKeyValue("errorType", failure.getClass().getSimpleName()).log("消息标准追踪上下文捕获失败"); }
+                catch (RuntimeException ignored) { /* 告警故障不改变消息投递。 */ }
+            }
         }
 
         /** 超时或连接错误时清理挂起确认；清理失败则保持关闭，避免后续无限累积。 */

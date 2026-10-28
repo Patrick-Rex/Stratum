@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.event.OutboxMessage;
 import com.patrick.stratum.domain.event.OutboxPublisher;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -63,6 +64,43 @@ class RabbitOutboxPublisherTest {
             assertEquals(input.sequence(), ((Number) headers.getHeader("stratum-sequence")).longValue());
         }
         verify(template).destroy();
+    }
+
+    /** 捕获及规范化组件故障只产生安全告警，消息仍按原身份发布。 */
+    @Test
+    void publishesWithoutTraceWhenCaptureOrNormalizationFails() {
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(RabbitOutboxPublisherConfiguration.Adapter.class);
+        var logs = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        logs.start(); logger.addAppender(logs);
+        try {
+            String parent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aaaaaaaaaaaaaaaa-01";
+            for (boolean failCapture : new boolean[]{true, false}) {
+                var trace = mock(StandardTraceContext.class);
+                if (failCapture) when(trace.capture()).thenThrow(new IllegalStateException("private-capture"));
+                else {
+                    when(trace.capture()).thenReturn(java.util.Optional.of(new StandardTraceContext.Carrier(parent, "vendor=private")));
+                    when(trace.normalize(parent, "vendor=private")).thenThrow(new IllegalStateException("private-normalize"));
+                }
+                var template = mock(RabbitTemplate.class); var captured = new AtomicReference<Message>();
+                doAnswer(call -> {
+                    captured.set(call.getArgument(2));
+                    ((CorrelationData) call.getArgument(3)).getFuture().complete(new CorrelationData.Confirm(true, null)); return null;
+                }).when(template).send(anyString(), anyString(), any(Message.class), any(CorrelationData.class));
+                var input = delivery("erp.material.created", "{}");
+                try (var adapter = new RabbitOutboxPublisherConfiguration.Adapter(template, () -> {}, JsonMapper.builder().build(),
+                        new RabbitOutboxPublisherConfiguration.Properties(1, Duration.ofMillis(100)), trace)) {
+                    assertEquals(CONFIRMED, adapter.publish(input));
+                    assertEquals(input.message().eventId(), captured.get().getMessageProperties().getMessageId());
+                    assertFalse(captured.get().getMessageProperties().getHeaders().containsKey("traceparent"));
+                    assertFalse(captured.get().getMessageProperties().getHeaders().containsKey("tracestate"));
+                }
+            }
+            var warnings = logs.list.stream().filter(log -> log.getFormattedMessage().contains("消息标准追踪上下文捕获失败")).toList();
+            assertEquals(2, warnings.size());
+            assertTrue(warnings.stream().allMatch(log -> log.getThrowableProxy() == null && log.getKeyValuePairs().stream()
+                    .anyMatch(pair -> "errorType".equals(pair.key) && "IllegalStateException".equals(pair.value))));
+            assertFalse(warnings.toString().contains("private-"));
+        } finally { logger.detachAppender(logs); logs.stop(); }
     }
 
     /** mandatory返回优先于肯定确认，否定确认也绝不成功。 */

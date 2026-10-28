@@ -22,6 +22,7 @@ import com.patrick.stratum.domain.event.OutboxRelayRepository;
 import com.patrick.stratum.domain.event.OutboxRepository;
 import com.patrick.stratum.infrastructure.messaging.RabbitMessagingConfiguration;
 import com.patrick.stratum.infrastructure.messaging.RabbitOutboxPublisherConfiguration;
+import com.patrick.stratum.infrastructure.tracing.OpenTelemetryTraceContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -116,6 +117,7 @@ class OutboxRecoveryBrokerIntegrationTest extends AdministrationHttpIntegrationT
     @Test
     void administratorRestoresUnroutableHeadWithoutSkippingSequence() throws Exception {
         var pair = seed(2); var key = UUID.randomUUID(); requests.add(key.toString());
+        factory.getPublisherConnectionFactory().createConnection();
         admin.deleteQueue(ERP_QUEUE);
         for (int attempt = 1; attempt <= 2; attempt++) {
             assertEquals(1, runner.runBatch(claim(), policy));
@@ -154,7 +156,7 @@ class OutboxRecoveryBrokerIntegrationTest extends AdministrationHttpIntegrationT
         try {
             context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("recovery-fault", properties));
             context.registerBean(JsonMapper.class, () -> JsonMapper.builder().build());
-            context.register(RabbitMessagingConfiguration.class, RabbitOutboxPublisherConfiguration.class);
+            context.register(RabbitMessagingConfiguration.class, RabbitOutboxPublisherConfiguration.class, OpenTelemetryTraceContext.class);
             context.registerBean(UnitOfWork.class, () -> work);
             context.registerBean(OutboxRelayRepository.class, () -> relay);
             context.register(OutboxRelayApplicationService.class); context.refresh(); return context;

@@ -155,6 +155,33 @@ class OutboxRelayIntegrationTest extends MariaDbIntegrationTest {
         assertEquals(2L, ((Number) last.getProps().getHeaders().get("stratum-sequence")).longValue());
     }
 
+    /**
+     * 已落盘事件经过实际Relay及Broker后保留追踪头，历史事件不继承调用线程。
+     * @throws Exception Broker读取失败
+     */
+    @Test
+    void publishesPersistedTraceThroughRelayWithoutAgent() throws Exception {
+        var traced = seed(1).getFirst(); var historical = seed(1).getFirst();
+        String parent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        String caller = "00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01";
+        jdbc.update("UPDATE outbox_event SET standard_traceparent=?,standard_tracestate=? WHERE event_id=?", parent, "vendor=value", traced.eventId());
+        try (var ignored = standardTrace.restore(standardTrace.normalize(caller, null))) {
+            assertEquals(2, runner.runBatch(request(2), policy));
+            assertEquals(caller, standardTrace.capture().orElseThrow().traceparent());
+        }
+        var received = drain(factory, 2);
+        assertEquals(2, received.size());
+        var byId = received.stream().collect(java.util.stream.Collectors.toMap(message -> message.getProps().getMessageId(), message -> message));
+        var tracedMessage = byId.get(traced.eventId()); var oldMessage = byId.get(historical.eventId());
+        assertNotNull(tracedMessage); assertNotNull(oldMessage);
+        assertEquals(parent, tracedMessage.getProps().getHeaders().get("traceparent").toString());
+        assertEquals("vendor=value", tracedMessage.getProps().getHeaders().get("tracestate").toString());
+        assertFalse(oldMessage.getProps().getHeaders().containsKey("traceparent"));
+        assertFalse(oldMessage.getProps().getHeaders().containsKey("tracestate"));
+        assertFalse(tracedMessage.getProps().getHeaders().containsKey("baggage"));
+        assertEquals(7, JsonMapper.builder().build().readTree(tracedMessage.getBody()).size());
+    }
+
     /** 发布、重试与历史事件逐条恢复原标准上下文，并在返回后恢复调用线程。 */
     @Test
     void isolatesEventContextsAndRestoresCallingThread() {
