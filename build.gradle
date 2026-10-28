@@ -12,6 +12,7 @@ ext {
     springdocVersion = '3.0.3'
     knife4jUiVersion = '4.5.0'
     shedLockVersion = '7.10.1'
+    otelJavaAgentVersion = '2.33.0'
 }
 
 allprojects {

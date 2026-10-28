@@ -4,7 +4,7 @@ plugins {
 }
 
 tasks.named('test') {
-    useJUnitPlatform { excludeTags 'integration' }
+    useJUnitPlatform { excludeTags 'integration', 'otel-agent' }
 }
 
 tasks.register('integrationTest', Test) {
@@ -19,7 +19,15 @@ tasks.register('integrationTest', Test) {
 
 description = 'Stratum Starter'
 
+configurations {
+    otelAgent {
+        canBeConsumed = false
+        transitive = false
+    }
+}
+
 dependencies {
+    otelAgent "io.opentelemetry.javaagent:opentelemetry-javaagent:${rootProject.otelJavaAgentVersion}"
     implementation project(':stratum-interface')
     implementation project(':stratum-query')
     implementation project(':stratum-application')
@@ -47,6 +55,25 @@ dependencies {
 }
 
 configurations.testAnnotationProcessor.extendsFrom(configurations.annotationProcessor)
+
+// 默认启动不加载Agent；显式选择时才解析固定版本并注入JVM。
+if (providers.gradleProperty('otelAgent').map { it.toBoolean() }.getOrElse(false)) {
+    tasks.named('bootRun') {
+        doFirst { jvmArgs "-javaagent:${configurations.otelAgent.singleFile.absolutePath}" }
+    }
+}
+
+tasks.register('otelIntegrationTest', Test) {
+    description = '以实际Java Agent和独立依赖验证Starter标准HTTP追踪'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform { includeTags 'otel-agent' }
+    outputs.upToDateWhen { false }
+    dependsOn tasks.named('bootJar')
+    systemProperty 'stratum.test.starter-jar', tasks.named('bootJar').get().archiveFile.get().asFile.absolutePath
+    doFirst { systemProperty 'stratum.test.otel-agent', configurations.otelAgent.singleFile.absolutePath }
+}
 
 def gatewayBootJar = project(':stratum-gateway').tasks.named('bootJar')
 tasks.named('integrationTest') {

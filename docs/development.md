@@ -1505,3 +1505,17 @@ Quartz驱动在Relay计划登记及到期查询前核验专用调度器和共享
 真实HTTP登记经Quartz固定处理器复核首次管理员并登记重放，周期Relay经RabbitMQ发布原事件；发布确认后、自动监听启动前，任务仍为RUNNING且没有消费凭据。真实监听消费并保存匹配原事件的凭据后，HTTP状态才变为SUCCEEDED、进度100。原事件已结束及死信归档由测试夹具构造，不能将其称为本次真实死信生成；测试退出前停止自身调度与监听，清理新增任务及随机调度命名空间。
 
 首轮全工程回归发现新增夹具遗留Relay任务及调度器心跳，导致4项后续测试失败；修复清理顺序后，22项针对性测试通过，并确认测试心跳和Relay任务为零。随后执行 `test :stratum-gateway:integrationTest :stratum-starter:integrationTest --rerun-tasks`，42项构建任务全部实际执行，269项单元、10项Gateway集成及712项Starter集成共991项通过，零失败、错误或跳过。依赖为独立MariaDB/Redis和现有RabbitMQ的专用虚拟主机；未执行部署验收。E04非部署范围完成。
+
+## NODE-F01.1 Starter标准HTTP追踪
+
+固定版本OpenTelemetry Java Agent 2.33.0由根工程统一管理，[项目许可为Apache 2.0](https://raw.githubusercontent.com/open-telemetry/opentelemetry-java-instrumentation/v2.33.0/LICENSE)，[官方版本](https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/tag/v2.33.0)持续维护并包含独立Agent；不引入付费服务。默认 `bootRun` 不解析或加载Agent；需要本地追踪时，先配置已有数据库、Redis与认证，再执行：
+
+```powershell
+# 尚未配置追踪后端时不发送遥测；配置后按官方说明启用OTLP导出。
+$env:OTEL_TRACES_EXPORTER='none'
+$env:OTEL_METRICS_EXPORTER='none'
+$env:OTEL_LOGS_EXPORTER='none'
+.\gradlew.bat --no-daemon :stratum-starter:bootRun -PotelAgent=true
+```
+
+Agent启用时由其标准配置控制采样与导出，默认OTLP设置及可选协议见[官方配置](https://opentelemetry.io/docs/zero-code/java/agent/configuration/)；无后端时上述配置仅禁用导出。独立验收使用 `:stratum-starter:otelIntegrationTest` 和既有 `STRATUM_IT_DB_*`、`STRATUM_IT_REDIS_PORT` 测试变量，在真实JDK 25子进程、本机独立MariaDB和Redis上以OTLP日志导出验证：上游trace及父span正确延续、无上游时生成根span，既有 `X-Trace-Id` 原样保留。测试数据库包含额外测试迁移，测试子进程仅在该独立库关闭Flyway迁移校验；正常启动校验不变。1项Agent真实进程测试与33项Starter单元测试通过，零失败、错误或跳过；另实际启动显式 `bootRun` 核实Agent版本并退出。未启动外部收集服务；结构化日志、指标及跨消息传播继续后续节点。
