@@ -42,7 +42,7 @@
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
 | stratum-infrastructure | 已引入 Easy-Query 3.3.1（Boot 4 starter / MySQL 方言 / 处理器）、MariaDB JDBC、Flyway、Redis、Caffeine；已配置数据源与 Flyway；NODE-B03.2b 已验证真实 MariaDB 提交、回滚和嵌套事务 |
 | stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由、Header灰度、协议透传和代理超时/错误处理；已具备头体防护及管理直连CIDR限制，已绑定直连IP共享Redis限流，已提供JSON访问日志及受管理CIDR保护的Prometheus指标；双进程ERP闭环、权限组合及g3全工程回归已验收，D04.1完成 |
-| stratum-job | Quartz/ShedLock Spring依赖、固定处理器注册表与有界虚拟线程执行器已接入；实际工作器持有数据库锁，固定Quartz触发、数据库重试驱动及可选周期Relay已验收，E04异步任务API待继续 |
+| stratum-job | Quartz/ShedLock Spring依赖、固定处理器注册表与有界虚拟线程执行器已接入；实际工作器持有数据库锁，固定Quartz触发、数据库重试驱动、可选周期Relay及死信重放任务管理API已接入；真实Broker组合验收待继续 |
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
 
@@ -1493,3 +1493,9 @@ Quartz驱动在Relay计划登记及到期查询前核验专用调度器和共享
 新增QueryGateway管理员单任务查询，通过固定参数化SQL在单一快照核验任务、重放目标、原事件及消费凭据；只返回任务UUID、状态、单事件进度、安全错误分类和首次trace，不读取正文到应用投影。归档和原事件载荷使用 [MariaDB JSON_EQUALS](https://mariadb.com/docs/server/reference/sql-functions/special-functions/json-functions/json_equals) 进行JSON值比较，当前MariaDB基线高于其10.7最低版本；消费凭据与原始正文精确比对。
 
 59项独占MariaDB集成测试通过，零失败、错误或跳过；覆盖当前管理员、取消、退避和两类失败、技术成功及模拟发布确认后仍等待、真实消费后成功、高精度JSON等价与篡改失败关闭。发送确认由测试调用存储端口模拟，本节点未连接Broker；HTTP接口与Broker组合仍待后续节点。E04.3完成。
+
+## NODE-E04.4 死信重放任务HTTP
+
+版本1管理员接口支持带UUID幂等键登记、按任务UUID查询及未开始时重复取消；登记返回202和Location，任务详情只暴露安全状态与首次trace。登记或发送不等于消费完成；申请人执行前撤权时不会登记重放。查询、登记和取消每次均复核当前授权，成功响应禁止缓存。
+
+3项真实HTTP集成测试通过，零失败、错误或跳过；覆盖真实登录、匿名与Refresh、普通账号及撤权、伪造身份头、重复请求、输入和版本错误、开始后拒绝取消、OpenAPI及缓存头。使用独立MariaDB与Redis；本节点未连接Broker。实际运行除已有消息和Relay配置外，须显式启用 `STRATUM_JOBS_ENABLED=true` 和 `STRATUM_JOBS_REPLAY_ENABLED=true`；Relay初始暂停，管理员恢复后才能发布。真实Broker、调度及HTTP组合继续E04.5。

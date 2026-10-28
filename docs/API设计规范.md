@@ -74,6 +74,8 @@
 - 任务状态查询接口必须返回 status、progress、lastError、traceId
 - 任务取消接口必须幂等
 
+版本1死信重放任务使用 `POST /api/management/outbox/replay-tasks`：请求头 `Idempotency-Key` 为UUID，正文为 `{"archiveId":"UUID"}`。成功返回202、任务 `taskId` 及指向详情的 `Location`；相同请求身份及首次操作者、归档一致时返回原任务，不一致返回409。提交只登记任务，不证明归档合格、发送或消费成功。`GET /api/management/outbox/replay-tasks/{taskId}` 返回任务身份、`status`、`progress`、`lastError` 和首次请求 `traceId`；`PUT /api/management/outbox/replay-tasks/{taskId}/cancellation` 幂等取消未开始任务，已开始返回409。任务不存在返回404；每次操作均验证当前启用管理员，匿名或无效Access返回401，非管理员返回403。成功响应禁止缓存；网关沿用管理CIDR。
+
 ## 8. 安全规范
 
 - Authorization: Bearer <token>
