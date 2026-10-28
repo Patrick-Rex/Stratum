@@ -22,6 +22,7 @@ import com.patrick.stratum.domain.event.OutboxPublisher.Delivery;
 import com.patrick.stratum.domain.event.OutboxRepository;
 import com.patrick.stratum.infrastructure.messaging.RabbitOutboxConsumerConfiguration;
 import com.patrick.stratum.job.QuartzRuntimeLifecycle;
+import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -166,6 +167,13 @@ class DeadLetterReplayWorkflowIntegrationTest extends AdministrationHttpIntegrat
             assertTrue(listeners.getBean("erpOutboxListener", SimpleMessageListenerContainer.class).isRunning());
             await().atMost(Duration.ofSeconds(30)).until(() -> receiptCount() == 1);
             await().atMost(Duration.ofSeconds(10)).until(() -> "SUCCEEDED".equals(status()));
+            var metrics = parent.getBean(PrometheusMeterRegistry.class);
+            await().atMost(Duration.ofSeconds(5)).until(() -> {
+                var counter = metrics.find("stratum.messaging.consumed").tags("group", "erp_audit", "result", "consumed").counter();
+                return counter != null && counter.count() == 1;
+            });
+            assertEquals(1, metrics.get("stratum.messaging.published").tag("result", "confirmed").counter().count());
+            assertFalse(metrics.scrape().contains(eventId.toString()));
             var row = data(request("GET", PATH + "/" + taskId, accessToken(), null), 200);
             assertEquals(100, row.path("progress").asInt()); assertTrue(row.path("lastError").isNull());
             assertEquals("workflow-http", row.path("traceId").asText());

@@ -14,6 +14,7 @@ import com.patrick.stratum.domain.event.OutboxConsumer;
 import com.patrick.stratum.domain.event.OutboxMessage;
 import com.patrick.stratum.domain.event.OutboxPublisher;
 import com.rabbitmq.client.Channel;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.amqp.core.Message;
@@ -132,6 +133,31 @@ class RabbitOutboxConsumerTest {
             assertTrue(Thread.currentThread().isInterrupted()); verifyNoInteractions(port);
             verify(channel).basicNack(7L, false, true); verifyNoMoreInteractions(channel);
         } finally { Thread.interrupted(); }
+    }
+
+    /**
+     * 已提交、等待和失败分别计数；已提交后的确认异常不伪造另一次处理。
+     * @throws IOException 确认通道异常
+     */
+    @Test
+    void recordsConsumptionAndRedeliveryWithoutChangingAcknowledgement() throws IOException {
+        var registry = new SimpleMeterRegistry(); var port = mock(OutboxConsumer.class); var channel = mock(Channel.class);
+        var observed = new RabbitOutboxConsumerAdapter(codec(), port, Group.ERP_AUDIT, new MessageMetrics(registry));
+        try {
+            var waiting = message(); waiting.getMessageProperties().setRedelivered(true);
+            when(port.consume(any(), any())).thenReturn(WAITING);
+            observed.onMessage(waiting, channel); verify(channel).basicNack(7L, false, true);
+            reset(channel); when(port.consume(any(), any())).thenThrow(new IllegalStateException("secret-failure"));
+            observed.onMessage(message(), channel); verify(channel).basicReject(7L, true);
+            reset(channel); doReturn(CONSUMED).when(port).consume(any(), any());
+            doThrow(new IOException("ack-unknown")).when(channel).basicAck(7L, false);
+            assertThrows(IOException.class, () -> observed.onMessage(message(), channel)); verify(channel).basicAck(7L, false);
+            verifyNoMoreInteractions(channel);
+            assertEquals(1, registry.get("stratum.messaging.consumed").tags("group", "erp_audit", "result", "waiting").counter().count());
+            assertEquals(1, registry.get("stratum.messaging.consumed").tags("group", "erp_audit", "result", "failed").counter().count());
+            assertEquals(1, registry.get("stratum.messaging.consumed").tags("group", "erp_audit", "result", "consumed").counter().count());
+            assertEquals(1, registry.get("stratum.messaging.redelivered").tag("group", "erp_audit").counter().count());
+        } finally { registry.close(); }
     }
 
     /**

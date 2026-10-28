@@ -6,6 +6,7 @@ import java.time.Duration;
 import com.patrick.stratum.domain.event.OutboxConsumptionRepository.Group;
 import com.patrick.stratum.domain.event.OutboxConsumer;
 import com.rabbitmq.client.Channel;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.AcknowledgeMode;
 import org.springframework.amqp.core.Message;
@@ -14,6 +15,7 @@ import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer;
 import org.springframework.amqp.rabbit.listener.api.ChannelAwareMessageListener;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -66,13 +68,15 @@ public class RabbitOutboxConsumerConfiguration {
      * @param properties 资源参数
      * @param consumer 应用消费端口
      * @param json 项目JSON映射器
+     * @param registries 可选指标注册表
      * @return 手动确认监听容器
      */
     @Bean
     SimpleMessageListenerContainer erpOutboxListener(CachingConnectionFactory factory, RabbitAdmin admin,
             @Qualifier("rabbitConsumerExecutor") ThreadPoolTaskExecutor executor, Properties properties,
-            OutboxConsumer consumer, JsonMapper json) {
-        return listener(factory, admin, executor, properties, consumer, json, RabbitTopologyConfiguration.ERP_QUEUE, Group.ERP_AUDIT);
+            OutboxConsumer consumer, JsonMapper json, ObjectProvider<MeterRegistry> registries) {
+        return listener(factory, admin, executor, properties, consumer, json, RabbitTopologyConfiguration.ERP_QUEUE, Group.ERP_AUDIT,
+                new MessageMetrics(registries.getIfAvailable()));
     }
 
     /**
@@ -83,13 +87,15 @@ public class RabbitOutboxConsumerConfiguration {
      * @param properties 资源参数
      * @param consumer 应用消费端口
      * @param json 项目JSON映射器
+     * @param registries 可选指标注册表
      * @return 手动确认监听容器
      */
     @Bean
     SimpleMessageListenerContainer cacheOutboxListener(CachingConnectionFactory factory, RabbitAdmin admin,
             @Qualifier("rabbitConsumerExecutor") ThreadPoolTaskExecutor executor, Properties properties,
-            OutboxConsumer consumer, JsonMapper json) {
-        return listener(factory, admin, executor, properties, consumer, json, RabbitTopologyConfiguration.CACHE_QUEUE, Group.CACHE_INVALIDATION);
+            OutboxConsumer consumer, JsonMapper json, ObjectProvider<MeterRegistry> registries) {
+        return listener(factory, admin, executor, properties, consumer, json, RabbitTopologyConfiguration.CACHE_QUEUE, Group.CACHE_INVALIDATION,
+                new MessageMetrics(registries.getIfAvailable()));
     }
 
     /**
@@ -102,11 +108,12 @@ public class RabbitOutboxConsumerConfiguration {
      * @param json JSON映射器
      * @param queue 固定队列
      * @param group 固定组别
+     * @param metrics 不改变确认语义的指标组件
      * @return 配置完成的容器
      */
     private static SimpleMessageListenerContainer listener(CachingConnectionFactory factory, RabbitAdmin admin,
             ThreadPoolTaskExecutor executor, Properties properties, OutboxConsumer consumer, JsonMapper json,
-            String queue, Group group) {
+            String queue, Group group, MessageMetrics metrics) {
         var container = new SimpleMessageListenerContainer(factory);
         container.setQueueNames(queue); container.setAmqpAdmin(admin); container.setTaskExecutor(executor);
         container.setConcurrentConsumers(properties.concurrency()); container.setMaxConcurrentConsumers(properties.concurrency());
@@ -117,7 +124,7 @@ public class RabbitOutboxConsumerConfiguration {
         container.setMissingQueuesFatal(true); container.setMismatchedQueuesFatal(true);
         container.setShutdownTimeout(properties.shutdownTimeout().toMillis());
         container.setForceStop(false); container.setForceCloseChannel(true);
-        var adapter = new RabbitOutboxConsumerAdapter(new RabbitOutboxMessageCodec(json), consumer, group);
+        var adapter = new RabbitOutboxConsumerAdapter(new RabbitOutboxMessageCodec(json), consumer, group, metrics);
         container.setMessageListener((ChannelAwareMessageListener) (message, channel) -> dispatch(adapter, message, channel));
         container.setErrorHandler(failure -> log.atWarn().addKeyValue("consumerGroup", group.name())
                 .addKeyValue("errorType", failure.getClass().getSimpleName())

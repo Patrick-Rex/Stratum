@@ -17,6 +17,7 @@ final class RabbitOutboxConsumerAdapter implements ChannelAwareMessageListener {
     private final RabbitOutboxMessageCodec codec;
     private final OutboxConsumer consumer;
     private final Group group;
+    private final MessageMetrics metrics;
 
     /**
      * 固定订阅与应用端口，不持有业务状态。
@@ -25,8 +26,19 @@ final class RabbitOutboxConsumerAdapter implements ChannelAwareMessageListener {
      * @param group 唯一订阅组
      */
     RabbitOutboxConsumerAdapter(RabbitOutboxMessageCodec codec, OutboxConsumer consumer, Group group) {
+        this(codec, consumer, group, new MessageMetrics(null));
+    }
+
+    /**
+     * 固定订阅与应用端口，并绑定不改变确认结果的观测组件。
+     * @param codec 严格解码器
+     * @param consumer 提交后返回的应用入口
+     * @param group 唯一订阅组
+     * @param metrics 低基数消息计数
+     */
+    RabbitOutboxConsumerAdapter(RabbitOutboxMessageCodec codec, OutboxConsumer consumer, Group group, MessageMetrics metrics) {
         this.codec = Objects.requireNonNull(codec); this.consumer = Objects.requireNonNull(consumer);
-        this.group = Objects.requireNonNull(group);
+        this.group = Objects.requireNonNull(group); this.metrics = Objects.requireNonNull(metrics);
     }
 
     /**
@@ -39,7 +51,11 @@ final class RabbitOutboxConsumerAdapter implements ChannelAwareMessageListener {
     @Override
     public void onMessage(Message message, Channel channel) throws IOException {
         long tag = message.getMessageProperties().getDeliveryTag();
-        if (Thread.currentThread().isInterrupted()) { channel.basicNack(tag, false, true); return; }
+        boolean redelivered = Boolean.TRUE.equals(message.getMessageProperties().isRedelivered());
+        if (Thread.currentThread().isInterrupted()) {
+            metrics.consumed(group, MessageMetrics.ConsumerResult.INTERRUPTED, redelivered);
+            channel.basicNack(tag, false, true); return;
+        }
         Delivery delivery = null;
         OutboxConsumer.Outcome outcome;
         try {
@@ -51,6 +67,7 @@ final class RabbitOutboxConsumerAdapter implements ChannelAwareMessageListener {
             }
             outcome = Objects.requireNonNull(consumer.consume(delivery, group));
         } catch (RuntimeException failure) {
+            metrics.consumed(group, MessageMetrics.ConsumerResult.FAILED, redelivered);
             String eventId = delivery == null ? "invalid" : delivery.message().eventId();
             String traceId = delivery == null ? "invalid" : delivery.message().traceId();
             log.atWarn().addKeyValue("eventId", eventId).addKeyValue("messageId", eventId)
@@ -61,6 +78,12 @@ final class RabbitOutboxConsumerAdapter implements ChannelAwareMessageListener {
             channel.basicReject(tag, true);
             return;
         }
+        var category = switch (outcome) {
+            case CONSUMED -> MessageMetrics.ConsumerResult.CONSUMED;
+            case DUPLICATE -> MessageMetrics.ConsumerResult.DUPLICATE;
+            case WAITING -> MessageMetrics.ConsumerResult.WAITING;
+        };
+        metrics.consumed(group, category, redelivered);
         switch (outcome) {
             case CONSUMED, DUPLICATE -> channel.basicAck(tag, false);
             case WAITING -> channel.basicNack(tag, false, true);

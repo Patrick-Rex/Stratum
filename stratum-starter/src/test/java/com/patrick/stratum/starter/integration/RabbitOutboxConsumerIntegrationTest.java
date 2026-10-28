@@ -20,6 +20,7 @@ import com.patrick.stratum.infrastructure.messaging.RabbitMessagingConfiguration
 import com.patrick.stratum.infrastructure.messaging.RabbitOutboxConsumerConfiguration;
 import com.patrick.stratum.infrastructure.messaging.RabbitOutboxPublisherConfiguration;
 import com.patrick.stratum.infrastructure.messaging.RabbitTopologyConfiguration;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -126,6 +127,12 @@ class RabbitOutboxConsumerIntegrationTest {
         assertEquals(OutboxPublisher.PublishResult.CONFIRMED, context.getBean(OutboxPublisher.class).publish(delivery()));
         assertTrue(completed.await(10, TimeUnit.SECONDS)); listener.stop();
         assertEquals(3, attempts.get()); assertEquals(List.of(0L, 0L, 1L), counts);
+        var metrics = context.getBean(SimpleMeterRegistry.class);
+        for (String result : List.of("waiting", "failed", "consumed")) {
+            assertEquals(1, metrics.get("stratum.messaging.consumed").tags("group", "erp_audit", "result", result).counter().count());
+        }
+        assertTrue(metrics.get("stratum.messaging.redelivered").tag("group", "erp_audit").counter().count() >= 1);
+        assertEquals(1, metrics.get("stratum.messaging.published").tag("result", "confirmed").counter().count());
         assertEquals(0, context.getBean(RabbitAdmin.class).getQueueInfo(RabbitTopologyConfiguration.ERP_QUEUE).getMessageCount());
         var factory = context.getBean(CachingConnectionFactory.class); var connection = factory.createConnection().getDelegate();
         cleanup(); assertFalse(connection.isOpen()); assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
@@ -184,6 +191,7 @@ class RabbitOutboxConsumerIntegrationTest {
         context = new AnnotationConfigApplicationContext();
         context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("test", properties));
         context.registerBean(JsonMapper.class, () -> JsonMapper.builder().build());
+        context.registerBean(SimpleMeterRegistry.class, SimpleMeterRegistry::new, definition -> definition.setDestroyMethodName("close"));
         context.registerBean(OutboxConsumer.class, () -> consumer);
         context.register(RabbitMessagingConfiguration.class, RabbitTopologyConfiguration.class,
                 RabbitOutboxPublisherConfiguration.class, RabbitOutboxConsumerConfiguration.class);

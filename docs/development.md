@@ -1575,3 +1575,9 @@ F01完成。Agent默认不加载，显式启用与导出配置见F01.1；指标�
 实际Outbox发布端口增加观测包装，在原结果返回后按固定结果累计 `stratum.messaging.published`；调用抛出运行时异常单独计为exception，原异常及关闭语义保持不变。confirmed仅表示Broker确认，不创建消费成功指标；不记录事件、正文或trace标签。没有指标注册表的独立测试装配保持无操作，完整Starter使用其Prometheus注册表。
 
 8项发布适配单元和4项专用RabbitMQ空间集成测试通过，零失败、错误或跳过；覆盖真实confirm、不可路由退回、队列容量拒绝、连接恢复、有限标签、失败结果及Spring关闭传播。本节点不声称消费或重投已由指标覆盖，继续F02.3c。
+
+## NODE-F02.3c 消费与重投指标
+
+Rabbit业务监听按固定订阅组及结果记录 `stratum.messaging.consumed`：consumed仅在应用入口提交后记录，duplicate、waiting、failed和interrupted独立分类；`stratum.messaging.redelivered` 仅统计Broker实际标记的重投，不将等待nack解释成业务失败或失败次数。记录不改变单条ack、nack或reject；消费已提交但确认传输未知仍记录实际消费，不能据此推断Broker确认成功。指标异常由组件隔离，不输出事件或trace标签。
+
+8项适配单元和7项真实RabbitMQ集成测试通过，零失败、错误或跳过。Broker原生等待、失败、重投和确认用例使用受控应用端口；另有1项真实Starter、数据库、调度及重放工作流核对消费凭据与发布/消费指标。死信积压指标仍待F02.3d。
