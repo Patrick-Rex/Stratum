@@ -5,8 +5,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.BiFunction;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -72,6 +77,39 @@ class QueryGatewayTest {
         assertSame(failure, assertThrows(IllegalStateException.class,
                 () -> gateway.execute(new FirstQuery(spec()), QueryContext.anonymous("trace"))));
         assertTrue(TraceIdContext.getTraceId().isEmpty());
+    }
+
+    /** 慢查询只按固定查询代码和结果累计，日志包含关联值但指标不携带请求数据。 */
+    @Test
+    void countsSlowQueriesWithBoundedLabelsAndWarns() {
+        var gateway = new QueryGateway(List.of(handler("test.first", FirstQuery.class, (query, context) -> page("x"))),
+                metrics, Duration.ofNanos(1));
+        var logger = (Logger) LoggerFactory.getLogger(QueryGateway.class);
+        var appender = new ListAppender<ILoggingEvent>(); appender.start(); logger.addAppender(appender);
+        try {
+            gateway.execute(new FirstQuery(spec()), QueryContext.anonymous("slow-query-trace"));
+            assertEquals(1, metrics.get("stratum.query.slow").tags("query", "test.first", "result", "success").counter().count());
+            assertEquals(1, metrics.get("stratum.query.duration").tags("query", "test.first", "result", "success").timer().count());
+            assertEquals(Level.WARN, appender.list.getLast().getLevel());
+            assertTrue(appender.list.getLast().getFormattedMessage().contains("slow-query-trace"));
+            assertTrue(metrics.getMeters().stream().allMatch(meter -> meter.getId().getTags().stream()
+                    .allMatch(tag -> List.of("query", "result").contains(tag.getKey()))));
+        } finally { logger.detachAppender(appender); appender.stop(); }
+    }
+
+    /** 快速失败仍告警，但不把异常本身算成慢查询。 */
+    @Test
+    void fastFailureWarnsWithoutClaimingSlowQuery() {
+        var gateway = new QueryGateway(List.of(handler("test.first", FirstQuery.class,
+                (query, context) -> { throw new IllegalStateException("失败"); })), metrics, Duration.ofDays(1));
+        var logger = (Logger) LoggerFactory.getLogger(QueryGateway.class);
+        var appender = new ListAppender<ILoggingEvent>(); appender.start(); logger.addAppender(appender);
+        try {
+            assertThrows(IllegalStateException.class, () -> gateway.execute(new FirstQuery(spec()), QueryContext.anonymous("failed-query")));
+            assertEquals(Level.WARN, appender.list.getLast().getLevel());
+            assertNull(metrics.find("stratum.query.slow").counter());
+            assertEquals(1, metrics.get("stratum.query.duration").tags("query", "test.first", "result", "error").timer().count());
+        } finally { logger.detachAppender(appender); appender.stop(); }
     }
 
     /** 处理器不能私自扩展请求的分页大小，也不能让读链路隐式加入活动写事务。 */

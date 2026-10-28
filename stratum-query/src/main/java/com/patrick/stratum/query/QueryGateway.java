@@ -104,6 +104,7 @@ public final class QueryGateway {
      */
     private void observe(String code, String traceId, long elapsed, int resultCount, String outcome) {
         metrics.timer("stratum.query.duration", "query", code, "result", outcome).record(elapsed, TimeUnit.NANOSECONDS);
+        if (elapsed >= slowNanos) metrics.counter("stratum.query.slow", "query", code, "result", outcome).increment();
         var event = elapsed >= slowNanos || outcome.equals("error") ? log.atWarn() : log.atInfo();
         long millis = TimeUnit.NANOSECONDS.toMillis(elapsed);
         event.addKeyValue("queryCode", code).addKeyValue("durationMs", millis).addKeyValue("resultCount", resultCount)

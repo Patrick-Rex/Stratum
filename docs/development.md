@@ -1549,3 +1549,9 @@ Starter接入Spring Boot统一管理的Micrometer Prometheus注册表，沿用Ga
 1项真实JDK 25/Starter/Agent进程组合测试通过，零失败、错误或跳过。使用独立MariaDB及Redis，在同一进程中验证W3C入站父跨度与根跨度、业务关联响应头、同时包含双标识的JSON日志、Cookie不出现在测试输出，以及本机Prometheus抓取；随机业务关联和trace ID不出现在抓取内容中。Agent使用OTLP JSON日志导出进行测试，没有启动外部收集服务。子进程与临时输出已退出或清理。
 
 F01完成。Agent默认不加载，显式启用与导出配置见F01.1；指标访问与来源配置见F01.3b2。消息、任务和Gateway标准上下文关联继续F02；Compose、观测后端及部署不在本轮范围。
+
+## NODE-F02.1 查询耗时与慢查询指标
+
+保留查询入口既有耗时Timer和慢查询/失败警告，达到已配置慢阈值时额外递增 `stratum.query.slow`；只使用启动时登记的queryCode与固定success/error结果作为标签。快速失败仍警告但不算慢查询，参数、用户名、业务关联ID和标准trace ID不作为指标标签。
+
+23项Query单元测试和1项真实Starter/MariaDB/Redis集成测试通过，零失败、错误或跳过；覆盖慢成功、快速失败、警告、低基数标签和真实查询Timer的Prometheus抓取，不以合成耗时声称完成外部监控部署。

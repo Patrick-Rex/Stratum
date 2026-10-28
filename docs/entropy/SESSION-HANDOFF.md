@@ -2,21 +2,18 @@
 
 ## 交接报告（2026-10-28）
 
-- completedNode: NODE-F01.4（完成Starter观测基础组合验收）。
+- completedNode: NODE-F02.1（补充低基数慢查询指标）。
 - changedFiles:
-  - `README.md`
   - `docs/CONTEXT.md`
   - `docs/development.md`
   - `docs/entropy/SESSION-HANDOFF.md`
   - `docs/可观测性设计.md`
-  - `stratum-starter/src/test/java/com/patrick/stratum/starter/integration/OpenTelemetryAgentIntegrationTest.java`
+  - `stratum-query/src/main/java/com/patrick/stratum/query/QueryGateway.java`
+  - `stratum-query/src/test/java/com/patrick/stratum/query/QueryGatewayTest.java`
+  - `stratum-starter/src/test/java/com/patrick/stratum/starter/integration/StarterPrometheusRegistryIntegrationTest.java`
 
-- validations: 1项真实Starter及Agent进程组合测试通过，零失败、错误或跳过。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
-- unresolved: Gateway、消息和任务跨边界标准追踪及指标待F02；部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
-- nextNode: NODE-F02.1。
+- validations: 23项Query单元及1项真实Starter集成测试通过，零失败、错误或跳过。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
+- unresolved: 后台任务、消息、网关及异步标准追踪待F02后续节点；部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
+- nextNode: NODE-F02.2。
 - 当前节点验收后审查、提交、推送；完成后继续下一节点，不重复请求授权。
 - CONTEXT 已更新。用户原有Docker服务保留；本轮独立MariaDB及Redis测试容器暂留供后续节点使用，会话结束前清理。连接状态保存在本机临时目录stratum-F01-state.json，不提交凭据。
-
-- F01全部子节点完成，组合验收未连接外部观测后端；下一步按顺序细化F02。
-
-- F02按查询、任务、消息、网关、异步标准上下文和组合验收细分；现有查询Timer和慢日志已存在，F02.1核验并补齐慢指标。规划维护不计为节点完成。

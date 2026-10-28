@@ -11,6 +11,9 @@ import java.util.UUID;
 
 import com.patrick.stratum.common.base.cache.VersionedCache;
 import com.patrick.stratum.common.trace.TraceIdContext;
+import com.patrick.stratum.query.QueryContext;
+import com.patrick.stratum.query.QueryGateway;
+import com.patrick.stratum.query.auth.AccountCredentialQuery;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -28,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class StarterPrometheusRegistryIntegrationTest extends MariaDbIntegrationTest {
     @Autowired private PrometheusMeterRegistry registry;
     @Autowired private VersionedCache cache;
+    @Autowired private QueryGateway queries;
     @Autowired private StringRedisTemplate redis;
     @LocalServerPort private int port;
     private final String key = "biz:erp:prometheus:" + UUID.randomUUID();
@@ -49,6 +53,8 @@ class StarterPrometheusRegistryIntegrationTest extends MariaDbIntegrationTest {
         var policy = new VersionedCache.Policy(Duration.ofMinutes(1), Duration.ZERO);
         cache.get(key, policy, Optional::empty);
         cache.get(key, policy, () -> { fail("应复用空值缓存"); return Optional.empty(); });
+        String username = "metrics-" + UUID.randomUUID();
+        assertTrue(queries.execute(AccountCredentialQuery.create(username), QueryContext.anonymous(trace)).getItems().isEmpty());
         try (var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()) {
             var health = client.send(HttpRequest.newBuilder(uri("/actuator/health")).timeout(Duration.ofSeconds(10)).GET().build(),
                     HttpResponse.BodyHandlers.ofString());
@@ -62,7 +68,8 @@ class StarterPrometheusRegistryIntegrationTest extends MariaDbIntegrationTest {
         assertTrue(metrics.contains("jvm_memory_used_bytes"));
         assertTrue(metrics.contains("http_server_requests_seconds_count"));
         assertTrue(metrics.contains("stratum_cache_access_total"));
-        assertFalse(metrics.contains(key)); assertFalse(metrics.contains(trace));
+        assertTrue(metrics.contains("stratum_query_duration_seconds_count"));
+        assertFalse(metrics.contains(key)); assertFalse(metrics.contains(trace)); assertFalse(metrics.contains(username));
         registry.getMeters().stream().filter(meter -> meter.getId().getName().startsWith("stratum.cache."))
                 .forEach(meter -> assertTrue(meter.getId().getTags().stream().allMatch(tag -> tag.getKey().equals("result"))));
     }
