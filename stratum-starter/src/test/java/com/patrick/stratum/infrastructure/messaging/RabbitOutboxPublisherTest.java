@@ -12,12 +12,14 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import com.patrick.stratum.domain.event.OutboxMessage;
 import com.patrick.stratum.domain.event.OutboxPublisher;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageDeliveryMode;
 import org.springframework.amqp.core.ReturnedMessage;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.json.JsonMapper;
@@ -174,6 +176,36 @@ class RabbitOutboxPublisherTest {
         assertThrows(IllegalArgumentException.class, () -> new RabbitOutboxPublisherConfiguration.Properties(0, Duration.ofSeconds(1)));
         assertThrows(IllegalArgumentException.class, () -> new RabbitOutboxPublisherConfiguration.Properties(1, Duration.ZERO));
         assertThrows(IllegalArgumentException.class, () -> new RabbitOutboxPublisherConfiguration.Properties(129, Duration.ofSeconds(1)));
+    }
+
+    /** 包装器记录不可用及参数异常，保持原结果、异常及关闭动作。 */
+    @Test
+    void observesPublisherWithoutChangingFailureOrClose() {
+        var template = mock(RabbitTemplate.class); var registry = new SimpleMeterRegistry();
+        doThrow(new IllegalStateException("private-test-value")).when(template)
+                .send(anyString(), anyString(), any(Message.class), any(CorrelationData.class));
+        var delegate = adapter(template, () -> {}, 1, 100);
+        try (var publisher = new RabbitOutboxPublisherConfiguration.ObservedPublisher(delegate, new MessageMetrics(registry))) {
+            assertEquals(UNAVAILABLE, publisher.publish(delivery("erp.material.created", "{}")));
+            assertThrows(IllegalArgumentException.class, () -> publisher.publish(null));
+            assertEquals(1, registry.get("stratum.messaging.published").tag("result", "unavailable").counter().count());
+            assertEquals(1, registry.get("stratum.messaging.published").tag("result", "exception").counter().count());
+            assertNull(registry.find("stratum.messaging.consumed").counter());
+        } finally { registry.close(); }
+        verify(template).destroy();
+    }
+
+    /** Spring关闭外层发布端口时同时关闭被包装的真实客户端。 */
+    @Test
+    void closesObservedPublisherWithSpringContext() {
+        var template = mock(RabbitTemplate.class);
+        var delegate = adapter(template, () -> {}, 1, 100);
+        try (var context = new AnnotationConfigApplicationContext()) {
+            context.registerBean(OutboxPublisher.class,
+                    () -> new RabbitOutboxPublisherConfiguration.ObservedPublisher(delegate, new MessageMetrics(null)));
+            context.refresh(); assertNotNull(context.getBean(OutboxPublisher.class));
+        }
+        verify(template).destroy();
     }
 
     /**

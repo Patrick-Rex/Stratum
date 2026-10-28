@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.patrick.stratum.common.trace.CorrelationIdPolicy;
 import com.patrick.stratum.domain.event.OutboxPublisher;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageDeliveryMode;
 import org.springframework.amqp.core.MessageProperties;
@@ -40,10 +42,12 @@ public class RabbitOutboxPublisherConfiguration {
      * @param factory 主连接工厂
      * @param json 应用JSON映射器
      * @param properties 发布并发与确认等待参数
+     * @param registries 可选指标注册表，独立装配时允许没有注册表
      * @return 随容器销毁的Outbox发布端口
      */
     @Bean
-    OutboxPublisher outboxPublisher(CachingConnectionFactory factory, JsonMapper json, Properties properties) {
+    OutboxPublisher outboxPublisher(CachingConnectionFactory factory, JsonMapper json, Properties properties,
+            ObjectProvider<MeterRegistry> registries) {
         if (!(factory.getPublisherConnectionFactory() instanceof CachingConnectionFactory publisherFactory)) {
             throw new IllegalStateException("消息发布必须使用独立缓存连接工厂");
         }
@@ -51,7 +55,35 @@ public class RabbitOutboxPublisherConfiguration {
         template.setUsePublisherConnection(true);
         template.setMandatory(true);
         template.afterPropertiesSet();
-        return new Adapter(template, publisherFactory::resetConnection, json, properties);
+        return new ObservedPublisher(new Adapter(template, publisherFactory::resetConnection, json, properties),
+                new MessageMetrics(registries.getIfAvailable()));
+    }
+
+    /** 发布端口观测装饰器，保持原返回、异常和关闭语义。 */
+    static final class ObservedPublisher implements OutboxPublisher, AutoCloseable {
+        private final Adapter delegate;
+        private final MessageMetrics metrics;
+
+        /**
+         * 包装已创建的发布适配器，不改变连接或线程生命周期。
+         * @param delegate 实际发布适配
+         * @param metrics 消息计数组件
+         */
+        ObservedPublisher(Adapter delegate, MessageMetrics metrics) {
+            this.delegate = java.util.Objects.requireNonNull(delegate); this.metrics = java.util.Objects.requireNonNull(metrics);
+        }
+
+        /** {@inheritDoc} */
+        @Override public PublishResult publish(Delivery delivery) {
+            try {
+                var result = delegate.publish(delivery); metrics.published(result); return result;
+            } catch (RuntimeException failure) {
+                metrics.publishException(); throw failure;
+            }
+        }
+
+        /** 关闭被包装的发布客户端。 */
+        @Override public void close() { delegate.close(); }
     }
 
     /**

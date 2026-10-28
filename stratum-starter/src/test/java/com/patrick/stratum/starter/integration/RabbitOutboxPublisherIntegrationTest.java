@@ -10,6 +10,7 @@ import com.patrick.stratum.domain.event.OutboxPublisher;
 import com.patrick.stratum.infrastructure.messaging.RabbitMessagingConfiguration;
 import com.patrick.stratum.infrastructure.messaging.RabbitOutboxPublisherConfiguration;
 import com.patrick.stratum.infrastructure.messaging.RabbitTopologyConfiguration;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -74,6 +75,11 @@ class RabbitOutboxPublisherIntegrationTest {
             assertNotSame(factory.createConnection().getDelegate(),
                     factory.getPublisherConnectionFactory().createConnection().getDelegate());
         }
+        assertEquals(2, context.getBean(SimpleMeterRegistry.class).get("stratum.messaging.published")
+                .tag("result", "confirmed").counter().count());
+        assertNull(context.getBean(SimpleMeterRegistry.class).find("stratum.messaging.consumed").counter());
+        assertTrue(context.getBean(SimpleMeterRegistry.class).getMeters().stream().allMatch(meter -> meter.getId().getTags().stream()
+                .allMatch(tag -> "result".equals(tag.getKey()))));
     }
 
     /** 删除目标后mandatory返回不可路由，修复拓扑后原eventId可以重新发送。 */
@@ -89,6 +95,8 @@ class RabbitOutboxPublisherIntegrationTest {
         assertEquals(RETURNED, publisher.publish(delivery));
         context.getBean(RabbitAdmin.class).initialize();
         assertEquals(CONFIRMED, publisher.publish(delivery));
+        assertEquals(1, context.getBean(SimpleMeterRegistry.class).get("stratum.messaging.published")
+                .tag("result", "returned").counter().count());
         assertTrue(original.isOpen());
         assertSame(original, factory.createConnection().getDelegate());
     }
@@ -102,6 +110,8 @@ class RabbitOutboxPublisherIntegrationTest {
         OutboxPublisher.PublishResult result = CONFIRMED;
         for (int i = 0; i < 20 && result == CONFIRMED; i++) result = publisher.publish(delivery("erp.sale.created"));
         assertEquals(REJECTED, result);
+        assertEquals(1, context.getBean(SimpleMeterRegistry.class).get("stratum.messaging.published")
+                .tag("result", "rejected").counter().count());
     }
 
     /** 已建立的发布连接重置后自动重新连接，主连接与拓扑继续可用。 */
@@ -128,6 +138,7 @@ class RabbitOutboxPublisherIntegrationTest {
         context = new AnnotationConfigApplicationContext();
         context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("isolated-publisher", values));
         context.registerBean(JsonMapper.class, () -> JsonMapper.builder().build());
+        context.registerBean(SimpleMeterRegistry.class, SimpleMeterRegistry::new, definition -> definition.setDestroyMethodName("close"));
         context.register(RabbitMessagingConfiguration.class, RabbitTopologyConfiguration.class,
                 RabbitOutboxPublisherConfiguration.class);
         context.refresh();
