@@ -19,7 +19,8 @@ import com.patrick.stratum.job.DeadLetterBacklogJobConfiguration;
 import com.patrick.stratum.job.JobRuntimeConfiguration;
 import com.patrick.stratum.job.QuartzTriggerConfiguration;
 import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.prometheusmetrics.PrometheusConfig;
+import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.quartz.Scheduler;
 import org.springframework.amqp.rabbit.connection.CachingConnectionFactory;
@@ -36,6 +37,15 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** 真实数据库、Broker与Redis验证独立采集调度集群及禁用实例。 */
 class DeadLetterBacklogSchedulerIntegrationTest extends MariaDbIntegrationTest {
+    private static final org.springframework.data.redis.core.script.DefaultRedisScript<String> SNAPSHOT =
+            new org.springframework.data.redis.core.script.DefaultRedisScript<>("""
+                    local generation = redis.call('get', KEYS[1])
+                    if not generation or generation == ARGV[1] then return '' end
+                    if redis.call('pttl', KEYS[2]) <= 0 or redis.call('pttl', KEYS[3]) <= 0 then return '' end
+                    if redis.call('get', KEYS[2]) ~= generation .. '|' .. ARGV[2] then return '' end
+                    if redis.call('get', KEYS[3]) ~= generation .. '|' .. ARGV[3] then return '' end
+                    return generation
+                    """, String.class);
     private final ApplicationContext parent;
     private final JdbcTemplate jdbc;
     private final String schedulerName = "backlog-it-" + UUID.randomUUID();
@@ -93,6 +103,76 @@ class DeadLetterBacklogSchedulerIntegrationTest extends MariaDbIntegrationTest {
     }
 
     /**
+     * 真实周期查询遇到队列缺失时仅该组不可用，恢复后刷新；采集停止后结果过期。
+     * @throws Exception Broker、调度器或数据库失败
+     */
+    @Test void marksMissingQueueUnavailableAndRecoversThenExpires() throws Exception {
+        Set<String> before = new HashSet<>(jdbc.queryForList("SELECT execution_id FROM job_execution WHERE job_code=?", String.class, "deadletter.backlog"));
+        Set<String> locksBefore = new HashSet<>(jdbc.queryForList("SELECT name FROM stratum_shedlock WHERE name LIKE ?", String.class, "%deadletter.backlog"));
+        assertTrue(before.isEmpty(), "本测试要求独占数据库内的采集执行身份");
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM STRATUM_QRTZ_JOB_DETAILS WHERE JOB_NAME IN (?,?)", Integer.class,
+                "run.deadletter.backlog", "schedule.deadletter.backlog"), "本测试要求没有其他采集调度目标");
+        try (var broker = broker()) {
+            var admin = broker.getBean(RabbitAdmin.class); var factory = broker.getBean(CachingConnectionFactory.class);
+            try {
+                try (var channel = factory.createConnection().createChannel(false)) {
+                    channel.basicPublish(DEAD_EXCHANGE, ERP_QUEUE, null, "erp".getBytes(StandardCharsets.UTF_8));
+                    channel.basicPublish(DEAD_EXCHANGE, CACHE_QUEUE, null, "cache".getBytes(StandardCharsets.UTF_8));
+                }
+                var sampling = instance(broker, true, "4s"); var reader = instance(broker, false, "4s");
+                var store = reader.getBean(DeadLetterBacklogStore.class);
+                var registry = reader.getBean(PrometheusMeterRegistry.class);
+                var initial = new java.util.concurrent.atomic.AtomicReference<String>();
+                await().atMost(Duration.ofSeconds(25)).until(() -> {
+                    initial.set(snapshot("", "1", "1")); return !initial.get().isEmpty();
+                });
+                assertTrue(admin.deleteQueue(ERP_QUEUE + ".dlq"));
+                var failed = new java.util.concurrent.atomic.AtomicReference<String>();
+                await().atMost(Duration.ofSeconds(20)).until(() -> {
+                    failed.set(snapshot(initial.get(), "-1", "1")); return !failed.get().isEmpty();
+                });
+                await().atMost(Duration.ofSeconds(10)).until(() -> {
+                    String unavailable = registry.scrape();
+                    return unavailable.contains("stratum_messaging_deadletter_visible{group=\"erp_audit\"} NaN")
+                            && unavailable.contains("stratum_messaging_deadletter_visible{group=\"cache_invalidation\"} 1.0");
+                });
+                admin.initialize();
+                await().atMost(Duration.ofSeconds(20)).until(() -> !snapshot(failed.get(), "0", "1").isEmpty());
+                await().atMost(Duration.ofSeconds(10)).until(() -> {
+                    String recovered = registry.scrape();
+                    return recovered.contains("stratum_messaging_deadletter_visible{group=\"erp_audit\"} 0.0")
+                            && recovered.contains("stratum_messaging_deadletter_visible{group=\"cache_invalidation\"} 1.0");
+                });
+                sampling.close();
+                var redis = parent.getBean(org.springframework.data.redis.core.StringRedisTemplate.class);
+                String prefix = namespace + ":{deadletter-backlog}:";
+                await().atMost(Duration.ofSeconds(12)).until(() -> Boolean.FALSE.equals(redis.hasKey(prefix + "erp_audit"))
+                        && Boolean.FALSE.equals(redis.hasKey(prefix + "cache_invalidation")));
+                assertTrue(Boolean.TRUE.equals(redis.hasKey(prefix + "generation")));
+                assertTrue(store.read(Group.ERP_AUDIT).isEmpty()); assertTrue(store.read(Group.CACHE_INVALIDATION).isEmpty());
+                String expired = registry.scrape();
+                assertTrue(expired.contains("stratum_messaging_deadletter_visible{group=\"erp_audit\"} NaN"));
+                assertTrue(expired.contains("stratum_messaging_deadletter_visible{group=\"cache_invalidation\"} NaN"));
+            } finally { cleanupResources(admin, before, locksBefore); }
+        }
+    }
+
+    /**
+     * 原子核验两个未过期快照属于同一新采样代号，避免采样中间态被误判。
+     * @param previous 必须排除的旧代号，空串表示不排除
+     * @param erp ERP组预期原始值
+     * @param cache 缓存组预期原始值
+     * @return 匹配时的代号，否则为空串
+     */
+    private String snapshot(String previous, String erp, String cache) {
+        var redis = parent.getBean(org.springframework.data.redis.core.StringRedisTemplate.class);
+        String prefix = namespace + ":{deadletter-backlog}:";
+        String result = redis.execute(SNAPSHOT, List.of(prefix + "generation", prefix + "erp_audit", prefix + "cache_invalidation"),
+                previous, erp, cache);
+        return result == null ? "" : result;
+    }
+
+    /**
      * 逐项关闭测试实例并清理自有资源，单项失败不跳过其余清理。
      * @param admin 隔离虚拟主机管理员
      * @param before 已存在执行身份
@@ -140,14 +220,27 @@ class DeadLetterBacklogSchedulerIntegrationTest extends MariaDbIntegrationTest {
      * @throws Exception 调度身份读取失败
      */
     private AnnotationConfigApplicationContext instance(AnnotationConfigApplicationContext broker, boolean sampling) throws Exception {
+        return instance(broker, sampling, "10s");
+    }
+
+    /**
+     * 创建带指定有效期的独立调度实例。
+     * @param broker 已隔离消息父上下文
+     * @param sampling 是否加入采集调度组
+     * @param ttl 有界测试快照有效期
+     * @return 必须关闭的子上下文
+     * @throws Exception 调度身份读取失败
+     */
+    private AnnotationConfigApplicationContext instance(AnnotationConfigApplicationContext broker, boolean sampling, String ttl) throws Exception {
         var context = new AnnotationConfigApplicationContext(); instances.add(context); context.setParent(broker);
         context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("backlog-scheduler-test", Map.of(
                 "stratum.jobs.enabled", true, "stratum.jobs.name", schedulerName, "stratum.jobs.workers", 2,
                 "stratum.jobs.deadletter-sampling.enabled", sampling, "stratum.jobs.deadletter-sampling.cron", "0/2 * * * * ?",
-                "stratum.jobs.deadletter-sampling.ttl", "10s", "stratum.jobs.deadletter-sampling.timeout-sec", 20,
+                "stratum.jobs.deadletter-sampling.ttl", ttl, "stratum.jobs.deadletter-sampling.timeout-sec", 20,
                 "stratum.messaging.enabled", sampling, "stratum.observability.deadletter.enabled", true,
                 "stratum.observability.deadletter.namespace", namespace)));
-        context.registerBean("localMeterRegistry", MeterRegistry.class, SimpleMeterRegistry::new, definition -> definition.setPrimary(true));
+        context.registerBean("localMeterRegistry", PrometheusMeterRegistry.class,
+                () -> new PrometheusMeterRegistry(PrometheusConfig.DEFAULT), definition -> definition.setPrimary(true));
         context.register(SchedulerConfiguration.class, JobRuntimeConfiguration.class, QuartzTriggerConfiguration.class,
                 DeadLetterBacklogMetricsConfiguration.class, DeadLetterBacklogJobConfiguration.class);
         try {
