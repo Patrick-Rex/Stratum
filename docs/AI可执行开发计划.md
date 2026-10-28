@@ -655,7 +655,8 @@ F01仅处理Starter基础能力；Gateway及消息、任务跨边界扩展继续
 | 子节点 | 输出与验收 |
 |--------|------------|
 | NODE-F02.4a | 独立网关可选启用同一固定版本Agent，真实进程验证W3C上下游跨度，不更改现有业务关联协议 |
-| NODE-F02.4b | 网关日志区分业务关联和标准追踪，验证Agent和无Agent模式及真实Starter HTTP链路 |
+| NODE-F02.4b | 网关日志区分业务关联和标准追踪，验证无Agent及已有HTTP回归 |
+| NODE-F02.4c | 真实Gateway Agent日志及Gateway到Starter HTTP关联验收 |
 
 
 
