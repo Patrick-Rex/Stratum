@@ -54,6 +54,16 @@ import com.patrick.stratum.domain.job.JobCancellationRepository;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository;
 import com.patrick.stratum.domain.job.JobLeaseAuthority;
+import com.patrick.stratum.infrastructure.job.SchedulerConfiguration;
+import com.patrick.stratum.job.DeadLetterReplayJobConfiguration;
+import com.patrick.stratum.job.JobExecutionResult;
+import com.patrick.stratum.job.JobRuntimeConfiguration;
+import com.patrick.stratum.job.JobTaskExecutor;
+import com.patrick.stratum.job.QuartzTriggerConfiguration;
+import org.quartz.JobKey;
+import org.quartz.Scheduler;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.core.env.MapPropertySource;
 import tools.jackson.databind.json.JsonMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -194,6 +204,8 @@ class OutboxReconciliationIntegrationTest {
             jdbc.update("DELETE FROM dead_letter_replay_task WHERE request_id=?", id.toString());
         }
         for (var id : ownedJobs) {
+            jdbc.update("DELETE FROM job_replay_request WHERE execution_id=?", id.toString());
+            jdbc.update("DELETE FROM dead_job WHERE execution_id=?", id.toString());
             jdbc.update("DELETE FROM job_attempt WHERE execution_id=?", id.toString());
             jdbc.update("DELETE FROM job_execution WHERE execution_id=?", id.toString());
         }
@@ -664,6 +676,52 @@ class OutboxReconciliationIntegrationTest {
         assertEquals(2, calls.get());
         assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_replay_request WHERE request_id=?", Integer.class, lease.submission().executionId().toString()));
         assertEquals("DEAD", jdbc.queryForObject("SELECT status FROM outbox_dead_letter WHERE dead_id=?", String.class, archive.toString()));
+    }
+
+    /**
+     * 真实Quartz领取重放任务并登记原事件，重复请求仍返回同一任务，未消费不得视为业务完成。
+     * @throws Exception Quartz启动或退出失败
+     */
+    @Test
+    void quartzExecutesOneReplayTaskWithoutClaimingConsumption() throws Exception {
+        UUID role = administratorRole(), admin = account(); assignRole(admin, Set.of(role));
+        var event = unpublishedEvents(1).getFirst(); markFailed(event, 3); UUID archive = validReplayArchive(event);
+        UUID request = UUID.randomUUID(); ownedTaskRequests.add(request); var registration = replayRegistration(admin);
+        UUID task = registration.register(request, archive); assertEquals(task, registration.register(request, archive));
+        Scheduler scheduler; String schedulerId;
+        try (var context = replayScheduler()) {
+            scheduler = context.getBean(Scheduler.class); schedulerId = scheduler.getSchedulerInstanceId();
+            assertTrue(scheduler.checkExists(new JobKey("run." + DeadLetterReplayJob.CODE, "stratum.fixed.jobs")));
+            await().atMost(Duration.ofSeconds(30)).until(() -> "SUCCEEDED".equals(jobState(task)));
+            var executor = context.getBean(JobTaskExecutor.class);
+            await().atMost(Duration.ofSeconds(5)).until(() -> executor.activeCount() == 0);
+            assertEquals(JobExecutionResult.SKIPPED, executor.execute(DeadLetterReplayJob.CODE, task));
+            assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM job_attempt WHERE execution_id=?", Integer.class, task.toString()));
+            assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_replay_request WHERE request_id=?", Integer.class, task.toString()));
+            assertEquals("PENDING", jdbc.queryForObject("SELECT status FROM outbox_replay_delivery WHERE dead_id=?", String.class, archive.toString()));
+            assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_consumption WHERE event_id=?", Integer.class, event.message().eventId()));
+        }
+        assertTrue(scheduler.isShutdown());
+        await().atMost(Duration.ofSeconds(10)).until(() -> Thread.getAllStackTraces().keySet().stream()
+                .noneMatch(thread -> thread.isAlive() && thread.getName().contains(schedulerId)));
+    }
+
+    /**
+     * 登记后在Quartz启动前撤权，真实执行重试后归档失败，不产生重放意图。
+     * @throws Exception Quartz启动或退出失败
+     */
+    @Test
+    void quartzRejectsTaskWhenSubmittingAdministratorWasRevoked() throws Exception {
+        UUID role = administratorRole(), admin = account(), other = account(); assignRole(admin, Set.of(role)); assignRole(other, Set.of(role));
+        var event = unpublishedEvents(1).getFirst(); markFailed(event, 3); UUID archive = validReplayArchive(event);
+        UUID request = UUID.randomUUID(); ownedTaskRequests.add(request); UUID task = replayRegistration(admin).register(request, archive);
+        unitOfWork.execute(() -> { administration.lock(); administration.replaceRoleIds(admin, Set.of()); return null; });
+        try (var context = replayScheduler()) {
+            await().atMost(Duration.ofSeconds(35)).until(() -> "DEAD".equals(jobState(task)));
+            assertEquals(3, jdbc.queryForObject("SELECT COUNT(*) FROM job_attempt WHERE execution_id=? AND result='FAILED'", Integer.class, task.toString()));
+            assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_replay_request WHERE request_id=?", Integer.class, task.toString()));
+            assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_replay_delivery WHERE dead_id=?", Integer.class, archive.toString()));
+        }
     }
 
     /** 应用入口拒绝已有工作单元，避免把恢复结果误报为已提交。 */
@@ -1580,6 +1638,29 @@ class OutboxReconciliationIntegrationTest {
                 OutboxDeadLetterRepository.Category.RETRIES_EXHAUSTED, 3);
         UUID archive = unitOfWork.execute(() -> application.getBean(OutboxDeadLetterRepository.class).append(letter));
         replayArchives.add(archive); return archive;
+    }
+
+    /**
+     * 启动本用例专用普通Quartz集群与固定重放处理器，继承独占数据库和真实应用端口。
+     * @return 调用方负责关闭的本地调度上下文
+     */
+    private AnnotationConfigApplicationContext replayScheduler() {
+        var context = new AnnotationConfigApplicationContext(); context.setParent(application);
+        context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("replay-scheduler-test", Map.of(
+                "stratum.jobs.enabled", true, "stratum.jobs.replay.enabled", true,
+                "stratum.jobs.name", "replaytest-" + UUID.randomUUID(), "stratum.jobs.workers", 2)));
+        context.register(SchedulerConfiguration.class, JobRuntimeConfiguration.class, QuartzTriggerConfiguration.class, DeadLetterReplayJobConfiguration.class);
+        try { context.refresh(); return context; }
+        catch (RuntimeException failure) { context.close(); throw failure; }
+    }
+
+    /**
+     * 查询本测试任务真实持久状态。
+     * @param task 本测试任务UUID
+     * @return 当前状态
+     */
+    private String jobState(UUID task) {
+        return jdbc.queryForObject("SELECT state FROM job_execution WHERE execution_id=?", String.class, task.toString());
     }
 
     /**
