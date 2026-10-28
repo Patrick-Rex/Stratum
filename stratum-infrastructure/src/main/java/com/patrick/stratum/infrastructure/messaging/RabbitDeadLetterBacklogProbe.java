@@ -4,13 +4,14 @@ import java.util.Objects;
 import java.util.OptionalLong;
 
 import com.patrick.stratum.domain.event.OutboxConsumptionRepository.Group;
+import com.patrick.stratum.domain.event.DeadLetterBacklogProbe;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
 
 /**
  * 按固定订阅组读取Broker死信队列的可见数量；不触发调度、写入或消息确认。
  * <p>示例：{@code new RabbitDeadLetterBacklogProbe(admin).ready(Group.ERP_AUDIT)}。</p>
  */
-public final class RabbitDeadLetterBacklogProbe {
+public final class RabbitDeadLetterBacklogProbe implements DeadLetterBacklogProbe {
     private final RabbitAdmin admin;
 
     /**
@@ -28,7 +29,7 @@ public final class RabbitDeadLetterBacklogProbe {
      * @throws NullPointerException 订阅组为空
      * @apiNote 示例：{@code probe.ready(Group.CACHE_INVALIDATION)}。
      */
-    public OptionalLong ready(Group group) {
+    @Override public OptionalLong ready(Group group) {
         String queue = switch (Objects.requireNonNull(group, "订阅组不能为空")) {
             case ERP_AUDIT -> RabbitTopologyConfiguration.ERP_QUEUE + ".dlq";
             case CACHE_INVALIDATION -> RabbitTopologyConfiguration.CACHE_QUEUE + ".dlq";
