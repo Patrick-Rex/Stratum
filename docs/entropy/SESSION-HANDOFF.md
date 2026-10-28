@@ -16,3 +16,5 @@
 - nextNode: NODE-F02.5b。
 - 当前节点验收后审查、提交、推送；完成后继续下一节点，不重复请求授权。
 - CONTEXT 已更新。用户原有Docker服务保留；本轮独立MariaDB、Redis及RabbitMQ测试空间暂留供后续节点使用，会话结束前清理。连接状态保存在本机临时目录stratum-F01-state.json及stratum-F01-mq.json，不提交凭据。
+
+- 标准作用域已明确同线程后进先出关闭；5项上下文测试复验业务关联ID不受影响。此补充不计为新开发节点。

@@ -25,6 +25,7 @@ public interface StandardTraceContext {
 
     /**
      * 从根上下文恢复指定上下文；空值或无效值不继承当前线程上下文。
+     * 作用域必须在创建它的线程按后进先出顺序关闭，不跨线程传递。
      * @param carrier 可空的规范上下文
      * @return 关闭时恢复原线程上下文的作用域
      * @apiNote 示例：{@code try (var scope = context.restore(carrier)) { work.run(); }}。
@@ -63,7 +64,7 @@ public interface StandardTraceContext {
     }
 
     /**
-     * 当前线程标准上下文作用域，关闭时恢复进入前状态。
+     * 当前线程标准上下文作用域，必须在创建线程按后进先出顺序关闭并恢复进入前状态。
      * <p>示例：{@code try (var scope = context.restore(carrier)) { work.run(); }}。</p>
      */
     interface TraceScope extends AutoCloseable {

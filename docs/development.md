@@ -1676,7 +1676,7 @@ Gateway与Starter分别启动固定版本Agent，通过真实本机HTTP转发并
 
 ### 异步标准上下文基础
 
-项目通过Spring Boot受管的 OpenTelemetry API 1.55.0接入W3C传播器；[官方API与Java Agent互通说明](https://opentelemetry.io/docs/zero-code/java/agent/api/)和[Apache 2.0许可](https://github.com/open-telemetry/opentelemetry-java/blob/v1.55.0/LICENSE)已核对。框架无关契约仅持有规范`traceparent`及`tracestate`，不保存baggage；当前无有效跨度时捕获为空。恢复从根上下文开始并以作用域恢复调用线程原值，空上下文不会继承调度线程的跨度或baggage；根上下文本身不代表已经创建可导出跨度。
+项目通过Spring Boot受管的 OpenTelemetry API 1.55.0接入W3C传播器；[官方API与Java Agent互通说明](https://opentelemetry.io/docs/zero-code/java/agent/api/)和[Apache 2.0许可](https://github.com/open-telemetry/opentelemetry-java/blob/v1.55.0/LICENSE)已核对。框架无关契约仅持有规范`traceparent`及`tracestate`，不保存baggage；当前无有效跨度时捕获为空。恢复从根上下文开始并以作用域恢复调用线程原值，作用域须在创建线程按后进先出关闭，空上下文不会继承调度线程的跨度或baggage；根上下文本身不代表已经创建可导出跨度。
 
 不可信输入先限制parent至1024字符、state至512个ASCII字节及32个成员；合法成员周围空格/水平制表符与空成员规范化后交给W3C传播器解析。非法或超长state整体丢弃但保留合法parent；超过上界不部分截断。公开载体只校验边界，不单独保证state协议语义，后续持久化入口必须经过`capture`或`normalize`。标准标志按实际值保留，不以业务关联ID生成标准标识。
 

@@ -7,6 +7,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import com.patrick.stratum.common.trace.StandardTraceContext.Carrier;
+import com.patrick.stratum.common.trace.TraceIdContext;
 import io.opentelemetry.api.baggage.Baggage;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanContext;
@@ -87,6 +88,21 @@ class OpenTelemetryTraceContextTest {
             assertEquals("original", Baggage.current().getEntryValue("tenant"));
         }
         assertFalse(Span.current().getSpanContext().isValid());
+    }
+
+    /** 标准跨度作用域不改变既有业务关联ID，即使工作抛出异常。 */
+    @Test void neverChangesBusinessCorrelation() {
+        String previous = TraceIdContext.getTraceId().orElse(null);
+        TraceIdContext.setTraceId("business-trace-test");
+        try {
+            assertThrows(IllegalStateException.class, () -> {
+                try (var scope = bridge.restore(bridge.normalize(PARENT, "vendor=value"))) {
+                    assertEquals("business-trace-test", TraceIdContext.getTraceId().orElseThrow());
+                    throw new IllegalStateException("controlled");
+                }
+            });
+            assertEquals("business-trace-test", TraceIdContext.getTraceId().orElseThrow());
+        } finally { if (previous == null) TraceIdContext.clear(); else TraceIdContext.setTraceId(previous); }
     }
 
     /**
