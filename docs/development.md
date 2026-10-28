@@ -1543,3 +1543,9 @@ Starter接入Spring Boot统一管理的Micrometer Prometheus注册表，沿用Ga
 `GET /actuator/prometheus` 暴露Prometheus指标，由安全链按真实直连来源校验；默认IPv4 `127.0.0.0/8` 和IPv6 `::1/128`，`STRATUM_MANAGEMENT_METRICS_ALLOWED_CIDRS` 为逗号分隔的完整替换列表。拒绝来源返回403，不以认证令牌或Forwarded/X-Forwarded-For/X-Real-IP替代直连地址。健康探测保持原有规则。应用明确使用 `server.forward-headers-strategy=none`，如配置为framework或native则安全策略启动失败，避免容器改写直连地址后绕过来源校验；指标直连运行环境不应另行安装改写来源的转发过滤器或代理阀。
 
 14项Interface单元测试和9项真实Starter/MariaDB/Redis集成测试通过，零失败、错误或跳过；覆盖默认回环抓取、禁用回环配置、伪造转发头、路径变体、健康检查及认证协议。转发头地址改写配置经应用配置Bean验证拒绝；IPv6网段匹配由单元测试验证，未声称本轮实际IPv6网络连接。F01.3完成，组合验收继续F01.4。
+
+## NODE-F01.4 Starter观测组合验收
+
+1项真实JDK 25/Starter/Agent进程组合测试通过，零失败、错误或跳过。使用独立MariaDB及Redis，在同一进程中验证W3C入站父跨度与根跨度、业务关联响应头、同时包含双标识的JSON日志、Cookie不出现在测试输出，以及本机Prometheus抓取；随机业务关联和trace ID不出现在抓取内容中。Agent使用OTLP JSON日志导出进行测试，没有启动外部收集服务。子进程与临时输出已退出或清理。
+
+F01完成。Agent默认不加载，显式启用与导出配置见F01.1；指标访问与来源配置见F01.3b2。消息、任务和Gateway标准上下文关联继续F02；Compose、观测后端及部署不在本轮范围。

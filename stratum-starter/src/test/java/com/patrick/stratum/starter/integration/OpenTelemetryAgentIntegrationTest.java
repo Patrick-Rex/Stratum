@@ -30,7 +30,7 @@ class OpenTelemetryAgentIntegrationTest {
     private final JsonMapper json = JsonMapper.builder().build();
 
     /**
-     * 真实Agent从入站traceparent建立服务跨度，业务关联头仍保持原值。
+     * 真实Agent建立服务跨度，同进程日志保留双标识且本机指标可抓取。
      * @throws Exception 进程、HTTP或文件操作失败
      */
     @Test
@@ -86,6 +86,13 @@ class OpenTelemetryAgentIntegrationTest {
                         .header("traceparent", "00-" + trace + "-" + parent + "-01").header("X-Trace-Id", business)
                         .header("Cookie", "session=" + cookie).GET().build();
                 assertEquals(200, client.send(docsRequest, HttpResponse.BodyHandlers.discarding()).statusCode());
+                URI metrics = URI.create("http://127.0.0.1:" + portMatcher.group(1) + "/actuator/prometheus");
+                var metricsRequest = HttpRequest.newBuilder(metrics).timeout(Duration.ofSeconds(15))
+                        .header("X-Forwarded-For", "203.0.113.8").GET().build();
+                var scrape = client.send(metricsRequest, HttpResponse.BodyHandlers.ofString());
+                assertEquals(200, scrape.statusCode()); assertTrue(scrape.body().contains("jvm_memory_used_bytes"));
+                assertTrue(scrape.body().contains("http_server_requests_seconds_count"));
+                assertFalse(scrape.body().contains(business)); assertFalse(scrape.body().contains(trace));
             }
             await().atMost(Duration.ofSeconds(15)).until(() -> {
                 String exported = readOutput(output);
