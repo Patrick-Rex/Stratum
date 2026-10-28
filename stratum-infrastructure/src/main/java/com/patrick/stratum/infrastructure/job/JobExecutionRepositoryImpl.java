@@ -14,6 +14,7 @@ import javax.sql.DataSource;
 
 import com.patrick.stratum.common.error.CommonErrorCode;
 import com.patrick.stratum.common.error.StratumException;
+import com.patrick.stratum.domain.job.JobCancellationRepository;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository;
 import com.patrick.stratum.domain.job.JobRecoveryRepository.Outcome;
@@ -31,7 +32,7 @@ import tools.jackson.databind.json.JsonMapper;
  * <p>示例：由Application调用register和claim，不从Job直接操作本适配。</p>
  */
 @Repository
-public class JobExecutionRepositoryImpl implements JobExecutionRepository {
+public class JobExecutionRepositoryImpl implements JobExecutionRepository, JobCancellationRepository {
     private final JdbcTemplate jdbc;
     private final JsonMapper json;
 
@@ -114,7 +115,7 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository {
         Objects.requireNonNull(executionId);
         try {
             var row = load(executionId, "FOR UPDATE SKIP LOCKED");
-            if (row == null || row.state() == State.SUCCEEDED || row.state() == State.DEAD) return Optional.empty();
+            if (row == null || row.state() == State.SUCCEEDED || row.state() == State.DEAD || row.state() == State.CANCELLED) return Optional.empty();
             Instant now = databaseNow();
             if (row.state() == State.RUNNING) {
                 if (!row.expiresAt().isAfter(now)) complete(row, Outcome.LEASE_EXPIRED, now);
@@ -135,6 +136,30 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository {
                     """, executionId.toString(), attempt, row.cycle(), token.toString(), time(row.submission().scheduleTime()),
                     time(now), row.submission().traceId());
             return Optional.of(new Lease(row.submission(), token, now, expires, attempt, row.failures(), row.cycle()));
+        } catch (DataAccessException failure) {
+            throw translate(failure);
+        }
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public JobCancellationRepository.Result cancelUnstarted(UUID executionId, String jobCode) {
+        requireWrite();
+        Objects.requireNonNull(executionId, "任务执行身份不能为空");
+        if (jobCode == null || !jobCode.matches("[a-z][a-z0-9.-]{0,63}")) throw new IllegalArgumentException("任务代码不合法");
+        try {
+            var row = load(executionId, "FOR UPDATE");
+            if (row == null || !row.submission().definition().jobCode().equals(jobCode)) return JobCancellationRepository.Result.NOT_FOUND;
+            if (row.state() == State.CANCELLED) return JobCancellationRepository.Result.CANCELLED;
+            if (row.state() != State.WAITING || row.attempt() != 0 || row.cycle() != 0) return JobCancellationRepository.Result.ALREADY_STARTED;
+            if (row.version() == Long.MAX_VALUE) throw conflict("任务版本达到上限");
+            var now = databaseNow();
+            int changed = jdbc.update("""
+                    UPDATE job_execution SET state='CANCELLED',finished_at=?,updated_at=?,version=version+1
+                    WHERE execution_id=? AND state='WAITING' AND attempt_no=0 AND cycle_no=0
+                    """, time(now), time(now), executionId.toString());
+            if (changed != 1) throw conflict("任务取消资格已变更");
+            return JobCancellationRepository.Result.CANCELLED;
         } catch (DataAccessException failure) {
             throw translate(failure);
         }

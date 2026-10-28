@@ -44,8 +44,8 @@ public interface JobExecutionRepository {
      */
     Optional<Lease> claim(UUID executionId);
 
-    /** 值枚举：执行状态；DEAD只经人工恢复进入新周期，SUCCEEDED终态不回退。 */
-    enum State { WAITING, RUNNING, RETRY_WAIT, SUCCEEDED, DEAD }
+    /** 值枚举：执行状态；DEAD只经人工恢复进入新周期，SUCCEEDED和CANCELLED不回退。 */
+    enum State { WAITING, RUNNING, RETRY_WAIT, SUCCEEDED, DEAD, CANCELLED }
 
     /**
      * 值对象：不可变执行登记，不允许将正文或幂等键写入默认日志摘要。

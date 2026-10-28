@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.common.error.StratumException;
+import com.patrick.stratum.domain.job.JobCancellationRepository;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository;
 import org.junit.jupiter.api.AfterEach;
@@ -28,6 +29,7 @@ class JobExecutionRepositoryIntegrationTest extends MariaDbIntegrationTest {
     private static final Instant TIME = Instant.parse("2026-01-01T00:00:00.123456Z");
     private final UnitOfWork unitOfWork;
     private final JobExecutionRepository repository;
+    private final JobCancellationRepository cancellation;
     private final JdbcTemplate jdbc;
     private final List<UUID> executions = new ArrayList<>();
     private final String code = "probe." + UUID.randomUUID();
@@ -36,11 +38,13 @@ class JobExecutionRepositoryIntegrationTest extends MariaDbIntegrationTest {
      * 注入应用工作单元和实际任务仓储。
      * @param unitOfWork 真实事务入口
      * @param repository 生产登记领取端口
+     * @param cancellation 生产未开始取消端口
      * @param jdbc 独立断言与自身夹具清理
      */
     @Autowired
-    JobExecutionRepositoryIntegrationTest(UnitOfWork unitOfWork, JobExecutionRepository repository, JdbcTemplate jdbc) {
-        this.unitOfWork = unitOfWork; this.repository = repository; this.jdbc = jdbc;
+    JobExecutionRepositoryIntegrationTest(UnitOfWork unitOfWork, JobExecutionRepository repository,
+            JobCancellationRepository cancellation, JdbcTemplate jdbc) {
+        this.unitOfWork = unitOfWork; this.repository = repository; this.cancellation = cancellation; this.jdbc = jdbc;
     }
 
     /** 仅清理本用例登记的随机执行身份及其技术历史。 */
@@ -271,6 +275,103 @@ class JobExecutionRepositoryIntegrationTest extends MariaDbIntegrationTest {
         }
     }
 
+    /** 取消仅影响匹配代码的未开始任务，重复取消保持版本，取消终态不能领取或成为候选。 */
+    @Test
+    void cancelsOnlyMatchingUnstartedTaskAndIsIdempotent() {
+        var input = input("{}", 3); register(input);
+        assertThrows(IllegalStateException.class, () -> cancellation.cancelUnstarted(input.executionId(), code));
+        assertThrows(IllegalArgumentException.class, () -> cancel(input.executionId(), "bad code"));
+        assertEquals(JobCancellationRepository.Result.NOT_FOUND, cancel(UUID.randomUUID(), code));
+        assertEquals(JobCancellationRepository.Result.NOT_FOUND, cancel(input.executionId(), "other.code"));
+        assertEquals("WAITING", state(input.executionId()));
+        assertEquals(JobCancellationRepository.Result.CANCELLED, cancel(input.executionId(), code));
+        long version = jdbc.queryForObject("SELECT version FROM job_execution WHERE execution_id=?", Long.class, input.executionId().toString());
+        assertNotNull(jdbc.queryForObject("SELECT finished_at FROM job_execution WHERE execution_id=?", java.time.LocalDateTime.class, input.executionId().toString()));
+        assertEquals(JobCancellationRepository.Result.CANCELLED, cancel(input.executionId(), code));
+        assertEquals(version, jdbc.queryForObject("SELECT version FROM job_execution WHERE execution_id=?", Long.class, input.executionId().toString()));
+        assertTrue(claim(input.executionId()).isEmpty());
+        assertTrue(unitOfWork.execute(() -> repository.due(code, 128)).isEmpty());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM job_attempt WHERE execution_id=?", Integer.class, input.executionId().toString()));
+    }
+
+    /** 取消事务回滚不改变资格；领取后和已发生重试的任务不能取消。 */
+    @Test
+    void rollsBackCancellationAndRejectsAlreadyStartedTask() {
+        var input = input("{}", 3); register(input);
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
+            assertEquals(JobCancellationRepository.Result.CANCELLED, cancellation.cancelUnstarted(input.executionId(), code));
+            throw new IllegalStateException("rollback-probe");
+        }));
+        assertEquals("WAITING", state(input.executionId())); claim(input.executionId()).orElseThrow();
+        assertEquals(JobCancellationRepository.Result.ALREADY_STARTED, cancel(input.executionId(), code));
+        expire(input.executionId()); assertTrue(claim(input.executionId()).isEmpty());
+        assertEquals("RETRY_WAIT", state(input.executionId()));
+        assertEquals(JobCancellationRepository.Result.ALREADY_STARTED, cancel(input.executionId(), code));
+        assertThrows(org.springframework.dao.DataIntegrityViolationException.class, () -> jdbc.update(
+                "UPDATE job_execution SET state='CANCELLED',finished_at=UTC_TIMESTAMP(6) WHERE execution_id=?", input.executionId().toString()));
+    }
+
+    /**
+     * 取消事务先持行锁时领取跳过，提交后任务保持取消且没有执行尝试。
+     * @throws Exception 并发任务失败或等待超时
+     */
+    @Test
+    void cancellationWinsAgainstConcurrentClaim() throws Exception {
+        var input = input("{}", 3); register(input);
+        var held = new CountDownLatch(1); var release = new CountDownLatch(1);
+        try (var worker = Executors.newVirtualThreadPerTaskExecutor()) {
+            var winner = worker.submit(() -> unitOfWork.execute(() -> {
+                var result = cancellation.cancelUnstarted(input.executionId(), code); held.countDown();
+                try { if (!release.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("测试等待超时"); }
+                catch (InterruptedException failure) { Thread.currentThread().interrupt(); throw new IllegalStateException("测试等待中断", failure); }
+                return result;
+            }));
+            try { assertTrue(held.await(5, TimeUnit.SECONDS)); assertTrue(claim(input.executionId()).isEmpty()); }
+            finally { release.countDown(); }
+            assertEquals(JobCancellationRepository.Result.CANCELLED, winner.get(5, TimeUnit.SECONDS));
+        }
+        assertTrue(claim(input.executionId()).isEmpty()); assertEquals("CANCELLED", state(input.executionId()));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM job_attempt WHERE execution_id=?", Integer.class, input.executionId().toString()));
+    }
+
+    /**
+     * 领取事务先持行锁时取消等待提交，并在读取已开始状态后拒绝。
+     * @throws Exception 并发任务失败或等待超时
+     */
+    @Test
+    void committedClaimWinsAgainstConcurrentCancellation() throws Exception {
+        var input = input("{}", 3); register(input);
+        var held = new CountDownLatch(1); var started = new CountDownLatch(1); var release = new CountDownLatch(1);
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var winner = workers.submit(() -> unitOfWork.execute(() -> {
+                var lease = repository.claim(input.executionId()).orElseThrow(); held.countDown();
+                try { if (!release.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("测试等待超时"); }
+                catch (InterruptedException failure) { Thread.currentThread().interrupt(); throw new IllegalStateException("测试等待中断", failure); }
+                return lease;
+            }));
+            try {
+                assertTrue(held.await(5, TimeUnit.SECONDS));
+                var contender = workers.submit(() -> { started.countDown(); return cancel(input.executionId(), code); });
+                assertTrue(started.await(5, TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.TimeoutException.class, () -> contender.get(300, TimeUnit.MILLISECONDS));
+                release.countDown(); winner.get(5, TimeUnit.SECONDS);
+                assertEquals(JobCancellationRepository.Result.ALREADY_STARTED, contender.get(5, TimeUnit.SECONDS));
+            } finally { release.countDown(); }
+        }
+        assertEquals("RUNNING", state(input.executionId()));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM job_attempt WHERE execution_id=?", Integer.class, input.executionId().toString()));
+    }
+
+    /**
+     * 在独立工作单元尝试取消，等待结果提交。
+     * @param id 本测试执行身份
+     * @param jobCode 限定的任务代码
+     * @return 取消结果
+     */
+    private JobCancellationRepository.Result cancel(UUID id, String jobCode) {
+        return unitOfWork.execute(() -> cancellation.cancelUnstarted(id, jobCode));
+    }
+
     /** 极大累计序号和版本不发生溢出，也不留下半条尝试。 */
     @Test
     void rejectsExhaustedCountersWithoutPartialWrites() {
@@ -278,6 +379,7 @@ class JobExecutionRepositoryIntegrationTest extends MariaDbIntegrationTest {
             var input = input("{}", 3);
             register(input);
             jdbc.update("UPDATE job_execution SET " + counter + "=? WHERE execution_id=?", Long.MAX_VALUE, input.executionId().toString());
+            if (counter.equals("version")) conflict(() -> cancel(input.executionId(), code));
             conflict(() -> claim(input.executionId()));
             assertEquals("WAITING", state(input.executionId()));
             assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM job_attempt WHERE execution_id=?", Integer.class, input.executionId().toString()));
