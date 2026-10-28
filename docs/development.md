@@ -1680,4 +1680,10 @@ Gateway与Starter分别启动固定版本Agent，通过真实本机HTTP转发并
 
 不可信输入先限制parent至1024字符、state至512个ASCII字节及32个成员；合法成员周围空格/水平制表符与空成员规范化后交给W3C传播器解析。非法或超长state整体丢弃但保留合法parent；超过上界不部分截断。公开载体只校验边界，不单独保证state协议语义，后续持久化入口必须经过`capture`或`normalize`。标准标志按实际值保留，不以业务关联ID生成标准标识。
 
-Common 9项及Infrastructure 31项单元测试通过，零失败、错误或跳过；Starter bootJar成功。验证空上下文、非法头、512字节边界、空成员、未来版本、嵌套作用域及虚拟线程隔离；真实Agent互通及事件/任务持久化尚待后续节点。
+Common 9项及Infrastructure 31项单元测试通过，零失败、错误或跳过；Starter bootJar成功。验证空上下文、非法头、512字节边界、空成员、未来版本、嵌套作用域及虚拟线程隔离；真实Agent互通验收见下文；事件/任务持久化尚待后续节点。
+
+### 异步上下文与真实Agent互通
+
+`:stratum-infrastructure:otelIntegrationTest` 显式启动JDK 25独立JVM和固定版本Java Agent，使用本地OTLP日志导出而不启动收集服务。真实导出结果核对有效非零标识：捕获并恢复的上下文使新跨度成为原跨度的子节点；空历史上下文建立不同trace的根跨度。测试同时核对恢复作用域不继承baggage，退出后恢复原线程状态；不会将baggage样本输出到导出日志。
+
+Infrastructure 31项常规单元测试和1项真实Agent独立进程测试通过，零失败、错误或跳过。该验收只证明上下文组件与Agent互通，不表示Outbox、RabbitMQ或后台任务的标准上下文已持久化传播。

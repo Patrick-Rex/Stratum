@@ -1,6 +1,14 @@
 description = 'Stratum Infrastructure'
 
+configurations {
+    otelAgent {
+        canBeConsumed = false
+        transitive = false
+    }
+}
+
 dependencies {
+    otelAgent "io.opentelemetry.javaagent:opentelemetry-javaagent:${rootProject.otelJavaAgentVersion}"
     api project(':stratum-domain')
     api project(':stratum-common')
     implementation 'org.springframework.boot:spring-boot-starter-jdbc'
@@ -22,4 +30,20 @@ dependencies {
     implementation 'io.opentelemetry:opentelemetry-api'
     implementation 'org.springframework.security:spring-security-oauth2-jose'
     implementation 'org.springframework.security:spring-security-crypto'
+}
+
+// Agent进程验收显式执行，不改变默认单元测试的运行方式。
+tasks.named('test') {
+    useJUnitPlatform { excludeTags 'otel-agent' }
+}
+
+tasks.register('otelIntegrationTest', Test) {
+    description = '以实际Java Agent验证标准上下文桥接与根跨度'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform { includeTags 'otel-agent' }
+    outputs.upToDateWhen { false }
+    systemProperty 'stratum.test.runtime-classpath', sourceSets.test.runtimeClasspath.asPath
+    doFirst { systemProperty 'stratum.test.otel-agent', configurations.otelAgent.singleFile.absolutePath }
 }
