@@ -74,7 +74,9 @@ public class QuartzTriggerConfiguration {
         schedulers.add(scheduler);
         var relayScheduler = relay.getIfAvailable();
         if (relayScheduler != null) schedulers.add(relayScheduler);
-        return new QuartzRuntimeLifecycle(schedulers, executor, !registry.relayCodes().isEmpty());
+        if (relayScheduler == null && !registry.relayCodes().isEmpty()) throw new IllegalStateException("Relay处理器缺少专用调度器");
+        return new QuartzRuntimeLifecycle(schedulers, executor,
+                registry.relayCodes().isEmpty() ? List.of() : List.of(relayScheduler));
     }
 
     /**
