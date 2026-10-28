@@ -1673,3 +1673,11 @@ Gateway与Starter分别启动固定版本Agent，通过真实本机HTTP转发并
 ### 消息指标组合验收
 
 本轮重新执行Infrastructure、Application和Job共94项单元测试，以及34项真实Broker/数据库/Redis/Quartz相关集成测试，均通过且零失败、错误或跳过；覆盖发布确认、消费与重投、死信归档、共享可见数、周期采集故障恢复及人工重放工作流。新增真实Broker验收确认死信原生延迟重试期间不计入可见数，延迟到期后重新可见。此结果完成F02.3；不表示跨消息标准追踪已经完成，也不表示已完成持有者进程故障接管验证。
+
+### 异步标准上下文基础
+
+项目通过Spring Boot受管的 OpenTelemetry API 1.55.0接入W3C传播器；[官方API与Java Agent互通说明](https://opentelemetry.io/docs/zero-code/java/agent/api/)和[Apache 2.0许可](https://github.com/open-telemetry/opentelemetry-java/blob/v1.55.0/LICENSE)已核对。框架无关契约仅持有规范`traceparent`及`tracestate`，不保存baggage；当前无有效跨度时捕获为空。恢复从根上下文开始并以作用域恢复调用线程原值，空上下文不会继承调度线程的跨度或baggage；根上下文本身不代表已经创建可导出跨度。
+
+不可信输入先限制parent至1024字符、state至512个ASCII字节及32个成员；合法成员周围空格/水平制表符与空成员规范化后交给W3C传播器解析。非法或超长state整体丢弃但保留合法parent；超过上界不部分截断。公开载体只校验边界，不单独保证state协议语义，后续持久化入口必须经过`capture`或`normalize`。标准标志按实际值保留，不以业务关联ID生成标准标识。
+
+Common 9项及Infrastructure 31项单元测试通过，零失败、错误或跳过；Starter bootJar成功。验证空上下文、非法头、512字节边界、空成员、未来版本、嵌套作用域及虚拟线程隔离；真实Agent互通及事件/任务持久化尚待后续节点。
