@@ -1499,3 +1499,9 @@ Quartz驱动在Relay计划登记及到期查询前核验专用调度器和共享
 版本1管理员接口支持带UUID幂等键登记、按任务UUID查询及未开始时重复取消；登记返回202和Location，任务详情只暴露安全状态与首次trace。登记或发送不等于消费完成；申请人执行前撤权时不会登记重放。查询、登记和取消每次均复核当前授权，成功响应禁止缓存。
 
 3项真实HTTP集成测试通过，零失败、错误或跳过；覆盖真实登录、匿名与Refresh、普通账号及撤权、伪造身份头、重复请求、输入和版本错误、开始后拒绝取消、OpenAPI及缓存头。使用独立MariaDB与Redis；本节点未连接Broker。实际运行除已有消息和Relay配置外，须显式启用 `STRATUM_JOBS_ENABLED=true` 和 `STRATUM_JOBS_REPLAY_ENABLED=true`；Relay初始暂停，管理员恢复后才能发布。真实Broker、调度及HTTP组合继续E04.5。
+
+## NODE-E04.5 死信重放组合验收
+
+真实HTTP登记经Quartz固定处理器复核首次管理员并登记重放，周期Relay经RabbitMQ发布原事件；发布确认后、自动监听启动前，任务仍为RUNNING且没有消费凭据。真实监听消费并保存匹配原事件的凭据后，HTTP状态才变为SUCCEEDED、进度100。原事件已结束及死信归档由测试夹具构造，不能将其称为本次真实死信生成；测试退出前停止自身调度与监听，清理新增任务及随机调度命名空间。
+
+首轮全工程回归发现新增夹具遗留Relay任务及调度器心跳，导致4项后续测试失败；修复清理顺序后，22项针对性测试通过，并确认测试心跳和Relay任务为零。随后执行 `test :stratum-gateway:integrationTest :stratum-starter:integrationTest --rerun-tasks`，42项构建任务全部实际执行，269项单元、10项Gateway集成及712项Starter集成共991项通过，零失败、错误或跳过。依赖为独立MariaDB/Redis和现有RabbitMQ的专用虚拟主机；未执行部署验收。E04非部署范围完成。
