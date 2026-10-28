@@ -557,6 +557,17 @@
   - traceId 可贯通 HTTP 链路
 - handoff: 交给 NODE-F02
 
+##### NODE-F01 细分顺序
+
+| 子节点 | 输出与验收 |
+|--------|------------|
+| NODE-F01.1 | 按ADR-008接入并验证Starter的OpenTelemetry Java Agent及W3C HTTP跨度；保留业务关联协议，不启动外部观测服务 |
+| NODE-F01.2 | Starter安全结构化日志同时记录业务关联值与真实标准追踪字段；验证无追踪及敏感字段边界 |
+| NODE-F01.3 | Starter暴露低基数Prometheus指标并落实已确认的指标访问规则；真实HTTP与指标验收 |
+| NODE-F01.4 | 汇总Starter追踪、日志及指标组合验收和本地运行说明；F01全部子节点验收后才标记完成 |
+
+F01仅处理Starter基础能力；Gateway及消息、任务跨边界扩展继续F02。新依赖或Agent版本接入前核对许可、维护状态、兼容性及运行成本；观测后端与部署暂缓。
+
 #### NODE-F02
 
 - objective: 扩展观测到网关、消息、任务、查询
