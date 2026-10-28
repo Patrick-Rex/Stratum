@@ -1555,3 +1555,7 @@ F01完成。Agent默认不加载，显式启用与导出配置见F01.1；指标�
 保留查询入口既有耗时Timer和慢查询/失败警告，达到已配置慢阈值时额外递增 `stratum.query.slow`；只使用启动时登记的queryCode与固定success/error结果作为标签。快速失败仍警告但不算慢查询，参数、用户名、业务关联ID和标准trace ID不作为指标标签。
 
 23项Query单元测试和1项真实Starter/MariaDB/Redis集成测试通过，零失败、错误或跳过；覆盖慢成功、快速失败、警告、低基数标签和真实查询Timer的Prometheus抓取，不以合成耗时声称完成外部监控部署。
+
+## NODE-F02.2a 任务耗时指标组件
+
+建立任务耗时Timer与慢任务计数组件，只接受启动时固定注册的任务代码及succeeded、failed、timed_out、interrupted、state_uncertain有限结果；未实际结束的跳过、容量拒绝和仍在运行不计入。慢任务阈值配置 `observability.job.slow-threshold-ms` 默认500毫秒，沿用现有用例慢调用基线，范围1至60000毫秒；执行身份、参数和trace不作为指标标签。28项Job单元测试通过，零失败、错误或跳过；组件尚未接入工作器，真实执行与日志继续F02.2b。
