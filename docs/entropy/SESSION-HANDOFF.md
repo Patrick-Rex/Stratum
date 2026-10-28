@@ -14,8 +14,10 @@
 - unresolved: Starter指标入口访问规则待用户确认；跨消息标准追踪仍待后续节点；部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
 - nextNode: NODE-F01.3b。
 - 当前节点验收后审查、提交、推送；完成后继续下一节点，不重复请求授权。
-- CONTEXT 已更新。用户原有Docker服务保留；本轮独立MariaDB、Redis及专用RabbitMQ测试空间暂留供后续节点使用，会话结束前清理。连接状态保存在本机临时目录stratum-E04-state.json及stratum-E04-mq.json，不提交凭据。
+- CONTEXT 已更新。本轮创建的独立MariaDB、Redis容器及RabbitMQ虚拟主机和账号均已清理，相关临时连接状态已删除；用户原有Docker服务保留。继续集成测试时须重新创建隔离资源。
 
 - 等待用户确认Starter指标直连访问规则；没有答复之前不得开放指标HTTP。
 
 - 已同步README及可观测性设计中Starter日志的当前状态；该文档维护不计为开发节点完成。
+
+- 接入Prometheus注册表后已复跑1项真实Agent进程组合测试，零失败、错误或跳过。
