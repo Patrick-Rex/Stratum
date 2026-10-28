@@ -1587,3 +1587,9 @@ Rabbit业务监听按固定订阅组及结果记录 `stratum.messaging.consumed`
 死信监听在归档入口成功返回后按固定订阅组和归档类别累计 `stratum.messaging.deadletter.archived`，调用或准备抛错时累计 `stratum.messaging.deadletter.archive.failed`；重复归档请求按调用次数统计，不代表唯一死信数。失败只说明本次入口未成功返回，提交后响应失败时不能推断数据库没有归档。指标记录异常不改变原有手动确认和保留语义，标签不包含事件或trace。
 
 27项Infrastructure单元及5项真实Starter/MariaDB/Redis/RabbitMQ集成测试通过，零失败、错误或跳过；覆盖真实原生死信、双订阅归档、受控归档不可用与恢复。此计数不是Broker队列积压；积压口径待用户确认后继续F02.3d2。
+
+### Gateway标准HTTP追踪
+
+独立Gateway复用根工程固定的OpenTelemetry Java Agent版本，默认启动不加载或解析Agent；需要时在现有Gateway配置和Redis就绪后运行 `.\gradlew.bat --no-daemon :stratum-gateway:bootRun -PotelAgent=true`。采样和导出由Agent标准环境变量控制；本地无采集端时可将`OTEL_TRACES_EXPORTER`、`OTEL_METRICS_EXPORTER`和`OTEL_LOGS_EXPORTER`设置为`none`。既有业务关联头`X-Trace-Id`保持独立。
+
+`:stratum-gateway:otelIntegrationTest` 使用`STRATUM_IT_REDIS_PORT`及可选`STRATUM_IT_REDIS_PASSWORD`，在真实独立Gateway JVM、Agent、本机上游和独立Redis上验证：已采样上游W3C追踪的服务跨度和转发客户端跨度为父子关系；没有上游上下文时建立新追踪；业务关联头保持一致。测试不启动采集服务，输出仅使用本地OTLP日志导出；当前未验证跨消息传播，网关双标识日志和真实Starter链路留待后续节点。
