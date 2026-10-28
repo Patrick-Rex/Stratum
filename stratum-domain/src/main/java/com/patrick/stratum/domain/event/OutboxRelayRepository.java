@@ -4,7 +4,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
+
+import com.patrick.stratum.common.trace.StandardTraceContext.Carrier;
 
 /** Relay技术存储端口，仅参与Application已有工作单元，不执行MQ或开启事务。 */
 public interface OutboxRelayRepository {
@@ -57,15 +60,17 @@ public interface OutboxRelayRepository {
      * @param token 唯一竞争令牌
      * @param expiresAt 数据库返回的UTC租约截止时间
      * @param retryCount 已记录的发送失败次数
+     * @param standardTrace 原事件标准上下文；历史事件可为空
      */
-    record Claim(OutboxPublisher.Delivery delivery, UUID token, Instant expiresAt, int retryCount) {
+    record Claim(OutboxPublisher.Delivery delivery, UUID token, Instant expiresAt, int retryCount, Optional<Carrier> standardTrace) {
         /**
          * 保留不可变身份，不在构造时依据本机时钟推测是否过期。
          * @param delivery 原投递
          * @param token 竞争令牌
          * @param expiresAt 数据库租约时刻
          * @param retryCount 非负失败次数
-         * @throws NullPointerException 必需证据缺失
+         * @param standardTrace 原事件上下文的可选值
+         * @throws NullPointerException 必需证据或可选值缺失
          * @throws IllegalArgumentException 次数为负
          * @apiNote 示例：new Claim(delivery, UUID.randomUUID(), expiresAt, 0)。
          */
@@ -73,7 +78,22 @@ public interface OutboxRelayRepository {
             Objects.requireNonNull(delivery, "领取事件不能为空");
             Objects.requireNonNull(token, "领取令牌不能为空");
             Objects.requireNonNull(expiresAt, "领取租期不能为空");
+            Objects.requireNonNull(standardTrace, "标准上下文可选值不能为空");
             if (retryCount < 0) throw new IllegalArgumentException("发送失败次数不能为负数");
+        }
+
+        /**
+         * 保留原有构造方式，缺少标准上下文时使用空值。
+         * @param delivery 原投递
+         * @param token 竞争令牌
+         * @param expiresAt 数据库租约时刻
+         * @param retryCount 非负失败次数
+         * @throws NullPointerException 必需证据缺失
+         * @throws IllegalArgumentException 次数为负
+         * @apiNote 示例：{@code new Claim(delivery, token, expiresAt, 0)}。
+         */
+        public Claim(OutboxPublisher.Delivery delivery, UUID token, Instant expiresAt, int retryCount) {
+            this(delivery, token, expiresAt, retryCount, Optional.empty());
         }
 
         /**

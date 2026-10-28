@@ -3,6 +3,9 @@ package com.patrick.stratum.domain.event;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.Optional;
+
+import com.patrick.stratum.common.trace.StandardTraceContext.Carrier;
 
 import org.junit.jupiter.api.Test;
 
@@ -32,6 +35,7 @@ class OutboxRelayRepositoryTest {
         UUID token = UUID.randomUUID();
         var claim = new OutboxRelayRepository.Claim(delivery, token, Instant.EPOCH, 0);
         assertSame(delivery, claim.delivery());
+        assertTrue(claim.standardTrace().isEmpty());
         assertEquals(Instant.EPOCH, claim.expiresAt());
         assertEquals(token, claim.token());
         assertFalse(claim.toString().contains(token.toString()));
@@ -39,6 +43,19 @@ class OutboxRelayRepositoryTest {
         assertThrows(IllegalArgumentException.class, () -> new OutboxRelayRepository.Claim(delivery, token, Instant.EPOCH, -1));
         assertThrows(NullPointerException.class, () -> new OutboxRelayRepository.Claim(null, token, Instant.EPOCH, 0));
         assertThrows(NullPointerException.class, () -> new OutboxRelayRepository.Claim(delivery, null, Instant.EPOCH, 0));
+    }
+
+    /** 标准上下文只属于领取证据，不更改原事件或投递对象；摘要不泄露追踪状态。 */
+    @Test
+    void preservesOptionalStandardContextWithoutChangingDelivery() {
+        var message = new OutboxMessage(UUID.randomUUID().toString(), "erp.material.created", "aggregate", Instant.EPOCH, "{}", "business-id");
+        var delivery = new OutboxPublisher.Delivery(message, 3);
+        var trace = new Carrier("00-1234567890abcdef1234567890abcdef-1234567890abcdef-01", "tenant=value");
+        var claim = new OutboxRelayRepository.Claim(delivery, UUID.randomUUID(), Instant.EPOCH, 0, Optional.of(trace));
+        assertSame(delivery, claim.delivery()); assertSame(message, claim.delivery().message());
+        assertEquals(trace, claim.standardTrace().orElseThrow());
+        assertFalse(claim.toString().contains("tenant=value")); assertFalse(claim.toString().contains(trace.traceparent()));
+        assertThrows(NullPointerException.class, () -> new OutboxRelayRepository.Claim(delivery, UUID.randomUUID(), Instant.EPOCH, 0, null));
     }
 
     /** 前几次失败按指数增长，封顶后对极大次数仍保持有界且不溢出。 */
