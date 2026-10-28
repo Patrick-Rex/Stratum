@@ -3,6 +3,7 @@ package com.patrick.stratum.job;
 import com.patrick.stratum.application.event.OutboxRelayControlApplicationService;
 import com.patrick.stratum.application.job.JobExecutionApplicationService;
 import com.patrick.stratum.application.job.JobHandler;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -18,7 +19,7 @@ import org.springframework.context.annotation.DependsOn;
  */
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(prefix = "stratum.jobs", name = "enabled", havingValue = "true")
-@EnableConfigurationProperties(JobRuntimeConfiguration.Properties.class)
+@EnableConfigurationProperties({JobRuntimeConfiguration.Properties.class, JobMetrics.Settings.class})
 public class JobRuntimeConfiguration {
     /**
      * 快照已登记处理器；没有处理器时不创造默认任务。
@@ -31,16 +32,30 @@ public class JobRuntimeConfiguration {
     }
 
     /**
+     * 根据固定处理器注册表和有界阈值建立指标组件。
+     * @param metrics 应用指标注册表
+     * @param registry 已验证任务代码
+     * @param settings 慢任务配置
+     * @return 只允许固定代码及结果的任务指标
+     */
+    @Bean
+    JobMetrics jobMetrics(MeterRegistry metrics, JobHandlerRegistry registry, JobMetrics.Settings settings) {
+        return new JobMetrics(metrics, registry, settings);
+    }
+
+    /**
      * 创建可被ShedLock方法代理包装的无执行共享状态工作器。
      * @param jobs Application任务状态入口
      * @param registry 固定处理器注册表
      * @param relayControl Relay共享暂停准入应用入口
+     * @param metrics 已配置的任务指标
+     * @param settings 慢任务阈值
      * @return 由Spring代理管理的工作器
      */
     @Bean
     ProtectedJobWorker protectedJobWorker(JobExecutionApplicationService jobs, JobHandlerRegistry registry,
-            OutboxRelayControlApplicationService relayControl) {
-        return new ProtectedJobWorker(jobs, registry, relayControl);
+            OutboxRelayControlApplicationService relayControl, JobMetrics metrics, JobMetrics.Settings settings) {
+        return new ProtectedJobWorker(jobs, registry, relayControl, metrics, settings);
     }
 
     /**

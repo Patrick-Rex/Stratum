@@ -25,7 +25,7 @@ class QuartzRuntimeLifecycleTest {
         var primary = scheduler("ordinary", true, calls);
         var relay = scheduler("relay", false, calls);
         var registry = new JobHandlerRegistry(List.of(new Probe()));
-        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null), registry, 1);
+        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null, null, null), registry, 1);
         var lifecycle = new QuartzRuntimeLifecycle(List.of(primary, relay), executor, false);
         lifecycle.start(); lifecycle.stop();
         assertEquals(List.of("ordinary", "relay"), calls);
@@ -39,7 +39,7 @@ class QuartzRuntimeLifecycleTest {
         var calls = new ArrayList<String>();
         var primary = scheduler("ordinary", false, calls); var relay = scheduler("relay", false, calls);
         var registry = new JobHandlerRegistry(List.of(new Probe()));
-        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null), registry, 1);
+        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null, null, null), registry, 1);
         assertThrows(IllegalArgumentException.class, () -> new QuartzRuntimeLifecycle(List.of(primary), executor, true));
         var lifecycle = new QuartzRuntimeLifecycle(List.of(primary, relay), executor, true);
         lifecycle.start(); assertEquals(List.of("start-relay"), calls);

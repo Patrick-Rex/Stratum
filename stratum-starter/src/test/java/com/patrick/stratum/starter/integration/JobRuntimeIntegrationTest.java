@@ -13,6 +13,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
@@ -25,6 +26,7 @@ import com.patrick.stratum.domain.job.JobExecutionRepository.Lease;
 import com.patrick.stratum.infrastructure.job.SchedulerConfiguration;
 import com.patrick.stratum.job.JobExecutionResult;
 import com.patrick.stratum.job.JobRuntimeConfiguration;
+import com.patrick.stratum.job.JobMetrics;
 import com.patrick.stratum.job.JobTaskExecutor;
 import com.patrick.stratum.job.ProtectedJobWorker;
 import org.junit.jupiter.api.AfterEach;
@@ -37,9 +39,13 @@ import org.springframework.context.annotation.AnnotationConfigApplicationContext
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 /** 真实Application、MariaDB和ShedLock代理验证有界虚拟线程执行，故障探针不替代事务或数据库锁。 */
 class JobRuntimeIntegrationTest extends MariaDbIntegrationTest {
@@ -84,6 +90,8 @@ class JobRuntimeIntegrationTest extends MariaDbIntegrationTest {
             jdbc.update("DELETE FROM STRATUM_QRTZ_SCHEDULER_STATE WHERE SCHED_NAME=?", name);
         }
         jdbc.update("DELETE FROM stratum_shedlock WHERE name=?", "lock:job:" + probe.code);
+        var metrics = parent.getBean(MeterRegistry.class);
+        metrics.getMeters().stream().filter(meter -> probe.code.equals(meter.getId().getTag("job"))).toList().forEach(metrics::remove);
     }
 
     /** 默认关闭不创建执行器；启用后真实虚拟线程处理在事务外，使用原trace且不污染调用方。 */
@@ -105,6 +113,11 @@ class JobRuntimeIntegrationTest extends MariaDbIntegrationTest {
         await().atMost(Duration.ofSeconds(2)).until(() -> executor.activeCount() == 0);
         assertFalse(probe.threads.getFirst().isAlive());
         assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM job_attempt WHERE execution_id=? AND result='SUCCEEDED'", Integer.class, id.toString()));
+        assertEquals(1, timerCount("succeeded"));
+        String scrape = parent.getBean(PrometheusMeterRegistry.class).scrape();
+        assertTrue(scrape.contains("stratum_job_duration_seconds_count"));
+        assertFalse(scrape.contains(id.toString())); assertFalse(scrape.contains("runtime-trace"));
+        assertFalse(scrape.contains("secret-runtime-canary"));
     }
 
     /** 原异常正文及参数不进技术日志，失败与死亡记录真实提交且具备必需关联字段。 */
@@ -126,6 +139,7 @@ class JobRuntimeIntegrationTest extends MariaDbIntegrationTest {
             }
             assertFalse(text.contains("secret-runtime-canary"));
             assertNull(event.getThrowableProxy());
+            assertEquals(Level.WARN, event.getLevel()); assertEquals(1, timerCount("failed"));
         } finally { logger.detachAppender(captured); captured.stop(); }
     }
 
@@ -135,13 +149,63 @@ class JobRuntimeIntegrationTest extends MariaDbIntegrationTest {
         probe.mode = Mode.WAIT;
         var executor = runtime();
         var id = register(1);
-        assertEquals(JobExecutionResult.TIMED_OUT, executor.execute(probe.code, id));
-        assertTrue(probe.interrupted.await(1, TimeUnit.SECONDS));
-        assertEquals("DEAD", state(id));
-        assertEquals("TIMED_OUT", jdbc.queryForObject("SELECT reason FROM dead_job WHERE execution_id=?", String.class, id.toString()));
-        assertTrue(jdbc.queryForObject("SELECT duration_ms FROM job_attempt WHERE execution_id=?", Long.class, id.toString()) >= 800);
-        await().atMost(Duration.ofSeconds(2)).until(() -> executor.activeCount() == 0);
-        assertFalse(probe.threads.getFirst().isAlive());
+        var logger = (Logger) LoggerFactory.getLogger(ProtectedJobWorker.class);
+        var captured = new ListAppender<ILoggingEvent>(); captured.start(); logger.addAppender(captured);
+        try {
+            assertEquals(JobExecutionResult.TIMED_OUT, executor.execute(probe.code, id));
+            assertTrue(probe.interrupted.await(1, TimeUnit.SECONDS));
+            assertEquals("DEAD", state(id));
+            assertEquals("TIMED_OUT", jdbc.queryForObject("SELECT reason FROM dead_job WHERE execution_id=?", String.class, id.toString()));
+            assertTrue(jdbc.queryForObject("SELECT duration_ms FROM job_attempt WHERE execution_id=?", Long.class, id.toString()) >= 800);
+            assertEquals(1, timerCount("timed_out"));
+            assertEquals(1, parent.getBean(MeterRegistry.class).get("stratum.job.slow")
+                    .tags("job", probe.code, "result", "timed_out").counter().count());
+            assertEquals(Level.WARN, captured.list.stream().filter(event -> event.getFormattedMessage().contains(id.toString())).findFirst().orElseThrow().getLevel());
+            await().atMost(Duration.ofSeconds(2)).until(() -> executor.activeCount() == 0);
+            assertFalse(probe.threads.getFirst().isAlive());
+        } finally { logger.detachAppender(captured); captured.stop(); }
+    }
+
+    /**
+     * 领取证据被竞争替换时不能记作成功，真实结果及指标均显示状态不确定。
+     * @throws Exception 并发测试失败
+     */
+    @Test
+    void recordsUncertainResultWhenLeaseTokenChanges() throws Exception {
+        probe.mode = Mode.WAIT; var executor = runtime(); var id = register(10);
+        try (var caller = Executors.newSingleThreadExecutor()) {
+            var running = caller.submit(() -> executor.execute(probe.code, id));
+            try {
+                assertTrue(probe.entered.await(5, TimeUnit.SECONDS));
+                assertEquals(1, jdbc.update("UPDATE job_execution SET lease_token=? WHERE execution_id=?", UUID.randomUUID().toString(), id.toString()));
+            } finally { probe.release.countDown(); }
+            assertEquals(JobExecutionResult.STATE_UNCERTAIN, running.get(5, TimeUnit.SECONDS));
+            assertEquals(1, timerCount("state_uncertain"));
+            assertNull(parent.getBean(MeterRegistry.class).find("stratum.job.duration").tags("job", probe.code, "result", "succeeded").timer());
+        }
+    }
+
+    /**
+     * 指标后端抛错不改变实际业务任务已提交结果。
+     * @throws Exception 执行或装配失败
+     */
+    @Test
+    void preservesCommittedResultWhenMetricsFail() throws Exception {
+        probe.mode = Mode.WAIT; var executor = runtime(true); var id = register(10);
+        var logger = (Logger) LoggerFactory.getLogger(ProtectedJobWorker.class);
+        var captured = new ListAppender<ILoggingEvent>(); captured.start(); logger.addAppender(captured);
+        try (var caller = Executors.newSingleThreadExecutor()) {
+            var running = caller.submit(() -> executor.execute(probe.code, id));
+            try {
+                assertTrue(probe.entered.await(5, TimeUnit.SECONDS));
+                assertFalse(new CountDownLatch(1).await(20, TimeUnit.MILLISECONDS));
+            } finally { probe.release.countDown(); }
+            assertEquals(JobExecutionResult.SUCCEEDED, running.get(5, TimeUnit.SECONDS));
+            assertEquals("SUCCEEDED", state(id));
+            assertTrue(captured.list.stream().anyMatch(event -> event.getFormattedMessage().contains("任务指标记录失败")));
+            assertTrue(captured.list.stream().noneMatch(event -> event.getFormattedMessage().contains("secret-metrics-canary")));
+            assertEquals(Level.WARN, captured.list.stream().filter(event -> event.getFormattedMessage().contains(id.toString())).findFirst().orElseThrow().getLevel());
+        } finally { logger.detachAppender(captured); captured.stop(); }
     }
 
     /** 故意不合作的探针在超时返回后仍占本机容量和实际数据库锁，另实例跳过而不领取后续任务。 */
@@ -212,16 +276,41 @@ class JobRuntimeIntegrationTest extends MariaDbIntegrationTest {
      * @throws Exception 调度器身份读取失败
      */
     private JobTaskExecutor runtime() throws Exception {
+        return runtime(false);
+    }
+
+    /**
+     * 建立独立执行器，可注入只影响指标的受控失败。
+     * @param failingMetrics 是否让指标记录失败
+     * @return 当前用例负责关闭的执行器
+     * @throws Exception 调度器身份读取失败
+     */
+    private JobTaskExecutor runtime(boolean failingMetrics) throws Exception {
         var context = new AnnotationConfigApplicationContext();
         String name = "runtime-" + UUID.randomUUID(); names.add(name); contexts.add(context);
         context.setParent(parent);
         context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("runtime-test", Map.of(
-                "stratum.jobs.enabled", true, "stratum.jobs.name", name, "stratum.jobs.workers", 1)));
+                "stratum.jobs.enabled", true, "stratum.jobs.name", name, "stratum.jobs.workers", 1,
+                "observability.job.slow-threshold-ms", failingMetrics ? 1 : 500)));
         context.registerBean(JobHandler.class, () -> probe);
+        if (failingMetrics) {
+            var failing = mock(JobMetrics.class);
+            when(failing.record(anyString(), any(), anyLong())).thenThrow(new IllegalStateException("secret-metrics-canary"));
+            context.registerBean("failingMetrics", JobMetrics.class, () -> failing, definition -> definition.setPrimary(true));
+        }
         context.register(SchedulerConfiguration.class, JobRuntimeConfiguration.class);
         context.refresh();
         schedulerIds.add(context.getBean(Scheduler.class).getSchedulerInstanceId());
         return context.getBean(JobTaskExecutor.class);
+    }
+
+    /**
+     * 读取本用例固定任务和结果的实际耗时样本数。
+     * @param result 有限结果标签
+     * @return 已记录样本数
+     */
+    private long timerCount(String result) {
+        return parent.getBean(MeterRegistry.class).get("stratum.job.duration").tags("job", probe.code, "result", result).timer().count();
     }
 
     /**

@@ -2,6 +2,7 @@ package com.patrick.stratum.job;
 
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 import com.patrick.stratum.application.event.OutboxRelayControlApplicationService;
 import com.patrick.stratum.application.job.JobExecutionApplicationService;
@@ -24,6 +25,8 @@ public class ProtectedJobWorker {
     private final JobExecutionApplicationService jobs;
     private final JobHandlerRegistry registry;
     private final OutboxRelayControlApplicationService relayControl;
+    private final JobMetrics metrics;
+    private final JobMetrics.Settings settings;
 
     /**
      * 按固定代码互斥，实际处理和代理解锁结束前始终保留锁与线程。
@@ -87,8 +90,16 @@ public class ProtectedJobWorker {
             try {
                 Outcome outcome = control.finishing(actual);
                 boolean updated = jobs.finish(lease, outcome);
-                control.record(updated ? result(outcome) : JobExecutionResult.STATE_UNCERTAIN);
-                logResult(code, lease, outcome, updated, start, failureType);
+                var result = updated ? result(outcome) : JobExecutionResult.STATE_UNCERTAIN;
+                control.record(result);
+                long elapsed = System.nanoTime() - start;
+                boolean slow = elapsed >= TimeUnit.MILLISECONDS.toNanos(settings.slowThresholdMs());
+                try { metrics.record(code, result, elapsed); }
+                catch (RuntimeException failure) {
+                    log.atWarn().addKeyValue("jobCode", code).addKeyValue("errorType", failure.getClass().getSimpleName())
+                            .log("任务指标记录失败 jobCode={} errorType={}", code, failure.getClass().getSimpleName());
+                }
+                logResult(code, lease, outcome, updated, elapsed, failureType, slow);
             } finally {
                 if (previous.isPresent()) TraceIdContext.setTraceId(previous.orElseThrow());
                 else TraceIdContext.clear();
@@ -117,14 +128,16 @@ public class ProtectedJobWorker {
      * @param lease 原领取证据
      * @param outcome 实际固定结果
      * @param updated 是否完成持久化
-     * @param start 本地单调开始时间
+     * @param elapsed 实际处理耗时纳秒
      * @param failureType 安全错误类型
+     * @param slow 是否达到慢任务阈值
      */
-    private void logResult(String code, Lease lease, Outcome outcome, boolean updated, long start, String failureType) {
+    private void logResult(String code, Lease lease, Outcome outcome, boolean updated, long elapsed, String failureType, boolean slow) {
         Instant end = Instant.now();
-        long duration = (System.nanoTime() - start) / 1_000_000;
+        long duration = elapsed / 1_000_000;
         var input = lease.submission();
-        log.atInfo().addKeyValue("jobCode", code).addKeyValue("executionId", input.executionId())
+        var event = slow || !updated || outcome != Outcome.SUCCEEDED ? log.atWarn() : log.atInfo();
+        event.addKeyValue("jobCode", code).addKeyValue("executionId", input.executionId())
                 .addKeyValue("attempt", lease.attempt()).addKeyValue("scheduleTime", input.scheduleTime())
                 .addKeyValue("startTime", lease.startTime()).addKeyValue("endTime", end).addKeyValue("durationMs", duration)
                 .addKeyValue("result", outcome.name()).addKeyValue("stateUpdated", updated).addKeyValue("traceId", input.traceId())
