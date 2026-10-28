@@ -16,7 +16,7 @@ D03已完成角色仓库管理与业务读写范围：ALL或指定仓库按多�
 
 死信重放任务使用版本1管理员接口登记、查询和取消未开始任务；相同幂等键复用首次任务，执行前重新核验首次管理员资格。登记与发送确认均不等于业务成功，只有原事件匹配的真实消费凭据才使状态变为 `SUCCEEDED`。本地启用与验证见[开发与迭代](docs/development.md)及[后台任务设计](docs/后台任务设计.md)。
 
-Starter可通过 `-PotelAgent=true` 显式启用OpenTelemetry Java Agent；现有业务关联ID保持不变，标准HTTP追踪使用独立W3C标识。默认不加载Agent；Starter已输出双标识结构化日志，指标HTTP入口按后续节点实施，运行方式见[开发与迭代](docs/development.md)。
+Starter可通过 `-PotelAgent=true` 显式启用OpenTelemetry Java Agent；现有业务关联ID保持不变，标准HTTP追踪使用独立W3C标识。默认不加载Agent；Starter已输出双标识结构化日志，并提供受直连CIDR限制的指标入口，运行方式见[开发与迭代](docs/development.md)。
 
 ## 文档入口
 
@@ -57,4 +57,4 @@ Invoke-WebRequest http://127.0.0.1:8081/actuator/prometheus
 
 转发按直连IP使用跨实例、跨稳定/灰度共享Redis令牌桶，默认20/s补充、40突发，超额429并返回Retry-After；Redis故障或共享状态不一致拒绝转发。所有入口实例需使用相同命名空间和策略。访问日志输出JSON，指标标签保持有界；完整参数、时延/取消语义和验收边界见[开发与迭代](docs/development.md)。结束各进程时分别按`Ctrl+C`退出。
 
-启动后可访问 `/v3/api-docs` 获取生成文档、`/doc.html` 查看 Knife4j。Gateway已提供上述受保护指标端点；外部观测服务与Docker Compose仍暂缓，尚未对Starter提供同等指标入口。完整的操作说明、验证边界与后续设计见 [开发与迭代](docs/development.md)。
+启动后可访问 `/v3/api-docs` 获取生成文档、`/doc.html` 查看 Knife4j。Gateway与Starter均提供受直连CIDR保护的Prometheus指标端点；Starter默认只允许本机回环，可通过 `STRATUM_MANAGEMENT_METRICS_ALLOWED_CIDRS` 完整替换来源列表。应用必须保持转发头地址改写关闭；健康探测保持原有行为。外部观测服务与Docker Compose仍暂缓。完整的操作说明、验证边界与后续设计见 [开发与迭代](docs/development.md)。

@@ -28,6 +28,9 @@ easy-query:
   name-conversion: underlined
 
 stratum:
+  management:
+    metrics:
+      allowed-cidrs: ${STRATUM_MANAGEMENT_METRICS_ALLOWED_CIDRS:127.0.0.0/8,::1/128}
   jobs:
     enabled: ${STRATUM_JOBS_ENABLED:false}
     name: ${STRATUM_JOBS_NAME:stratum}
@@ -57,12 +60,13 @@ stratum:
 
 server:
   port: 8080
+  forward-headers-strategy: none
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus
   endpoint:
     health:
       show-details: when_authorized

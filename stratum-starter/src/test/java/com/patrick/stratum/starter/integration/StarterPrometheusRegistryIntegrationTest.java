@@ -22,7 +22,7 @@ import org.springframework.test.annotation.DirtiesContext;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** 使用独立MariaDB及Redis验证Starter实际Prometheus注册表，暂不开放HTTP抓取。 */
+/** 使用独立MariaDB及Redis验证Starter真实Prometheus注册表及本机HTTP抓取。 */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "server.address=127.0.0.1")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class StarterPrometheusRegistryIntegrationTest extends MariaDbIntegrationTest {
@@ -44,7 +44,7 @@ class StarterPrometheusRegistryIntegrationTest extends MariaDbIntegrationTest {
      * @throws Exception HTTP通信失败
      */
     @Test
-    void exportsExistingMetricsWithoutExposingHttp() throws Exception {
+    void exportsExistingMetricsToLoopbackHttp() throws Exception {
         String trace = "prometheus-" + UUID.randomUUID(); TraceIdContext.setTraceId(trace);
         var policy = new VersionedCache.Policy(Duration.ofMinutes(1), Duration.ZERO);
         cache.get(key, policy, Optional::empty);
@@ -53,9 +53,10 @@ class StarterPrometheusRegistryIntegrationTest extends MariaDbIntegrationTest {
             var health = client.send(HttpRequest.newBuilder(uri("/actuator/health")).timeout(Duration.ofSeconds(10)).GET().build(),
                     HttpResponse.BodyHandlers.ofString());
             assertEquals(200, health.statusCode());
-            var scrape = client.send(HttpRequest.newBuilder(uri("/actuator/prometheus")).timeout(Duration.ofSeconds(10)).GET().build(),
+            var scrape = client.send(HttpRequest.newBuilder(uri("/actuator/prometheus")).timeout(Duration.ofSeconds(10))
+                    .header("X-Forwarded-For", "203.0.113.9").header("Forwarded", "for=203.0.113.9").GET().build(),
                     HttpResponse.BodyHandlers.ofString());
-            assertNotEquals(200, scrape.statusCode());
+            assertEquals(200, scrape.statusCode()); assertTrue(scrape.body().contains("jvm_memory_used_bytes"));
         }
         String metrics = registry.scrape();
         assertTrue(metrics.contains("jvm_memory_used_bytes"));

@@ -113,7 +113,7 @@ $env:STRATUM_REDIS_PORT = '6379'
 Invoke-RestMethod http://localhost:8080/actuator/health
 ```
 
-健康状态包含数据库与 Redis。本地 Caffeine 客户端默认最多 10000 条、写入后 30 秒失效，可用 `stratum.cache.local.maximum-size` 和 `stratum.cache.local.ttl` 调整；Cache Aside、空值保护、single-flight、分布式锁及补偿落盘已通过 NODE-B05 验收；补偿投递与执行仍待 Phase E。OpenAPI JSON（`/v3/api-docs`）与 Knife4j 页面（`/doc.html`）已接入并通过真实HTTP端点测试；业务响应文档已通过 C02.4b 的真实HTTP与浏览器验收。Starter已具备Prometheus注册表及可选追踪Agent，指标HTTP入口尚未开放，追踪后端未部署。
+健康状态包含数据库与 Redis。本地 Caffeine 客户端默认最多 10000 条、写入后 30 秒失效，可用 `stratum.cache.local.maximum-size` 和 `stratum.cache.local.ttl` 调整；Cache Aside、空值保护、single-flight、分布式锁及补偿落盘已通过 NODE-B05 验收；补偿投递与执行仍待 Phase E。OpenAPI JSON（`/v3/api-docs`）与 Knife4j 页面（`/doc.html`）已接入并通过真实HTTP端点测试；业务响应文档已通过 C02.4b 的真实HTTP与浏览器验收。Starter已具备Prometheus注册表及可选追踪Agent，指标HTTP入口受直连CIDR保护，追踪后端未部署。
 
 当前没有 `docker/compose/`，本轮不实施部署编排。可以连接现有 Docker 服务，也可创建独立测试容器；不要复用其他项目的业务库或清空共享 Redis。集成测试使用独立数据库及带 `stratum` 前缀的键。
 
@@ -1537,3 +1537,9 @@ Starter接入Spring Boot统一管理的Micrometer Prometheus注册表，沿用Ga
 ## NODE-F01.3b1 指标直连来源判定
 
 建立指标来源CIDR策略：默认配置为IPv4和IPv6回环，允许完整列表替换；空列表拒绝全部。启动时只解析地址字面量和合法前缀，不进行DNS查询；直连地址缺失、非法或不在网段时拒绝。14项Interface单元测试通过，零失败、错误或跳过，覆盖IPv4/IPv6、零前缀、边界及非法配置。本节点未接入HTTP，转发头防护与实际端点继续F01.3b2。
+
+## NODE-F01.3b2 Starter指标入口
+
+`GET /actuator/prometheus` 暴露Prometheus指标，由安全链按真实直连来源校验；默认IPv4 `127.0.0.0/8` 和IPv6 `::1/128`，`STRATUM_MANAGEMENT_METRICS_ALLOWED_CIDRS` 为逗号分隔的完整替换列表。拒绝来源返回403，不以认证令牌或Forwarded/X-Forwarded-For/X-Real-IP替代直连地址。健康探测保持原有规则。应用明确使用 `server.forward-headers-strategy=none`，如配置为framework或native则安全策略启动失败，避免容器改写直连地址后绕过来源校验；指标直连运行环境不应另行安装改写来源的转发过滤器或代理阀。
+
+14项Interface单元测试和9项真实Starter/MariaDB/Redis集成测试通过，零失败、错误或跳过；覆盖默认回环抓取、禁用回环配置、伪造转发头、路径变体、健康检查及认证协议。转发头地址改写配置经应用配置Bean验证拒绝；IPv6网段匹配由单元测试验证，未声称本轮实际IPv6网络连接。F01.3完成，组合验收继续F01.4。
