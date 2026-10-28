@@ -19,6 +19,7 @@ import com.patrick.stratum.domain.event.OutboxDeadLetterRepository.Category;
 import com.patrick.stratum.domain.event.OutboxDeadLetterRepository.Letter;
 import com.patrick.stratum.domain.event.OutboxPublisher.Delivery;
 import com.rabbitmq.client.Channel;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.AcknowledgeMode;
 import org.springframework.amqp.core.Message;
@@ -28,6 +29,7 @@ import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer;
 import org.springframework.amqp.rabbit.listener.api.ChannelAwareMessageListener;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -65,13 +67,16 @@ public class RabbitDeadLetterConfiguration {
      * @param settings 有界退出预算
      * @param collector 应用归档端口
      * @param json JSON映射器
+     * @param registries 可选指标注册表
      * @return 单工作线程、预取1的手动确认容器
      */
     @Bean
     SimpleMessageListenerContainer erpDeadLetterListener(CachingConnectionFactory factory, RabbitAdmin admin,
             @Qualifier("rabbitDeadLetterExecutor") ThreadPoolTaskExecutor executor,
-            RabbitOutboxConsumerConfiguration.Properties settings, OutboxDeadLetterCollector collector, JsonMapper json) {
-        return listener(factory, admin, executor, settings, collector, json, RabbitTopologyConfiguration.ERP_QUEUE, Group.ERP_AUDIT);
+            RabbitOutboxConsumerConfiguration.Properties settings, OutboxDeadLetterCollector collector, JsonMapper json,
+            ObjectProvider<MeterRegistry> registries) {
+        return listener(factory, admin, executor, settings, collector, json, RabbitTopologyConfiguration.ERP_QUEUE, Group.ERP_AUDIT,
+                new MessageMetrics(registries.getIfAvailable()));
     }
 
     /**
@@ -82,13 +87,16 @@ public class RabbitDeadLetterConfiguration {
      * @param settings 有界退出预算
      * @param collector 应用归档端口
      * @param json JSON映射器
+     * @param registries 可选指标注册表
      * @return 单工作线程、预取1的手动确认容器
      */
     @Bean
     SimpleMessageListenerContainer cacheDeadLetterListener(CachingConnectionFactory factory, RabbitAdmin admin,
             @Qualifier("rabbitDeadLetterExecutor") ThreadPoolTaskExecutor executor,
-            RabbitOutboxConsumerConfiguration.Properties settings, OutboxDeadLetterCollector collector, JsonMapper json) {
-        return listener(factory, admin, executor, settings, collector, json, RabbitTopologyConfiguration.CACHE_QUEUE, Group.CACHE_INVALIDATION);
+            RabbitOutboxConsumerConfiguration.Properties settings, OutboxDeadLetterCollector collector, JsonMapper json,
+            ObjectProvider<MeterRegistry> registries) {
+        return listener(factory, admin, executor, settings, collector, json, RabbitTopologyConfiguration.CACHE_QUEUE, Group.CACHE_INVALIDATION,
+                new MessageMetrics(registries.getIfAvailable()));
     }
 
     /**
@@ -101,11 +109,12 @@ public class RabbitDeadLetterConfiguration {
      * @param json JSON映射器
      * @param source 固定业务来源队列
      * @param group 固定订阅组
+     * @param metrics 不改变归档及确认语义的指标
      * @return 已配置容器
      */
     private static SimpleMessageListenerContainer listener(CachingConnectionFactory factory, RabbitAdmin admin,
             ThreadPoolTaskExecutor executor, RabbitOutboxConsumerConfiguration.Properties settings,
-            OutboxDeadLetterCollector collector, JsonMapper json, String source, Group group) {
+            OutboxDeadLetterCollector collector, JsonMapper json, String source, Group group, MessageMetrics metrics) {
         var container = new SimpleMessageListenerContainer(factory);
         container.setQueueNames(source + ".dlq"); container.setAmqpAdmin(admin); container.setTaskExecutor(executor);
         container.setConcurrentConsumers(1); container.setMaxConcurrentConsumers(1); container.setPrefetchCount(1);
@@ -116,7 +125,7 @@ public class RabbitDeadLetterConfiguration {
         container.setShutdownTimeout(settings.shutdownTimeout().toMillis()); container.setForceCloseChannel(true);
         var codec = new RabbitOutboxMessageCodec(json);
         container.setMessageListener((ChannelAwareMessageListener) (message, channel) -> {
-            try { archive(message, channel, collector, codec, json, source, group); }
+            try { archive(message, channel, collector, codec, json, source, group, metrics); }
             catch (IOException | RuntimeException failure) {
                 try { channel.abort(); }
                 catch (IOException | RuntimeException closeFailure) {
@@ -141,10 +150,11 @@ public class RabbitDeadLetterConfiguration {
      * @param json 元数据编码器
      * @param source 固定来源队列
      * @param group 固定来源组
+     * @param metrics 不改变归档及确认语义的指标
      * @throws IOException 确认传输异常；由外层关闭本通道恢复
      */
     private static void archive(Message message, Channel channel, OutboxDeadLetterCollector collector,
-            RabbitOutboxMessageCodec codec, JsonMapper json, String source, Group group) throws IOException {
+            RabbitOutboxMessageCodec codec, JsonMapper json, String source, Group group, MessageMetrics metrics) throws IOException {
         long tag = message.getMessageProperties().getDeliveryTag();
         if (Thread.currentThread().isInterrupted()) { channel.basicNack(tag, false, true); return; }
         try {
@@ -164,7 +174,9 @@ public class RabbitDeadLetterConfiguration {
                     delivery, delivery.isPresent() ? Category.RETRIES_EXHAUSTED : Category.INVALID_ENVELOPE,
                     count(properties.getHeader("x-delivery-count")));
             if (collector.archive(letter) == null) throw new IllegalStateException("死信归档未返回标识");
+            metrics.archived(group, letter.category());
         } catch (RuntimeException failure) {
+            metrics.archiveFailed(group);
             log.atWarn().addKeyValue("consumerGroup", group.name()).addKeyValue("errorType", failure.getClass().getSimpleName())
                     .log("死信归档失败 consumerGroup={} errorType={}", group, failure.getClass().getSimpleName());
             channel.basicNack(tag, false, true);

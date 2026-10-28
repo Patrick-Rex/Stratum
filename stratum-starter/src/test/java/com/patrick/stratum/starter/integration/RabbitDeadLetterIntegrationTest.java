@@ -21,6 +21,7 @@ import com.patrick.stratum.domain.event.OutboxPublisher.Delivery;
 import com.patrick.stratum.domain.event.OutboxRelayRepository;
 import com.patrick.stratum.domain.event.OutboxRepository;
 import com.rabbitmq.client.AMQP;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -57,6 +58,7 @@ class RabbitDeadLetterIntegrationTest extends MariaDbIntegrationTest {
     @Autowired private JsonMapper json;
     @Autowired private RabbitAdmin admin;
     @Autowired private CachingConnectionFactory factory;
+    @Autowired private MeterRegistry metrics;
     @Autowired private CollectorProbe probe;
     private final List<String> aggregates = new ArrayList<>();
 
@@ -96,8 +98,14 @@ class RabbitDeadLetterIntegrationTest extends MariaDbIntegrationTest {
     /** 两个业务订阅原生失败超限后自动归档原身份与正文，不推进业务进度。 */
     @Test
     void archivesBothQueuesAfterActualNativeFailureLimit() {
+        double erpCount = metrics.counter("stratum.messaging.deadletter.archived", "group", "erp_audit", "category", "retries_exhausted").count();
+        double cacheCount = metrics.counter("stratum.messaging.deadletter.archived", "group", "cache_invalidation", "category", "retries_exhausted").count();
         var erp = seed("erp.probe.created"); var cache = seed("stratum.cache.invalidate"); runBatch();
         await().atMost(Duration.ofSeconds(6)).until(() -> archives(erp) == 1 && archives(cache) == 1);
+        await().atMost(Duration.ofSeconds(3)).until(() -> metrics.get("stratum.messaging.deadletter.archived")
+                .tags("group", "erp_audit", "category", "retries_exhausted").counter().count() >= erpCount + 1
+                && metrics.get("stratum.messaging.deadletter.archived")
+                .tags("group", "cache_invalidation", "category", "retries_exhausted").counter().count() >= cacheCount + 1);
         for (var event : List.of(erp, cache)) {
             var row = jdbc.queryForMap("SELECT * FROM outbox_dead_letter WHERE event_id = ?", event.message().eventId());
             assertEquals("RETRIES_EXHAUSTED", row.get("category")); assertEquals("DEAD", row.get("status"));
@@ -114,8 +122,11 @@ class RabbitDeadLetterIntegrationTest extends MariaDbIntegrationTest {
     /** 受控归档不可用时原DLQ原生延迟保留，恢复归档后才移除消息。 */
     @Test
     void retainsDeadLetterDuringArchiveFailureAndRecovers() {
+        double failed = metrics.counter("stratum.messaging.deadletter.archive.failed", "group", "erp_audit").count();
         var event = seed("erp.probe.created"); probe.unavailable.set(true); runBatch();
         await().atMost(Duration.ofSeconds(5)).until(() -> probe.failures.get() >= 2);
+        await().atMost(Duration.ofSeconds(3)).until(() -> metrics.get("stratum.messaging.deadletter.archive.failed")
+                .tag("group", "erp_audit").counter().count() >= failed + 2);
         assertEquals(0, archives(event)); deadListener(ERP_QUEUE).stop();
         await().atMost(Duration.ofSeconds(3)).until(() -> ready(ERP_QUEUE + ".dlq") == 1);
         probe.unavailable.set(false); deadListener(ERP_QUEUE).start();

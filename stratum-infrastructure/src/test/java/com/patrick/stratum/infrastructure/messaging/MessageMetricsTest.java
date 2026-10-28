@@ -3,6 +3,7 @@ package com.patrick.stratum.infrastructure.messaging;
 import java.util.List;
 
 import com.patrick.stratum.domain.event.OutboxConsumptionRepository.Group;
+import com.patrick.stratum.domain.event.OutboxDeadLetterRepository.Category;
 import com.patrick.stratum.domain.event.OutboxPublisher.PublishResult;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -22,6 +23,8 @@ class MessageMetricsTest {
             metrics.consumed(Group.ERP_AUDIT, MessageMetrics.ConsumerResult.CONSUMED, false);
             metrics.consumed(Group.ERP_AUDIT, MessageMetrics.ConsumerResult.WAITING, true);
             metrics.consumed(Group.CACHE_INVALIDATION, MessageMetrics.ConsumerResult.FAILED, true);
+            metrics.archived(Group.ERP_AUDIT, Category.RETRIES_EXHAUSTED);
+            metrics.archived(Group.ERP_AUDIT, Category.RETRIES_EXHAUSTED); metrics.archiveFailed(Group.ERP_AUDIT);
             assertEquals(1, registry.get("stratum.messaging.published").tag("result", "confirmed").counter().count());
             assertEquals(1, registry.get("stratum.messaging.published").tag("result", "returned").counter().count());
             assertEquals(1, registry.get("stratum.messaging.published").tag("result", "exception").counter().count());
@@ -29,8 +32,10 @@ class MessageMetricsTest {
             assertEquals(1, registry.get("stratum.messaging.consumed").tags("group", "erp_audit", "result", "waiting").counter().count());
             assertEquals(1, registry.get("stratum.messaging.redelivered").tag("group", "erp_audit").counter().count());
             assertEquals(1, registry.get("stratum.messaging.redelivered").tag("group", "cache_invalidation").counter().count());
+            assertEquals(2, registry.get("stratum.messaging.deadletter.archived").tags("group", "erp_audit", "category", "retries_exhausted").counter().count());
+            assertEquals(1, registry.get("stratum.messaging.deadletter.archive.failed").tag("group", "erp_audit").counter().count());
             assertTrue(registry.getMeters().stream().allMatch(meter -> meter.getId().getTags().stream()
-                    .allMatch(tag -> List.of("group", "result").contains(tag.getKey()))));
+                    .allMatch(tag -> List.of("group", "result", "category").contains(tag.getKey()))));
         } finally { registry.close(); }
     }
 

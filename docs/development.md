@@ -1581,3 +1581,9 @@ F01完成。Agent默认不加载，显式启用与导出配置见F01.1；指标�
 Rabbit业务监听按固定订阅组及结果记录 `stratum.messaging.consumed`：consumed仅在应用入口提交后记录，duplicate、waiting、failed和interrupted独立分类；`stratum.messaging.redelivered` 仅统计Broker实际标记的重投，不将等待nack解释成业务失败或失败次数。记录不改变单条ack、nack或reject；消费已提交但确认传输未知仍记录实际消费，不能据此推断Broker确认成功。指标异常由组件隔离，不输出事件或trace标签。
 
 8项适配单元和7项真实RabbitMQ集成测试通过，零失败、错误或跳过。Broker原生等待、失败、重投和确认用例使用受控应用端口；另有1项真实Starter、数据库、调度及重放工作流核对消费凭据与发布/消费指标。死信积压指标仍待F02.3d。
+
+## NODE-F02.3d1 死信归档计数
+
+死信监听在归档入口成功返回后按固定订阅组和归档类别累计 `stratum.messaging.deadletter.archived`，调用或准备抛错时累计 `stratum.messaging.deadletter.archive.failed`；重复归档请求按调用次数统计，不代表唯一死信数。失败只说明本次入口未成功返回，提交后响应失败时不能推断数据库没有归档。指标记录异常不改变原有手动确认和保留语义，标签不包含事件或trace。
+
+27项Infrastructure单元及5项真实Starter/MariaDB/Redis/RabbitMQ集成测试通过，零失败、错误或跳过；覆盖真实原生死信、双订阅归档、受控归档不可用与恢复。此计数不是Broker队列积压；积压口径待用户确认后继续F02.3d2。

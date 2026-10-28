@@ -4,6 +4,7 @@ import java.util.Locale;
 import java.util.Objects;
 
 import com.patrick.stratum.domain.event.OutboxConsumptionRepository.Group;
+import com.patrick.stratum.domain.event.OutboxDeadLetterRepository.Category;
 import com.patrick.stratum.domain.event.OutboxPublisher.PublishResult;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
@@ -44,6 +45,28 @@ final class MessageMetrics {
         String outcome = Objects.requireNonNull(result, "消费结果不能为空").name().toLowerCase(Locale.ROOT);
         increment("stratum.messaging.consumed", "group", subscription, "result", outcome);
         if (redelivered) increment("stratum.messaging.redelivered", "group", subscription);
+    }
+
+    /**
+     * 记录归档入口成功返回的次数，重复归档调用不代表唯一死信数。
+     * @param group 固定订阅组
+     * @param category 已核验的固定归档类别
+     * @throws NullPointerException 订阅组或类别为空
+     */
+    void archived(Group group, Category category) {
+        String subscription = Objects.requireNonNull(group, "订阅组不能为空").name().toLowerCase(Locale.ROOT);
+        String type = Objects.requireNonNull(category, "归档类别不能为空").name().toLowerCase(Locale.ROOT);
+        increment("stratum.messaging.deadletter.archived", "group", subscription, "category", type);
+    }
+
+    /**
+     * 记录归档调用或解码准备失败，不推断Broker待处理数。
+     * @param group 固定订阅组
+     * @throws NullPointerException 订阅组为空
+     */
+    void archiveFailed(Group group) {
+        String subscription = Objects.requireNonNull(group, "订阅组不能为空").name().toLowerCase(Locale.ROOT);
+        increment("stratum.messaging.deadletter.archive.failed", "group", subscription);
     }
 
     /**
