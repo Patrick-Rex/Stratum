@@ -21,6 +21,7 @@ import com.patrick.stratum.application.job.JobHandler;
 import com.patrick.stratum.common.trace.TraceIdContext;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository.Submission;
+import com.patrick.stratum.domain.job.JobExecutionRepository.Lease;
 import com.patrick.stratum.infrastructure.job.SchedulerConfiguration;
 import com.patrick.stratum.job.JobExecutionResult;
 import com.patrick.stratum.job.JobRuntimeConfiguration;
@@ -96,6 +97,8 @@ class JobRuntimeIntegrationTest extends MariaDbIntegrationTest {
         assertEquals("caller-runtime", TraceIdContext.getRequiredTraceId());
         assertEquals("SUCCEEDED", state(id));
         assertEquals(1, probe.calls.get());
+        assertNotNull(probe.lease); assertEquals(id, probe.lease.submission().executionId());
+        assertEquals(probe.lease.token().toString(), jdbc.queryForObject("SELECT lease_token FROM job_attempt WHERE execution_id=?", String.class, id.toString()));
         assertTrue(probe.virtual);
         assertFalse(probe.inTransaction);
         assertEquals("runtime-trace", probe.trace);
@@ -260,6 +263,7 @@ class JobRuntimeIntegrationTest extends MariaDbIntegrationTest {
         private volatile boolean virtual;
         private volatile boolean inTransaction;
         private volatile String trace;
+        private volatile Lease lease;
 
         /**
          * 创建当前测试唯一固定代码探针。
@@ -270,6 +274,12 @@ class JobRuntimeIntegrationTest extends MariaDbIntegrationTest {
         /** {@inheritDoc} */
         @Override
         public String jobCode() { return code; }
+
+        /** {@inheritDoc} */
+        @Override
+        public void executeLease(Lease input) throws InterruptedException {
+            lease = input; JobHandler.super.executeLease(input);
+        }
 
         /** {@inheritDoc} */
         @Override

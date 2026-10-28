@@ -1,9 +1,11 @@
 package com.patrick.stratum.application.job;
 
 import java.util.Optional;
+import java.util.Objects;
 
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository.Submission;
+import com.patrick.stratum.domain.job.JobExecutionRepository.Lease;
 
 /**
  * 任务处理端口：由Job执行器在状态工作单元之外调用，只编排已有Application能力。
@@ -24,6 +26,18 @@ public interface JobHandler {
      * @apiNote 示例：一次性任务处理器沿用默认空值；定时Relay返回CRON/SCHEDULE_TIME定义。
      */
     default Optional<JobDefinition> periodicDefinition() { return Optional.empty(); }
+
+    /**
+     * 接收工作器已提交的原领取证据；默认委托既有输入入口，需校验租约的处理器可覆盖。
+     * @param lease 原领取证据，不得记录或泄露竞争令牌
+     * @throws NullPointerException 领取证据为空
+     * @throws InterruptedException 处理被中断
+     * @throws RuntimeException 本次处理失败
+     * @apiNote 示例：工作器调用{@code handler.executeLease(lease)}，由持租约处理器复核资格。
+     */
+    default void executeLease(Lease lease) throws InterruptedException {
+        execute(Objects.requireNonNull(lease, "任务领取不能为空").submission());
+    }
 
     /**
      * 执行与本处理器代码匹配的已登记输入；返回表示该次处理完成，状态由执行器独立写回。

@@ -72,7 +72,7 @@ public class ProtectedJobWorker {
                 throw new IllegalStateException("任务领取目标不匹配");
             }
             if (run) {
-                handler.execute(lease.submission());
+                handler.executeLease(lease);
                 actual = Outcome.SUCCEEDED;
             } else actual = Outcome.INTERRUPTED;
         } catch (InterruptedException interrupted) {
