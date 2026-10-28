@@ -77,6 +77,20 @@ public class SchedulerConfiguration {
     }
 
     /**
+     * 显式启用时创建隔离的死信采集调度器，保持待机直至后续节点核验并启动。
+     * @param dataSource 共享Flyway数据源
+     * @param properties 普通调度器命名空间
+     * @param beanFactory 已登记作业的组件工厂
+     * @return 一个固定线程、独立名称且默认待机的调度器工厂
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "stratum.jobs.deadletter-sampling", name = "enabled", havingValue = "true")
+    @DependsOnDatabaseInitialization
+    SchedulerFactoryBean deadLetterSamplingScheduler(DataSource dataSource, Properties properties, BeanFactory beanFactory) {
+        return scheduler(dataSource, "backlog:" + properties.name(), 1, beanFactory, false);
+    }
+
+    /**
      * 创建命名空间独立的集群调度器；业务目标登记和启动由后续配置协调。
      * @param dataSource Flyway管理的数据源
      * @param name 数据库中的调度器命名空间

@@ -1627,3 +1627,9 @@ Gateway与Starter分别启动固定版本Agent，通过真实本机HTTP转发并
 设置 `STRATUM_DEADLETTER_METRICS_ENABLED=true` 可在应用实例上注册 `stratum.messaging.deadletter.visible` Gauge；`STRATUM_DEADLETTER_METRICS_NAMESPACE` 默认`stratum`，同一采集集群和Broker虚拟主机使用相同命名空间，不同环境或虚拟主机必须隔离。只有固定`group`标签；有效零值显示零，未采样、显式不可用、结果过期、Redis故障或损坏时显示`NaN`，不将其转换为零。可见数不包含未确认和延迟重试消息。
 
 每个实例暴露同一共享结果，跨实例汇总时不能求和；每个Gauge在抓取时执行一次有界Redis读取，因此两组不是原子同时采样。3项测试通过，零失败、错误或跳过：真实本机Prometheus HTTP覆盖零、不可用与过期，并验证本机Redis连接失败及受控读取异常。周期采集任务尚未接入，单独开启指标时初始显示不可用。
+
+### 死信采集独立调度资源
+
+`stratum.jobs.deadletter-sampling.enabled=true` 时，SchedulerConfiguration创建 `backlog:<stratum.jobs.name>` 独立Quartz JDBC集群调度器，初始待机、单个固定工作线程；关闭时不创建此调度器。此节点仅准备调度资源，尚未登记或启动采集任务，不能据此宣称周期采集完成。
+
+6项调度装配测试通过，零失败、错误或跳过；真实MariaDB验证两个启用实例共享持久采集命名空间、禁用实例不加入、普通及Relay组看不到采集目标，重启可读取自身持久目标。未运行旧版本进程，不能据此宣称已完成旧版本滚动升级验收。

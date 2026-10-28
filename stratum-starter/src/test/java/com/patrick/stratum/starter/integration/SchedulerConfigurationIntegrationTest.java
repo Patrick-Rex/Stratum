@@ -155,6 +155,36 @@ class SchedulerConfigurationIntegrationTest extends MariaDbIntegrationTest {
         }
     }
 
+    /**
+     * 采集组只加入显式启用的实例，不与普通及Relay调度器共享持久目标。
+     * @throws Exception 调度器或数据库操作失败
+     */
+    @Test
+    void isolatesStandbyBacklogSchedulerFromOtherInstances() throws Exception {
+        String name = name(); String backlogName = "backlog:" + name;
+        var state = new ProbeState(); JobKey key = new JobKey(UUID.randomUUID().toString(), "test");
+        try {
+            try (var first = context(name, state, true, true); var second = context(name, state, true, true);
+                    var disabled = context(name, state, false, false)) {
+                var one = first.getBean("deadLetterSamplingScheduler", Scheduler.class);
+                var two = second.getBean("deadLetterSamplingScheduler", Scheduler.class);
+                assertEquals(backlogName, one.getSchedulerName()); assertEquals(backlogName, two.getSchedulerName());
+                assertNotEquals(one.getSchedulerInstanceId(), two.getSchedulerInstanceId());
+                assertTrue(one.isInStandbyMode()); assertTrue(two.isInStandbyMode());
+                assertTrue(one.getMetaData().isJobStoreClustered()); assertTrue(one.getMetaData().isJobStoreSupportsPersistence());
+                assertFalse(disabled.containsLocalBean("deadLetterSamplingScheduler"));
+                one.addJob(JobBuilder.newJob(ProbeJob.class).withIdentity(key).storeDurably().build(), false);
+                assertNotNull(two.getJobDetail(key)); assertNull(disabled.getBean(Scheduler.class).getJobDetail(key));
+                assertNull(first.getBean("relayJobScheduler", Scheduler.class).getJobDetail(key));
+            }
+            try (var restarted = context(name, state, false, true)) {
+                var backlog = restarted.getBean("deadLetterSamplingScheduler", Scheduler.class);
+                assertTrue(backlog.isInStandbyMode()); assertNotNull(backlog.getJobDetail(key)); backlog.deleteJob(key);
+            }
+            awaitStopped(name);
+        } finally { cleanup(backlogName, key); cleanup("relay:" + name, key); cleanup(name, key); }
+    }
+
     /** 两个Spring代理竞争同一数据库锁，未取得锁的调用跳过；持有者退出后锁可再次取得。 */
     @Test
     void appliesDatabaseLockAcrossIndependentSpringProxies() throws Exception {
@@ -207,17 +237,30 @@ class SchedulerConfigurationIntegrationTest extends MariaDbIntegrationTest {
      * @return 调用方负责关闭的上下文
      */
     private AnnotationConfigApplicationContext context(String name, ProbeState state, boolean relayEnabled) {
+        return context(name, state, relayEnabled, false);
+    }
+
+    /**
+     * 通过独立开关选择待机的采集调度器，调用方负责关闭。
+     * @param name 普通调度器唯一名称
+     * @param state 本实例探针状态
+     * @param relayEnabled 是否启用Relay资源
+     * @param backlogEnabled 是否创建采集调度器
+     * @return 测试子上下文
+     */
+    private AnnotationConfigApplicationContext context(String name, ProbeState state, boolean relayEnabled, boolean backlogEnabled) {
         var context = new AnnotationConfigApplicationContext();
         context.setParent(parent);
         context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("scheduler-test", Map.of(
                 "stratum.jobs.enabled", true, "stratum.jobs.name", name, "stratum.jobs.workers", 1,
-                "stratum.jobs.relay.enabled", relayEnabled)));
+                "stratum.jobs.relay.enabled", relayEnabled, "stratum.jobs.deadletter-sampling.enabled", backlogEnabled)));
         context.registerBean(ProbeJob.class, () -> new ProbeJob(state));
         context.register(SchedulerConfiguration.class);
         try {
             context.refresh();
             instanceIds.add(context.getBean(Scheduler.class).getSchedulerInstanceId());
             if (relayEnabled) instanceIds.add(context.getBean("relayJobScheduler", Scheduler.class).getSchedulerInstanceId());
+            if (backlogEnabled) instanceIds.add(context.getBean("deadLetterSamplingScheduler", Scheduler.class).getSchedulerInstanceId());
             return context;
         } catch (Exception failure) {
             context.close();
