@@ -1519,3 +1519,7 @@ $env:OTEL_LOGS_EXPORTER='none'
 ```
 
 Agent启用时由其标准配置控制采样与导出，默认OTLP设置及可选协议见[官方配置](https://opentelemetry.io/docs/zero-code/java/agent/configuration/)；无后端时上述配置仅禁用导出。独立验收使用 `:stratum-starter:otelIntegrationTest` 和既有 `STRATUM_IT_DB_*`、`STRATUM_IT_REDIS_PORT` 测试变量，在真实JDK 25子进程、本机独立MariaDB和Redis上以OTLP日志导出验证：上游trace及父span正确延续、无上游时生成根span，既有 `X-Trace-Id` 原样保留。测试数据库包含额外测试迁移，测试子进程仅在该独立库关闭Flyway迁移校验；正常启动校验不变。1项Agent真实进程测试与33项Starter单元测试通过，零失败、错误或跳过；另实际启动显式 `bootRun` 核实Agent版本并退出。未启动外部收集服务；结构化日志、指标及跨消息传播继续后续节点。
+
+## NODE-F01.2a HTTP业务日志上下文
+
+HTTP过滤器将既有业务关联ID绑定到独立MDC键 `businessTraceId`，并在请求、异步及错误分派退出时恢复原值；不覆盖Agent使用的标准追踪键。响应头写入或下游抛错时也恢复线程上下文。11项Interface单元测试通过，零失败、错误或跳过；Starter JSON日志仍待下一节点。

@@ -9,6 +9,7 @@ import jakarta.servlet.DispatcherType;
 import jakarta.servlet.RequestDispatcher;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
@@ -23,6 +24,8 @@ class RequestTraceFilterTest {
     @AfterEach
     void clearContext() {
         TraceIdContext.clear();
+        MDC.remove(RequestTraceFilter.BUSINESS_TRACE_MDC_KEY);
+        MDC.remove("trace_id");
     }
 
     /** 合法头值同时进入响应头与已有统一响应体。
@@ -35,9 +38,11 @@ class RequestTraceFilterTest {
         var response = new MockHttpServletResponse();
         filter.doFilter(request, response, (req, res) -> {
             assertEquals("erp.trace-01", ApiResponse.success("ok").getTraceId());
+            assertEquals("erp.trace-01", MDC.get(RequestTraceFilter.BUSINESS_TRACE_MDC_KEY));
             assertEquals("erp.trace-01", response.getHeader(RequestTraceFilter.HEADER));
         });
         assertTrue(TraceIdContext.getTraceId().isEmpty());
+        assertNull(MDC.get(RequestTraceFilter.BUSINESS_TRACE_MDC_KEY));
     }
 
     /** 缺失、超长或含控制字符的头值生成新的安全标识。
@@ -59,15 +64,34 @@ class RequestTraceFilterTest {
     @Test
     void restoresOuterContextAfterFailure() {
         TraceIdContext.setTraceId("outer");
+        MDC.put(RequestTraceFilter.BUSINESS_TRACE_MDC_KEY, "outer-mdc");
+        MDC.put("trace_id", "existing-standard-trace");
         var request = new MockHttpServletRequest();
         request.addHeader(RequestTraceFilter.HEADER, "inner");
         assertThrows(IOException.class, () -> filter.doFilter(request, new MockHttpServletResponse(),
                 (req, res) -> { throw new IOException("test"); }));
         assertEquals("outer", TraceIdContext.getRequiredTraceId());
+        assertEquals("outer-mdc", MDC.get(RequestTraceFilter.BUSINESS_TRACE_MDC_KEY));
+        assertEquals("existing-standard-trace", MDC.get("trace_id"));
+        MDC.remove("trace_id");
+        MDC.remove(RequestTraceFilter.BUSINESS_TRACE_MDC_KEY);
         TraceIdContext.clear();
         assertThrows(IOException.class, () -> filter.doFilter(new MockHttpServletRequest(),
                 new MockHttpServletResponse(), (req, res) -> { throw new IOException("test"); }));
         assertTrue(TraceIdContext.getTraceId().isEmpty());
+        assertNull(MDC.get(RequestTraceFilter.BUSINESS_TRACE_MDC_KEY));
+    }
+
+    /** 响应头写入失败时也要恢复业务日志上下文，避免复用线程残留。 */
+    @Test
+    void restoresContextWhenResponseHeaderFails() {
+        var response = new MockHttpServletResponse() {
+            /** {@inheritDoc} */
+            @Override public void setHeader(String name, String value) { throw new IllegalStateException("test"); }
+        };
+        assertThrows(IllegalStateException.class, () -> filter.doFilter(new MockHttpServletRequest(), response, (req, res) -> {}));
+        assertTrue(TraceIdContext.getTraceId().isEmpty());
+        assertNull(MDC.get(RequestTraceFilter.BUSINESS_TRACE_MDC_KEY));
     }
 
     /** 异步及错误分派重用请求属性，并在各次分派结束后清理线程。
@@ -83,9 +107,12 @@ class RequestTraceFilterTest {
         for (DispatcherType type : new DispatcherType[]{DispatcherType.ASYNC, DispatcherType.ERROR}) {
             request.setDispatcherType(type);
             if (type == DispatcherType.ERROR) request.setAttribute(RequestDispatcher.ERROR_REQUEST_URI, "/test");
-            filter.doFilter(request, new MockHttpServletResponse(), (req, res) ->
-                    assertEquals(original, TraceIdContext.getRequiredTraceId()));
+            filter.doFilter(request, new MockHttpServletResponse(), (req, res) -> {
+                assertEquals(original, TraceIdContext.getRequiredTraceId());
+                assertEquals(original, MDC.get(RequestTraceFilter.BUSINESS_TRACE_MDC_KEY));
+            });
             assertTrue(TraceIdContext.getTraceId().isEmpty());
+            assertNull(MDC.get(RequestTraceFilter.BUSINESS_TRACE_MDC_KEY));
         }
     }
 
@@ -100,9 +127,12 @@ class RequestTraceFilterTest {
             String original = TraceIdContext.getRequiredTraceId();
             request.setDispatcherType(DispatcherType.ERROR);
             request.setAttribute(RequestDispatcher.ERROR_REQUEST_URI, "/test");
-            filter.doFilter(request, response, (nestedReq, nestedRes) ->
-                    assertEquals(original, TraceIdContext.getRequiredTraceId()));
+            filter.doFilter(request, response, (nestedReq, nestedRes) -> {
+                assertEquals(original, TraceIdContext.getRequiredTraceId());
+                assertEquals(original, MDC.get(RequestTraceFilter.BUSINESS_TRACE_MDC_KEY));
+            });
             assertEquals(original, TraceIdContext.getRequiredTraceId());
+            assertEquals(original, MDC.get(RequestTraceFilter.BUSINESS_TRACE_MDC_KEY));
         });
         assertTrue(TraceIdContext.getTraceId().isEmpty());
     }
