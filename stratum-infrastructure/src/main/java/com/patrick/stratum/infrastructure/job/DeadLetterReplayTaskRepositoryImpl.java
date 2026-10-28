@@ -1,6 +1,7 @@
 package com.patrick.stratum.infrastructure.job;
 
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import javax.sql.DataSource;
 
@@ -62,6 +63,20 @@ public class DeadLetterReplayTaskRepositoryImpl implements DeadLetterReplayTaskR
                     task.toString(), request.requestId().toString(), token.toString());
             if (updated != 1) throw conflict("重放任务绑定已变更");
             return task;
+        } catch (DataAccessException failure) { throw translate(failure); }
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public Optional<Binding> lockBinding(UUID taskId) {
+        requireWrite(); Objects.requireNonNull(taskId, "任务标识不能为空");
+        try {
+            var rows = jdbc.query("""
+                    SELECT request_id,archive_id,operator_id,task_id
+                    FROM dead_letter_replay_task WHERE task_id=? FOR UPDATE
+                    """, (rs, index) -> new Binding(UUID.fromString(rs.getString(1)), UUID.fromString(rs.getString(2)),
+                            UUID.fromString(rs.getString(3)), UUID.fromString(rs.getString(4))), taskId.toString());
+            return rows.stream().findFirst();
         } catch (DataAccessException failure) { throw translate(failure); }
     }
 

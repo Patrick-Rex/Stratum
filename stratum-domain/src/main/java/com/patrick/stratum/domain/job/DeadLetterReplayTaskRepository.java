@@ -1,6 +1,7 @@
 package com.patrick.stratum.domain.job;
 
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -17,6 +18,39 @@ public interface DeadLetterReplayTaskRepository {
      * @apiNote 示例：{@code tasks.register(request)}后需等待任务和消费结果。
      */
     UUID register(Request request);
+
+    /**
+     * 读取并锁定指定任务的首次绑定，锁持续到调用方的工作单元结束。
+     * @param taskId 已登记任务UUID
+     * @return 已绑定的可信身份，任务不存在时为空
+     * @throws NullPointerException 任务身份为空
+     * @throws IllegalStateException 不在已有写工作单元内
+     * @throws com.patrick.stratum.common.error.StratumException 行锁竞争
+     * @apiNote 示例：{@code unitOfWork.execute(() -> tasks.lockBinding(taskId))}。
+     */
+    Optional<Binding> lockBinding(UUID taskId);
+
+    /**
+     * 值对象：首次提交的请求、归档、操作者和任务绑定。
+     * @param requestId 首次请求UUID
+     * @param archiveId 归档UUID
+     * @param operatorId 首次可信操作者UUID
+     * @param taskId 任务UUID
+     */
+    record Binding(UUID requestId, UUID archiveId, UUID operatorId, UUID taskId) {
+        /**
+         * 防止返回不完整的执行绑定。
+         * @param requestId 请求UUID
+         * @param archiveId 归档UUID
+         * @param operatorId 操作者UUID
+         * @param taskId 任务UUID
+         * @throws NullPointerException 任一身份为空
+         * @apiNote 示例：{@code new Binding(requestId, archiveId, actorId, taskId)}。
+         */
+        public Binding {
+            Objects.requireNonNull(requestId); Objects.requireNonNull(archiveId); Objects.requireNonNull(operatorId); Objects.requireNonNull(taskId);
+        }
+    }
 
     /**
      * 值对象：一次重放任务请求及服务端构造的不可变任务快照。

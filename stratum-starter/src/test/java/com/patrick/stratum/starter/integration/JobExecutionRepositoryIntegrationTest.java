@@ -420,6 +420,51 @@ class JobExecutionRepositoryIntegrationTest extends MariaDbIntegrationTest {
         assertEquals(retry.submission().executionId(), unitOfWork.execute(() -> replayTasks.register(retry)));
     }
 
+    /** 绑定只在写工作单元中读取，返回首次请求、归档、操作者及任务的完整身份。 */
+    @Test
+    void readsReplayBindingOnlyInWritableUnitOfWork() {
+        UUID request = UUID.randomUUID(), archive = UUID.randomUUID(), actor = UUID.randomUUID();
+        var input = replayRequest(request, archive, actor, TIME);
+        UUID task = unitOfWork.execute(() -> replayTasks.register(input));
+        assertThrows(IllegalStateException.class, () -> replayTasks.lockBinding(task));
+        assertThrows(NullPointerException.class, () -> unitOfWork.execute(() -> replayTasks.lockBinding(null)));
+        assertTrue(unitOfWork.execute(() -> replayTasks.lockBinding(UUID.randomUUID())).isEmpty());
+        var expected = new DeadLetterReplayTaskRepository.Binding(request, archive, actor, task);
+        assertEquals(expected, unitOfWork.execute(() -> replayTasks.lockBinding(task)).orElseThrow());
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
+            assertEquals(expected, replayTasks.lockBinding(task).orElseThrow()); throw new IllegalStateException("rollback-probe");
+        }));
+        assertEquals(expected, unitOfWork.execute(() -> replayTasks.lockBinding(task)).orElseThrow());
+    }
+
+    /**
+     * 执行事务持有绑定锁时，同请求登记等待其释放再返回首次身份。
+     * @throws Exception 并发任务失败或等待超时
+     */
+    @Test
+    void locksReplayBindingAgainstConcurrentRegistration() throws Exception {
+        UUID request = UUID.randomUUID(), archive = UUID.randomUUID(), actor = UUID.randomUUID();
+        var first = replayRequest(request, archive, actor, TIME); var duplicate = replayRequest(request, archive, actor, TIME.plusSeconds(1));
+        UUID task = unitOfWork.execute(() -> replayTasks.register(first));
+        var held = new CountDownLatch(1); var started = new CountDownLatch(1); var release = new CountDownLatch(1);
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var owner = workers.submit(() -> unitOfWork.execute(() -> {
+                var binding = replayTasks.lockBinding(task).orElseThrow(); held.countDown();
+                try { if (!release.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("测试等待超时"); }
+                catch (InterruptedException failure) { Thread.currentThread().interrupt(); throw new IllegalStateException("测试等待中断", failure); }
+                return binding;
+            }));
+            try {
+                assertTrue(held.await(5, TimeUnit.SECONDS));
+                var contender = workers.submit(() -> { started.countDown(); return unitOfWork.execute(() -> replayTasks.register(duplicate)); });
+                assertTrue(started.await(5, TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.TimeoutException.class, () -> contender.get(300, TimeUnit.MILLISECONDS));
+                release.countDown(); assertEquals(task, owner.get(5, TimeUnit.SECONDS).taskId());
+                assertEquals(task, contender.get(5, TimeUnit.SECONDS));
+            } finally { release.countDown(); }
+        }
+    }
+
     /** 任务UUID已被其他请求占用时，新绑定完整回滚且不影响原任务。 */
     @Test
     void rejectsTaskIdentityCollisionWithoutLeavingBinding() {
