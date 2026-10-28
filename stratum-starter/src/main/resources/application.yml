@@ -28,6 +28,10 @@ easy-query:
   name-conversion: underlined
 
 stratum:
+  observability:
+    deadletter:
+      enabled: ${STRATUM_DEADLETTER_METRICS_ENABLED:false}
+      namespace: ${STRATUM_DEADLETTER_METRICS_NAMESPACE:stratum}
   management:
     metrics:
       allowed-cidrs: ${STRATUM_MANAGEMENT_METRICS_ALLOWED_CIDRS:127.0.0.0/8,::1/128}
