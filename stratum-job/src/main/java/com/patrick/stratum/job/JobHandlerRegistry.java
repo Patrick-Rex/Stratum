@@ -17,6 +17,8 @@ import org.quartz.CronExpression;
 public final class JobHandlerRegistry {
     /** 固定Relay代码，只允许在Relay专用调度器登记。 */
     public static final String RELAY_JOB_CODE = "outbox.relay";
+    /** 固定死信可见数采集代码，只允许在采集专用调度器登记。 */
+    public static final String BACKLOG_JOB_CODE = "deadletter.backlog";
     private final Map<String, JobHandler> handlers;
     private final Map<String, JobDefinition> periodic;
 
@@ -58,11 +60,11 @@ public final class JobHandlerRegistry {
     public List<String> codes() { return handlers.keySet().stream().sorted().toList(); }
 
     /**
-     * 返回不属于Relay专用调度器的固定任务代码。
+     * 返回不属于Relay或死信采集专用调度器的固定任务代码。
      * @return 有界、排序且不可变的普通任务代码
      * @apiNote 示例：{@code registry.ordinaryCodes()}用于普通调度器登记。
      */
-    public List<String> ordinaryCodes() { return codes().stream().filter(code -> !RELAY_JOB_CODE.equals(code)).toList(); }
+    public List<String> ordinaryCodes() { return codes().stream().filter(code -> !RELAY_JOB_CODE.equals(code) && !BACKLOG_JOB_CODE.equals(code)).toList(); }
 
     /**
      * 返回已登记的固定Relay代码，未登记时不创造默认任务。
@@ -70,6 +72,13 @@ public final class JobHandlerRegistry {
      * @apiNote 示例：{@code registry.relayCodes()}用于专用调度器登记。
      */
     public List<String> relayCodes() { return handlers.containsKey(RELAY_JOB_CODE) ? List.of(RELAY_JOB_CODE) : List.of(); }
+
+    /**
+     * 返回已登记的固定采集代码，未登记时不创建默认任务。
+     * @return 空列表或只含固定采集代码的不可变列表
+     * @apiNote 示例：{@code registry.backlogCodes()}用于采集调度器登记。
+     */
+    public List<String> backlogCodes() { return handlers.containsKey(BACKLOG_JOB_CODE) ? List.of(BACKLOG_JOB_CODE) : List.of(); }
 
     /**
      * 只选择启动时已经登记的处理器，不执行反射或动态装载。

@@ -46,6 +46,7 @@ public class QuartzTriggerConfiguration {
      * @param control Relay共享暂停准入
      * @param ordinary 普通任务调度器
      * @param relay 可选的Relay调度器
+     * @param backlog 可选的采集调度器
      * @return 唯一触发实例，由现有JobFactory查找其代理
      * @throws SchedulerException 无法读取调度器身份
      */
@@ -53,36 +54,43 @@ public class QuartzTriggerConfiguration {
     @Scope(ConfigurableBeanFactory.SCOPE_PROTOTYPE)
     QuartzDispatchJob quartzDispatchJob(JobExecutionApplicationService jobs, JobHandlerRegistry registry, JobTaskExecutor executor,
             OutboxRelayControlApplicationService control, Scheduler ordinary,
-            @Qualifier("relayJobScheduler") ObjectProvider<Scheduler> relay) throws SchedulerException {
-        var relayScheduler = relay.getIfAvailable();
+            @Qualifier("relayJobScheduler") ObjectProvider<Scheduler> relay,
+            @Qualifier("deadLetterSamplingScheduler") ObjectProvider<Scheduler> backlog) throws SchedulerException {
+        var relayScheduler = relay.getIfAvailable(); var backlogScheduler = backlog.getIfAvailable();
         return new QuartzDispatchJob(jobs, registry, executor, control, ordinary.getSchedulerName(),
-                relayScheduler == null ? null : relayScheduler.getSchedulerName());
+                relayScheduler == null ? null : relayScheduler.getSchedulerName(),
+                backlogScheduler == null ? null : backlogScheduler.getSchedulerName());
     }
 
     /**
      * 创建停止顺序协调器；Scheduler默认最大phase先standby，本组件随后清理实际任务。
      * @param scheduler 所属调度器
      * @param relay 可选的Relay调度器
-     * @param executor 两组调度器共享的实际工作执行器
+     * @param backlog 可选的采集调度器
+     * @param executor 各组调度器共享的实际工作执行器
      * @param registry 固定处理器注册表
      * @return 停止于Bean销毁前的有界生命周期
      */
     @Bean
     QuartzRuntimeLifecycle quartzRuntimeLifecycle(Scheduler scheduler,
-            @Qualifier("relayJobScheduler") ObjectProvider<Scheduler> relay, JobTaskExecutor executor, JobHandlerRegistry registry) {
-        var schedulers = new java.util.ArrayList<Scheduler>();
+            @Qualifier("relayJobScheduler") ObjectProvider<Scheduler> relay,
+            @Qualifier("deadLetterSamplingScheduler") ObjectProvider<Scheduler> backlog,
+            JobTaskExecutor executor, JobHandlerRegistry registry) {
+        var schedulers = new java.util.ArrayList<Scheduler>(); var toStart = new java.util.ArrayList<Scheduler>();
         schedulers.add(scheduler);
-        var relayScheduler = relay.getIfAvailable();
-        if (relayScheduler != null) schedulers.add(relayScheduler);
+        var relayScheduler = relay.getIfAvailable(); var backlogScheduler = backlog.getIfAvailable();
         if (relayScheduler == null && !registry.relayCodes().isEmpty()) throw new IllegalStateException("Relay处理器缺少专用调度器");
-        return new QuartzRuntimeLifecycle(schedulers, executor,
-                registry.relayCodes().isEmpty() ? List.of() : List.of(relayScheduler));
+        if (backlogScheduler == null && !registry.backlogCodes().isEmpty()) throw new IllegalStateException("死信采集处理器缺少专用调度器");
+        if (relayScheduler != null) { schedulers.add(relayScheduler); if (!registry.relayCodes().isEmpty()) toStart.add(relayScheduler); }
+        if (backlogScheduler != null) { schedulers.add(backlogScheduler); if (!registry.backlogCodes().isEmpty()) toStart.add(backlogScheduler); }
+        return new QuartzRuntimeLifecycle(schedulers, executor, toStart);
     }
 
     /**
-     * 按固定代码隔离普通和Relay调度器，在自动启动前核验持久化目标。
+     * 按固定代码隔离普通、Relay及采集调度器，在自动启动前核验持久化目标。
      * @param scheduler 普通持久化调度器
      * @param relay 可选的待机Relay调度器
+     * @param backlog 可选的待机采集调度器
      * @param registry 启动时固定处理器快照
      * @param lifecycle 普通调度器收尾监听
      * @return Spring单例初始化完成回调
@@ -90,6 +98,7 @@ public class QuartzTriggerConfiguration {
     @Bean
     SmartInitializingSingleton fixedQuartzTriggers(Scheduler scheduler,
             @Qualifier("relayJobScheduler") ObjectProvider<Scheduler> relay,
+            @Qualifier("deadLetterSamplingScheduler") ObjectProvider<Scheduler> backlog,
             JobHandlerRegistry registry, QuartzRuntimeLifecycle lifecycle) {
         return () -> {
             try {
@@ -102,6 +111,12 @@ public class QuartzTriggerConfiguration {
                 if (relayScheduler != null) {
                     relayScheduler.getListenerManager().addJobListener(lifecycle);
                     registerAll(relayScheduler, registry, registry.relayCodes());
+                }
+                var backlogScheduler = backlog.getIfAvailable();
+                if (backlogScheduler == null && !registry.backlogCodes().isEmpty()) throw new IllegalStateException("死信采集处理器缺少专用调度器");
+                if (backlogScheduler != null) {
+                    backlogScheduler.getListenerManager().addJobListener(lifecycle);
+                    registerAll(backlogScheduler, registry, registry.backlogCodes());
                 }
             } catch (SchedulerException failure) { throw new IllegalStateException("固定任务触发器登记失败"); }
         };

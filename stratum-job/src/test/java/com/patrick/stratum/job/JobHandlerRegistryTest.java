@@ -44,11 +44,15 @@ class JobHandlerRegistryTest {
     void partitionsFixedRelayFromOrdinaryHandlers() {
         var relay = new Probe("outbox.relay", Optional.empty());
         var ordinary = new Probe("warehouse.sync", Optional.empty());
-        var registry = new JobHandlerRegistry(List.of(relay, ordinary));
+        var backlog = new Probe("deadletter.backlog", Optional.empty());
+        var registry = new JobHandlerRegistry(List.of(relay, ordinary, backlog));
         assertEquals(List.of("warehouse.sync"), registry.ordinaryCodes());
         assertEquals(List.of("outbox.relay"), registry.relayCodes());
         assertSame(relay, registry.handler("outbox.relay"));
+        assertEquals(List.of("deadletter.backlog"), registry.backlogCodes());
+        assertSame(backlog, registry.handler("deadletter.backlog"));
         assertTrue(new JobHandlerRegistry(List.of(ordinary)).relayCodes().isEmpty());
+        assertTrue(new JobHandlerRegistry(List.of(ordinary)).backlogCodes().isEmpty());
         assertThrows(UnsupportedOperationException.class, () -> registry.relayCodes().clear());
     }
 

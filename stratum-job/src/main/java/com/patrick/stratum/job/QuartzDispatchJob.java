@@ -32,9 +32,25 @@ public class QuartzDispatchJob implements InterruptableJob {
     private final OutboxRelayControlApplicationService relayControl;
     private final String ordinarySchedulerName;
     private final String relaySchedulerName;
+    private final String backlogSchedulerName;
     private final ReentrantLock phase = new ReentrantLock();
     private Thread owner;
     private boolean stopped;
+
+    /**
+     * 保留无采集调度器的既有构造方式。
+     * @param jobs 任务状态入口
+     * @param registry 固定处理器注册表
+     * @param executor 本实例执行器
+     * @param relayControl Relay准入控制
+     * @param ordinarySchedulerName 普通调度器名称
+     * @param relaySchedulerName 可选Relay调度器名称
+     * @apiNote 示例：现有普通及Relay调度器调用方可继续使用此构造方式。
+     */
+    public QuartzDispatchJob(JobExecutionApplicationService jobs, JobHandlerRegistry registry, JobTaskExecutor executor,
+            OutboxRelayControlApplicationService relayControl, String ordinarySchedulerName, String relaySchedulerName) {
+        this(jobs, registry, executor, relayControl, ordinarySchedulerName, relaySchedulerName, null);
+    }
 
     /**
      * 每个原型只执行一次；调度锁与实际处理锁分离，所有执行资格仍由数据库核验。
@@ -61,7 +77,8 @@ public class QuartzDispatchJob implements InterruptableJob {
                 throw new IllegalArgumentException("持久化调度目标不匹配");
             }
             boolean relay = JobHandlerRegistry.RELAY_JOB_CODE.equals(code);
-            String expectedScheduler = relay ? relaySchedulerName : ordinarySchedulerName;
+            String expectedScheduler = relay ? relaySchedulerName
+                    : JobHandlerRegistry.BACKLOG_JOB_CODE.equals(code) ? backlogSchedulerName : ordinarySchedulerName;
             if (expectedScheduler == null || !Objects.equals(expectedScheduler, context.getScheduler().getSchedulerName())) {
                 throw new IllegalArgumentException("固定任务与调度器不匹配");
             }

@@ -60,6 +60,7 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
     private final String name = "trigger-" + UUID.randomUUID();
     private final Probe probe = new Probe("trigger." + UUID.randomUUID());
     private final RelayProbe relayProbe = new RelayProbe();
+    private final Probe backlogProbe = new Probe("deadletter.backlog");
     private final List<UUID> relayExecutions = new ArrayList<>();
     private final List<AnnotationConfigApplicationContext> contexts = new ArrayList<>();
     private final List<String> schedulerIds = new ArrayList<>();
@@ -109,7 +110,7 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
                 jdbc.update("DELETE FROM stratum_shedlock WHERE name=?", prefix + "outbox.relay");
             }
         }
-        for (String schedulerName : List.of(name, "relay:" + name)) {
+        for (String schedulerName : List.of(name, "relay:" + name, "backlog:" + name)) {
             jdbc.update("DELETE FROM STRATUM_QRTZ_SIMPLE_TRIGGERS WHERE SCHED_NAME=?", schedulerName);
             jdbc.update("DELETE FROM STRATUM_QRTZ_CRON_TRIGGERS WHERE SCHED_NAME=?", schedulerName);
             jdbc.update("DELETE FROM STRATUM_QRTZ_TRIGGERS WHERE SCHED_NAME=?", schedulerName);
@@ -120,6 +121,7 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
         }
         for (String prefix : List.of("lock:job:", "lock:job:trigger:run.", "lock:job:trigger:schedule.")) {
             jdbc.update("DELETE FROM stratum_shedlock WHERE name=?", prefix + probe.code);
+            jdbc.update("DELETE FROM stratum_shedlock WHERE name=?", prefix + backlogProbe.code);
         }
         if (originalRelayPaused != null) {
             var control = parent.getBean(OutboxRelayControlApplicationService.class);
@@ -165,6 +167,57 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
         assertEquals(java.util.Set.of(new JobKey("run." + probe.code, GROUP)), disabled.getBean(Scheduler.class).getJobKeys(GroupMatcher.jobGroupEquals(GROUP)));
         var restarted = context(true, true).getBean("relayJobScheduler", Scheduler.class);
         assertFalse(restarted.isInStandbyMode()); assertEquals(expected, restarted.getJobKeys(GroupMatcher.jobGroupEquals(GROUP)));
+    }
+
+    /**
+     * 采集固定目标只登记在专用集群；禁用实例继续普通调度，缺少专用组时拒绝处理器。
+     * @throws Exception 调度器或存储操作失败
+     */
+    @Test
+    void registersBacklogOnlyInDedicatedCluster() throws Exception {
+        assertThrows(RuntimeException.class, () -> context(false, false, false, false, true));
+        var first = context(true, false, false, true, true);
+        var second = context(true, false, false, true, true);
+        var backlog = first.getBean("deadLetterSamplingScheduler", Scheduler.class);
+        var expected = java.util.Set.of(new JobKey("run.deadletter.backlog", GROUP));
+        assertFalse(backlog.isInStandbyMode()); assertEquals(expected, backlog.getJobKeys(GroupMatcher.jobGroupEquals(GROUP)));
+        assertEquals(expected, second.getBean("deadLetterSamplingScheduler", Scheduler.class).getJobKeys(GroupMatcher.jobGroupEquals(GROUP)));
+        assertNull(first.getBean(Scheduler.class).getJobDetail(expected.iterator().next()));
+        assertNull(first.getBean("relayJobScheduler", Scheduler.class).getJobDetail(expected.iterator().next()));
+        var disabled = context(false, false, false, false, false);
+        assertFalse(disabled.containsLocalBean("deadLetterSamplingScheduler"));
+        assertNotNull(disabled.getBean(Scheduler.class).getJobDetail(new JobKey("run." + probe.code, GROUP)));
+        first.close(); second.close();
+        var restarted = context(false, false, false, true, true).getBean("deadLetterSamplingScheduler", Scheduler.class);
+        assertFalse(restarted.isInStandbyMode()); assertEquals(expected, restarted.getJobKeys(GroupMatcher.jobGroupEquals(GROUP)));
+    }
+
+    /**
+     * 即使普通调度器被写入伪造采集目标，驱动也拒绝跨组执行。
+     * @throws Exception 触发或锁状态检查失败
+     */
+    @Test
+    void rejectsBacklogJobFromOrdinaryScheduler() throws Exception {
+        var context = context(false, false, false, true, true);
+        var ordinary = context.getBean(Scheduler.class); var backlog = context.getBean("deadLetterSamplingScheduler", Scheduler.class);
+        backlog.standby();
+        await().atMost(Duration.ofSeconds(10)).until(() -> backlog.getCurrentlyExecutingJobs().isEmpty()
+                && jdbc.queryForObject("SELECT COUNT(*) FROM stratum_shedlock WHERE name=? AND lock_until>UTC_TIMESTAMP(6)",
+                        Integer.class, "lock:job:trigger:run.deadletter.backlog") == 0);
+        var fired = new CountDownLatch(1); var failure = new AtomicReference<JobExecutionException>();
+        watch(ordinary, "run.deadletter.backlog", fired, failure);
+        var key = new JobKey("run.deadletter.backlog", GROUP);
+        ordinary.addJob(JobBuilder.newJob(QuartzDispatchJob.class).withIdentity(key).storeDurably()
+                .usingJobData("jobCode", "deadletter.backlog").usingJobData("mode", "run").build(), false);
+        ordinary.triggerJob(key); assertTrue(fired.await(10, TimeUnit.SECONDS)); assertNotNull(failure.get());
+        var scheduleFired = new CountDownLatch(1); var scheduleFailure = new AtomicReference<JobExecutionException>();
+        watch(ordinary, "schedule.deadletter.backlog", scheduleFired, scheduleFailure);
+        var scheduleKey = new JobKey("schedule.deadletter.backlog", GROUP);
+        ordinary.addJob(JobBuilder.newJob(QuartzDispatchJob.class).withIdentity(scheduleKey).storeDurably()
+                .usingJobData("jobCode", "deadletter.backlog").usingJobData("mode", "schedule").build(), false);
+        ordinary.triggerJob(scheduleKey); assertTrue(scheduleFired.await(10, TimeUnit.SECONDS)); assertNotNull(scheduleFailure.get());
+        assertEquals(0, backlogProbe.calls.get());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM job_execution WHERE job_code=?", Integer.class, backlogProbe.code));
     }
 
     /**
@@ -561,14 +614,30 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
      * @throws Exception 调度器身份读取失败
      */
     private AnnotationConfigApplicationContext context(boolean relayEnabled, boolean relayHandler, boolean actualRelay) throws Exception {
+        return context(relayEnabled, relayHandler, actualRelay, false, false);
+    }
+
+    /**
+     * 可选启用采集专用组及固定测试处理器。
+     * @param relayEnabled 是否创建Relay调度器
+     * @param relayHandler 是否登记Relay探针
+     * @param actualRelay 是否登记真实Relay处理器
+     * @param backlogEnabled 是否创建采集调度器
+     * @param backlogHandler 是否登记采集探针
+     * @return 必须关闭的上下文
+     * @throws Exception 调度器身份读取失败
+     */
+    private AnnotationConfigApplicationContext context(boolean relayEnabled, boolean relayHandler, boolean actualRelay,
+            boolean backlogEnabled, boolean backlogHandler) throws Exception {
         var context = new AnnotationConfigApplicationContext(); contexts.add(context);
         context.setParent(parent);
         context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("trigger-test", Map.of(
                 "stratum.jobs.enabled", true, "stratum.jobs.name", name, "stratum.jobs.workers", 2,
                 "stratum.jobs.relay.enabled", relayEnabled, "stratum.messaging.enabled", actualRelay,
-                "stratum.jobs.relay.cron", "0/1 * * * * ?")));
+                "stratum.jobs.relay.cron", "0/1 * * * * ?", "stratum.jobs.deadletter-sampling.enabled", backlogEnabled)));
         context.registerBean(JobHandler.class, () -> probe);
         if (relayHandler) context.registerBean("relayTestHandler", JobHandler.class, () -> relayProbe);
+        if (backlogHandler) context.registerBean("backlogTestHandler", JobHandler.class, () -> backlogProbe);
         if (actualRelay) {
             context.registerBean("testPublisher", OutboxPublisher.class, () -> delivery -> OutboxPublisher.PublishResult.CONFIRMED);
             context.registerBean(OutboxRelayApplicationService.class, () -> new OutboxRelayApplicationService(
@@ -580,6 +649,7 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
             context.refresh();
             schedulerIds.add(context.getBean(Scheduler.class).getSchedulerInstanceId());
             if (relayEnabled) schedulerIds.add(context.getBean("relayJobScheduler", Scheduler.class).getSchedulerInstanceId());
+            if (backlogEnabled) schedulerIds.add(context.getBean("deadLetterSamplingScheduler", Scheduler.class).getSchedulerInstanceId());
             return context;
         } catch (RuntimeException failure) { context.close(); throw failure; }
     }
