@@ -112,6 +112,30 @@ class RabbitTopologyIntegrationTest {
     }
 
     /**
+     * 死信队列原生延迟重试期间不计入可见数，延迟到期后重新可见。
+     * @throws Exception Broker通道或等待失败
+     */
+    @Test
+    void excludesDeadLetterNativeDelayedRetryFromVisibleCount() throws Exception {
+        start(Map.of("stratum.messaging.topology.retry-min", "3s", "stratum.messaging.topology.retry-max", "3s"));
+        var probe = new RabbitDeadLetterBacklogProbe(context.getBean(RabbitAdmin.class));
+        try (var channel = channel()) {
+            channel.basicPublish(DEAD_EXCHANGE, ERP_QUEUE, null, "delayed".getBytes(StandardCharsets.UTF_8));
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(5)).until(() -> probe.ready(Group.ERP_AUDIT).orElse(-1) == 1);
+            var delivery = channel.basicGet(ERP_QUEUE + ".dlq", false); assertNotNull(delivery);
+            long started = System.nanoTime();
+            channel.basicNack(delivery.getEnvelope().getDeliveryTag(), false, true);
+            var acknowledgedState = channel.queueDeclarePassive(ERP_QUEUE + ".dlq");
+            assertEquals(0, acknowledgedState.getMessageCount());
+            assertEquals(0, probe.ready(Group.ERP_AUDIT).orElseThrow());
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(8)).until(() -> probe.ready(Group.ERP_AUDIT).orElse(-1) == 1);
+            assertTrue(System.nanoTime() - started >= Duration.ofSeconds(2).toNanos());
+            var returned = channel.basicGet(ERP_QUEUE + ".dlq", false); assertNotNull(returned);
+            channel.basicAck(returned.getEnvelope().getDeliveryTag(), false);
+        }
+    }
+
+    /**
      * nack显式返回使用原生延迟而不计失败；成功ack后不留消息。
      * @throws Exception Broker不可用或等待超时
      */
