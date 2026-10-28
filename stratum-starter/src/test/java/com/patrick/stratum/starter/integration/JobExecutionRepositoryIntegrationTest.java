@@ -14,6 +14,8 @@ import java.util.concurrent.TimeUnit;
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.common.error.StratumException;
 import com.patrick.stratum.domain.job.JobCancellationRepository;
+import com.patrick.stratum.domain.job.DeadLetterReplayJob;
+import com.patrick.stratum.domain.job.DeadLetterReplayTaskRepository;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository;
 import org.junit.jupiter.api.AfterEach;
@@ -30,8 +32,10 @@ class JobExecutionRepositoryIntegrationTest extends MariaDbIntegrationTest {
     private final UnitOfWork unitOfWork;
     private final JobExecutionRepository repository;
     private final JobCancellationRepository cancellation;
+    private final DeadLetterReplayTaskRepository replayTasks;
     private final JdbcTemplate jdbc;
     private final List<UUID> executions = new ArrayList<>();
+    private final List<UUID> replayRequests = new ArrayList<>();
     private final String code = "probe." + UUID.randomUUID();
 
     /**
@@ -39,17 +43,19 @@ class JobExecutionRepositoryIntegrationTest extends MariaDbIntegrationTest {
      * @param unitOfWork 真实事务入口
      * @param repository 生产登记领取端口
      * @param cancellation 生产未开始取消端口
+     * @param replayTasks 重放任务绑定端口
      * @param jdbc 独立断言与自身夹具清理
      */
     @Autowired
     JobExecutionRepositoryIntegrationTest(UnitOfWork unitOfWork, JobExecutionRepository repository,
-            JobCancellationRepository cancellation, JdbcTemplate jdbc) {
-        this.unitOfWork = unitOfWork; this.repository = repository; this.cancellation = cancellation; this.jdbc = jdbc;
+            JobCancellationRepository cancellation, DeadLetterReplayTaskRepository replayTasks, JdbcTemplate jdbc) {
+        this.unitOfWork = unitOfWork; this.repository = repository; this.cancellation = cancellation; this.replayTasks = replayTasks; this.jdbc = jdbc;
     }
 
     /** 仅清理本用例登记的随机执行身份及其技术历史。 */
     @AfterEach
     void cleanup() {
+        for (UUID id : replayRequests) jdbc.update("DELETE FROM dead_letter_replay_task WHERE request_id=?", id.toString());
         for (UUID id : executions) {
             jdbc.update("DELETE FROM job_replay_request WHERE execution_id=?", id.toString());
             jdbc.update("DELETE FROM dead_job WHERE execution_id=?", id.toString());
@@ -370,6 +376,108 @@ class JobExecutionRepositoryIntegrationTest extends MariaDbIntegrationTest {
      */
     private JobCancellationRepository.Result cancel(UUID id, String jobCode) {
         return unitOfWork.execute(() -> cancellation.cancelUnstarted(id, jobCode));
+    }
+
+    /** 同请求、归档和操作者始终返回首次任务；变更操作者或归档不能复用请求身份。 */
+    @Test
+    void bindsReplayRequestToFirstTaskArchiveAndActor() {
+        UUID request = UUID.randomUUID(), archive = UUID.randomUUID(), actor = UUID.randomUUID();
+        var first = replayRequest(request, archive, actor, TIME); var next = replayRequest(request, archive, actor, TIME.plusSeconds(1));
+        var later = next.submission();
+        var duplicate = new DeadLetterReplayTaskRepository.Request(request, archive, actor, new JobExecutionRepository.Submission(
+                later.executionId(), later.definition(), later.scheduleTime(), later.idempotencyKey(), later.arguments(), "later-trace"));
+        assertThrows(IllegalStateException.class, () -> replayTasks.register(first));
+        UUID task = unitOfWork.execute(() -> replayTasks.register(first));
+        assertEquals(task, unitOfWork.execute(() -> replayTasks.register(duplicate)));
+        var changedArchive = replayRequest(request, UUID.randomUUID(), actor, TIME);
+        var changedActor = replayRequest(request, archive, UUID.randomUUID(), TIME);
+        conflict(() -> unitOfWork.execute(() -> replayTasks.register(changedArchive)));
+        conflict(() -> unitOfWork.execute(() -> replayTasks.register(changedActor)));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dead_letter_replay_task WHERE request_id=?", Integer.class, request.toString()));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM job_execution WHERE job_code=? AND idempotency_key=?", Integer.class,
+                DeadLetterReplayJob.CODE, request.toString()));
+        assertEquals(first.submission().traceId(), jdbc.queryForObject("SELECT initial_trace_id FROM job_execution WHERE execution_id=?", String.class, task.toString()));
+        assertEquals(JobCancellationRepository.Result.CANCELLED, cancel(task, DeadLetterReplayJob.CODE));
+        assertEquals(task, unitOfWork.execute(() -> replayTasks.register(duplicate)));
+        assertEquals("CANCELLED", state(task));
+    }
+
+    /** 请求绑定及任务一起回滚，固定代码、幂等键和归档参数必须一致。 */
+    @Test
+    void rollsBackReplayTaskAndRejectsMismatchedSubmission() {
+        UUID request = UUID.randomUUID(), archive = UUID.randomUUID(), actor = UUID.randomUUID();
+        var first = replayRequest(request, archive, actor, TIME);
+        assertThrows(IllegalArgumentException.class, () -> new DeadLetterReplayTaskRepository.Request(request, UUID.randomUUID(), actor, first.submission()));
+        assertThrows(IllegalArgumentException.class, () -> new DeadLetterReplayTaskRepository.Request(UUID.randomUUID(), archive, actor, first.submission()));
+        var unrelated = input("{}", 3);
+        assertThrows(IllegalArgumentException.class, () -> new DeadLetterReplayTaskRepository.Request(request, archive, actor, unrelated));
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
+            replayTasks.register(first); throw new IllegalStateException("rollback-probe");
+        }));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dead_letter_replay_task WHERE request_id=?", Integer.class, request.toString()));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM job_execution WHERE execution_id=?", Integer.class, first.submission().executionId().toString()));
+        var retry = replayRequest(request, archive, actor, TIME.plusSeconds(1));
+        assertEquals(retry.submission().executionId(), unitOfWork.execute(() -> replayTasks.register(retry)));
+    }
+
+    /** 任务UUID已被其他请求占用时，新绑定完整回滚且不影响原任务。 */
+    @Test
+    void rejectsTaskIdentityCollisionWithoutLeavingBinding() {
+        UUID archive = UUID.randomUUID(), actor = UUID.randomUUID();
+        var first = replayRequest(UUID.randomUUID(), archive, actor, TIME);
+        UUID task = unitOfWork.execute(() -> replayTasks.register(first));
+        UUID otherRequest = UUID.randomUUID(); var other = replayRequest(otherRequest, archive, actor, TIME);
+        var collision = new JobExecutionRepository.Submission(task, other.submission().definition(), other.submission().scheduleTime(),
+                otherRequest.toString(), other.submission().arguments(), other.submission().traceId());
+        var request = new DeadLetterReplayTaskRepository.Request(otherRequest, archive, actor, collision);
+        conflict(() -> unitOfWork.execute(() -> replayTasks.register(request)));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dead_letter_replay_task WHERE request_id=?", Integer.class, otherRequest.toString()));
+        assertEquals("WAITING", state(task));
+    }
+
+    /**
+     * 同一请求的两个事务串行固定首次绑定，即使第二次生成了不同任务身份和计划时间。
+     * @throws Exception 并发任务失败或等待超时
+     */
+    @Test
+    void serializesConcurrentReplayTaskRegistrations() throws Exception {
+        UUID request = UUID.randomUUID(), archive = UUID.randomUUID(), actor = UUID.randomUUID();
+        var first = replayRequest(request, archive, actor, TIME); var second = replayRequest(request, archive, actor, TIME.plusSeconds(1));
+        var held = new CountDownLatch(1); var started = new CountDownLatch(1); var release = new CountDownLatch(1);
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var owner = workers.submit(() -> unitOfWork.execute(() -> {
+                UUID result = replayTasks.register(first); held.countDown();
+                try { if (!release.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("测试等待超时"); }
+                catch (InterruptedException failure) { Thread.currentThread().interrupt(); throw new IllegalStateException("测试等待中断", failure); }
+                return result;
+            }));
+            try {
+                assertTrue(held.await(5, TimeUnit.SECONDS));
+                var contender = workers.submit(() -> { started.countDown(); return unitOfWork.execute(() -> replayTasks.register(second)); });
+                assertTrue(started.await(5, TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.TimeoutException.class, () -> contender.get(300, TimeUnit.MILLISECONDS));
+                release.countDown(); UUID expected = owner.get(5, TimeUnit.SECONDS);
+                assertEquals(expected, contender.get(5, TimeUnit.SECONDS));
+            } finally { release.countDown(); }
+        }
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM job_execution WHERE job_code=? AND idempotency_key=?", Integer.class,
+                DeadLetterReplayJob.CODE, request.toString()));
+    }
+
+    /**
+     * 构造并登记测试清理身份，生成固定归档参数和请求幂等键。
+     * @param request 请求UUID
+     * @param archive 归档UUID
+     * @param actor 操作者UUID
+     * @param time 单次执行时刻
+     * @return 任务绑定请求
+     */
+    private DeadLetterReplayTaskRepository.Request replayRequest(UUID request, UUID archive, UUID actor, Instant time) {
+        replayRequests.add(request); var policy = new JobDefinition.RetryPolicy(3, Duration.ofSeconds(1), Duration.ofSeconds(5));
+        var definition = new JobDefinition(DeadLetterReplayJob.CODE, JobDefinition.Type.ONCE, Optional.empty(), Optional.of(time), 30,
+                policy, JobDefinition.IdempotencyRule.EXPLICIT_KEY);
+        var submission = new JobExecutionRepository.Submission(id(), definition, time, request.toString(), DeadLetterReplayJob.arguments(archive), "task-trace");
+        return new DeadLetterReplayTaskRepository.Request(request, archive, actor, submission);
     }
 
     /** 极大累计序号和版本不发生溢出，也不留下半条尝试。 */
