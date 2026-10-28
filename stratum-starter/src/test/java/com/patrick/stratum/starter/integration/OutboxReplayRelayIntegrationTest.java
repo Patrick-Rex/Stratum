@@ -76,6 +76,21 @@ class OutboxReplayRelayIntegrationTest extends MariaDbIntegrationTest {
         var next = claim(8); assertEquals(1, next.size()); assertEquals(events.getLast(), next.getFirst().delivery());
     }
 
+    /** 人工重放及其重试读取原事件的标准上下文，保持原始投递身份。 */
+    @Test
+    void replayAndRetryUseOriginalStandardContext() {
+        var event = seed(1, true).getFirst();
+        String parent = "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01";
+        jdbc.update("UPDATE outbox_event SET standard_traceparent=?,standard_tracestate=? WHERE event_id=?",
+                parent, "vendor=value", event.message().eventId());
+        var intent = enqueue(event); var first = claim(1).getFirst();
+        assertEquals(event, first.delivery()); assertEquals(parent, first.standardTrace().orElseThrow().traceparent());
+        assertEquals("vendor=value", first.standardTrace().orElseThrow().tracestate());
+        assertTrue(finish(first, RETURNED));
+        jdbc.update("UPDATE outbox_replay_delivery SET next_retry_at='2000-01-01 00:00:00' WHERE delivery_id=?", intent.toString());
+        var retry = claim(1).getFirst(); assertEquals(event, retry.delivery()); assertEquals(first.standardTrace(), retry.standardTrace());
+    }
+
     /** 原投递与重放候选按到期时刻合并，不能让持续原投递饿死更早的人工恢复。 */
     @Test
     void mergesCandidateDeadlinesAcrossOriginalAndReplay() {

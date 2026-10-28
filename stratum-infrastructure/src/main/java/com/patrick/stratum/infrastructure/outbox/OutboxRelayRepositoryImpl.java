@@ -7,23 +7,27 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 import com.patrick.stratum.common.error.CommonErrorCode;
 import com.patrick.stratum.common.error.StratumException;
+import com.patrick.stratum.common.trace.StandardTraceContext;
+import com.patrick.stratum.common.trace.StandardTraceContext.Carrier;
 import com.patrick.stratum.domain.event.OutboxMessage;
 import com.patrick.stratum.domain.event.OutboxPublisher;
 import com.patrick.stratum.domain.event.OutboxRelayRepository;
+import com.patrick.stratum.infrastructure.tracing.OpenTelemetryTraceContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-import lombok.RequiredArgsConstructor;
-
 /** Relay技术状态适配，按聚合进度行锁定头事件，所有写入参与已有Application工作单元。 */
 @Repository
-@RequiredArgsConstructor
 public class OutboxRelayRepositoryImpl implements OutboxRelayRepository {
     private static final String READY = """
             ((e.status = 'PENDING' AND e.next_retry_at <= UTC_TIMESTAMP(6))
@@ -38,7 +42,29 @@ public class OutboxRelayRepositoryImpl implements OutboxRelayRepository {
             AND ((r.consumer_group = 'ERP_AUDIT' AND e.event_type LIKE 'erp.%')
                 OR (r.consumer_group = 'CACHE_INVALIDATION' AND e.event_type = 'stratum.cache.invalidate'))
             """;
+    private static final Logger LOG = LoggerFactory.getLogger(OutboxRelayRepositoryImpl.class);
     private final JdbcTemplate jdbc;
+    private final StandardTraceContext standardTrace;
+
+    /**
+     * 使用当前事务的JDBC与标准上下文适配器。
+     * @param jdbc 已绑定工作单元的数据库客户端
+     * @param standardTrace 标准上下文边界
+     * @throws NullPointerException 必需依赖为空
+     * @apiNote 示例：由Spring注入数据库客户端与标准上下文。
+     */
+    @Autowired
+    public OutboxRelayRepositoryImpl(JdbcTemplate jdbc, StandardTraceContext standardTrace) {
+        this.jdbc = Objects.requireNonNull(jdbc); this.standardTrace = Objects.requireNonNull(standardTrace);
+    }
+
+    /**
+     * 保留旧的手动构造方式，使用无状态标准上下文适配器。
+     * @param jdbc 已绑定工作单元的数据库客户端
+     * @throws NullPointerException 客户端为空
+     * @apiNote 示例：{@code new OutboxRelayRepositoryImpl(jdbc)}。
+     */
+    public OutboxRelayRepositoryImpl(JdbcTemplate jdbc) { this(jdbc, new OpenTelemetryTraceContext()); }
 
     /** {@inheritDoc} */
     @Override
@@ -77,7 +103,7 @@ public class OutboxRelayRepositoryImpl implements OutboxRelayRepository {
                 var heads = jdbc.query("""
                         SELECT e.*, UTC_TIMESTAMP(6) AS database_now FROM outbox_event e
                         WHERE e.aggregate_id = ? AND e.event_sequence = ? AND
-                        """ + READY + " FOR UPDATE SKIP LOCKED", OutboxRelayRepositoryImpl::mapHead, aggregate, sequence);
+                        """ + READY + " FOR UPDATE SKIP LOCKED", this::mapHead, aggregate, sequence);
                 if (heads.isEmpty()) {
                     var replay = claimReplay(aggregate, sequence, request);
                     if (replay != null) claims.add(replay);
@@ -92,7 +118,7 @@ public class OutboxRelayRepositoryImpl implements OutboxRelayRepository {
                         WHERE event_id = ?
                         """, token.toString(), expires, head.delivery().message().eventId());
                 if (changed != 1) throw new StratumException(CommonErrorCode.CONFLICT);
-                claims.add(new Claim(head.delivery(), token, expires.toInstant(ZoneOffset.UTC), head.retryCount()));
+                claims.add(new Claim(head.delivery(), token, expires.toInstant(ZoneOffset.UTC), head.retryCount(), head.standardTrace()));
             }
             return List.copyOf(claims);
         } catch (DataAccessException failure) {
@@ -165,7 +191,7 @@ public class OutboxRelayRepositoryImpl implements OutboxRelayRepository {
                 WHERE delivery_id = ?
                 """, token.toString(), expires, replay.id());
         if (changed != 1) throw new StratumException(CommonErrorCode.CONFLICT);
-        return new Claim(replay.head().delivery(), token, expires.toInstant(ZoneOffset.UTC), replay.failures());
+        return new Claim(replay.head().delivery(), token, expires.toInstant(ZoneOffset.UTC), replay.failures(), replay.head().standardTrace());
     }
 
     /**
@@ -201,12 +227,28 @@ public class OutboxRelayRepositoryImpl implements OutboxRelayRepository {
      * @return 有界事件数据及数据库时刻
      * @throws SQLException JDBC字段读取失败
      */
-    private static Head mapHead(ResultSet row, int number) throws SQLException {
+    private Head mapHead(ResultSet row, int number) throws SQLException {
         var message = new OutboxMessage(row.getString("event_id"), row.getString("event_type"),
                 row.getString("aggregate_id"), row.getObject("occurred_at", LocalDateTime.class).toInstant(ZoneOffset.UTC),
                 row.getString("payload"), row.getString("trace_id"));
         return new Head(new OutboxPublisher.Delivery(message, row.getLong("event_sequence")),
-                row.getInt("retry_count"), row.getObject("database_now", LocalDateTime.class));
+                row.getInt("retry_count"), row.getObject("database_now", LocalDateTime.class), readStandardTrace(row));
+    }
+
+    /**
+     * 读取并规范化原事件的标准上下文；观测组件故障不阻断业务投递资格。
+     * @param row 已锁定的原事件行
+     * @return 可用标准上下文或空值
+     * @throws SQLException 数据库列读取失败
+     */
+    private Optional<Carrier> readStandardTrace(ResultSet row) throws SQLException {
+        String parent = row.getString("standard_traceparent"); String state = row.getString("standard_tracestate");
+        try { return Objects.requireNonNull(standardTrace.normalize(parent, state)); }
+        catch (RuntimeException failure) {
+            try { LOG.atWarn().addKeyValue("errorType", failure.getClass().getSimpleName()).log("标准追踪上下文读取失败"); }
+            catch (RuntimeException ignored) { /* 日志故障也不能阻断业务领取。 */ }
+            return Optional.empty();
+        }
     }
 
     /** 缺少Application写事务时拒绝所有领取和状态更新。 */
@@ -243,8 +285,9 @@ public class OutboxRelayRepositoryImpl implements OutboxRelayRepository {
      * @param delivery 原持久化信封
      * @param retryCount 当前失败次数
      * @param databaseNow 数据库UTC时刻
+     * @param standardTrace 原事件规范化标准上下文
      */
-    private record Head(OutboxPublisher.Delivery delivery, int retryCount, LocalDateTime databaseNow) { }
+    private record Head(OutboxPublisher.Delivery delivery, int retryCount, LocalDateTime databaseNow, Optional<Carrier> standardTrace) { }
 
     /**
      * 独立意图的有界领取快照。

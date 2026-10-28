@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -14,6 +15,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import com.patrick.stratum.application.transaction.UnitOfWork;
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.event.OutboxMessage;
 import com.patrick.stratum.domain.event.OutboxPublisher;
 import com.patrick.stratum.domain.event.OutboxRelayRepository;
@@ -21,15 +23,20 @@ import com.patrick.stratum.domain.event.OutboxRepository;
 import com.patrick.stratum.infrastructure.outbox.OutboxRelayRepositoryImpl;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import static com.patrick.stratum.domain.event.OutboxPublisher.PublishResult.*;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 /** 使用真实MariaDB核验租约领取、过期接管、失败退避和数据库时钟边界。 */
+@ExtendWith(OutputCaptureExtension.class)
 class OutboxRelayRepositoryIntegrationTest extends MariaDbIntegrationTest {
     private final UnitOfWork unitOfWork;
     private final OutboxRepository outbox;
@@ -83,6 +90,63 @@ class OutboxRelayRepositoryIntegrationTest extends MariaDbIntegrationTest {
         assertEquals(1, next.size());
         assertEquals(first.get(1).eventId(), next.getFirst().delivery().message().eventId());
         assertEquals(2L, next.getFirst().delivery().sequence());
+    }
+
+    /** 原始领取与失败重试读取同一持久上下文，不改变业务信封或序号。 */
+    @Test
+    void retainsOriginalStandardContextAcrossRetry() {
+        var event = seed(1).getFirst();
+        String parent = "00-1234567890abcdef1234567890abcdef-1234567890abcdef-03";
+        jdbc.update("UPDATE outbox_event SET standard_traceparent=?,standard_tracestate=? WHERE event_id=?", parent, "vendor=value", event.eventId());
+        var first = claim(1).getFirst();
+        assertEquals(parent, first.standardTrace().orElseThrow().traceparent());
+        assertEquals("vendor=value", first.standardTrace().orElseThrow().tracestate());
+        assertEquals(new OutboxMessage(event.eventId(), event.eventType(), event.aggregateId(),
+                event.occurredAt().truncatedTo(ChronoUnit.MICROS), event.payload(), event.traceId()), first.delivery().message());
+        assertEquals(1, first.delivery().sequence());
+        assertTrue(finish(first, TIMED_OUT)); makeReady(event.eventId());
+        var retry = claim(1).getFirst(); assertEquals(first.standardTrace(), retry.standardTrace());
+        assertEquals(first.delivery(), retry.delivery());
+    }
+
+    /** 旧行及非法标准字段不伪造父链，也不阻断事件领取。 */
+    @Test
+    void acceptsHistoricalAndMalformedStandardContext() {
+        var historical = seed(1).getFirst(); var invalid = seed(1).getFirst();
+        jdbc.update("UPDATE outbox_event SET standard_traceparent=?,standard_tracestate=? WHERE event_id=?", "invalid", "private-value", invalid.eventId());
+        var claims = claim(2); assertEquals(2, claims.size());
+        assertEquals(new HashSet<>(List.of(historical.eventId(), invalid.eventId())),
+                new HashSet<>(claims.stream().map(c -> c.delivery().message().eventId()).toList()));
+        assertTrue(claims.stream().allMatch(c -> c.standardTrace().isEmpty()));
+    }
+
+    /** 非法状态只丢弃状态，保留有效父上下文。 */
+    @Test
+    void retainsValidParentWhenStateIsMalformed() {
+        var event = seed(1).getFirst();
+        String parent = "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01";
+        jdbc.update("UPDATE outbox_event SET standard_traceparent=?,standard_tracestate=? WHERE event_id=?",
+                parent, "duplicate=one,duplicate=two", event.eventId());
+        var trace = claim(1).getFirst().standardTrace().orElseThrow();
+        assertEquals(parent, trace.traceparent()); assertEquals("", trace.tracestate());
+    }
+
+    /**
+     * 组件故障不阻断领取，日志只记录安全异常类型。
+     * @param output 捕获的控制台日志
+     */
+    @Test
+    void continuesClaimWhenTraceComponentFails(CapturedOutput output) {
+        var event = seed(1).getFirst();
+        String parent = "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01";
+        jdbc.update("UPDATE outbox_event SET standard_traceparent=? WHERE event_id=?", parent, event.eventId());
+        var trace = mock(StandardTraceContext.class);
+        when(trace.normalize(parent, null)).thenThrow(new IllegalStateException("sensitive-trace-value"));
+        var failingRelay = new OutboxRelayRepositoryImpl(jdbc, trace);
+        var claimed = unitOfWork.execute(() -> failingRelay.claim(request(1))).getFirst();
+        assertEquals(event.eventId(), claimed.delivery().message().eventId()); assertTrue(claimed.standardTrace().isEmpty());
+        assertTrue(output.getOut().contains("标准追踪上下文读取失败"));
+        assertFalse(output.getOut().contains("sensitive-trace-value"));
     }
 
     /** 非确认结果增加失败和退避，超限后FAILED保留头阻塞，其他聚合继续。 */
