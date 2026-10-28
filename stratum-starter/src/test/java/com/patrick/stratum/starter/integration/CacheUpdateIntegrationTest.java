@@ -22,6 +22,7 @@ import com.patrick.stratum.common.base.cache.VersionedCache;
 import com.patrick.stratum.common.base.cache.VersionedCache.Policy;
 import com.patrick.stratum.common.base.cache.VersionedCache.Value;
 import com.patrick.stratum.common.trace.TraceIdContext;
+import com.patrick.stratum.common.trace.StandardTraceContext;
 
 import tools.jackson.databind.json.JsonMapper;
 
@@ -39,6 +40,7 @@ class CacheUpdateIntegrationTest extends MariaDbIntegrationTest {
     private final CacheUpdateCoordinator coordinator;
     private final JdbcTemplate jdbc;
     private final JsonMapper json;
+    @Autowired private StandardTraceContext standardTrace;
     private final List<String> ids = new ArrayList<>();
     private final List<String> events = new ArrayList<>();
 
@@ -134,6 +136,24 @@ class CacheUpdateIntegrationTest extends MariaDbIntegrationTest {
         assertTrue(output.getOut().contains("cacheKey=" + key));
         assertTrue(output.getOut().contains("eventId=" + events.getFirst()));
         assertTrue(output.getOut().contains("traceId=cache-compensation-test"));
+    }
+
+    /** 缓存补偿事件保存同一标准上下文，同时保持业务关联和补偿正文。 */
+    @Test
+    void persistsStandardContextOnCacheCompensation() {
+        String id = id(); String key = key(id);
+        String parent = "00-1234567890abcdef1234567890abcdef-1234567890abcdef-03";
+        TraceIdContext.setTraceId("cache-business-trace");
+        try (var scope = standardTrace.restore(standardTrace.normalize(parent, "vendor=value"))) {
+            work.execute(() -> { insert(id); return register(key); });
+        }
+        var row = jdbc.queryForMap("SELECT standard_traceparent,standard_tracestate,trace_id,payload FROM outbox_event WHERE event_id=?", events.getFirst());
+        assertEquals(parent, row.get("standard_traceparent")); assertEquals("vendor=value", row.get("standard_tracestate"));
+        assertEquals("cache-business-trace", row.get("trace_id"));
+        var payload = json.readValue(row.get("payload").toString(), CacheInvalidation.class);
+        assertEquals(key, payload.key()); assertEquals(2, payload.minimumVersion()); assertEquals(POLICY, payload.policy());
+        assertFalse(row.get("payload").toString().contains(VALUE.payload()));
+        verify(cache).putIfNewer(key, VALUE, POLICY);
     }
 
     /** 删除或未携带完整值的更新通过提交后失效入口执行。 */
