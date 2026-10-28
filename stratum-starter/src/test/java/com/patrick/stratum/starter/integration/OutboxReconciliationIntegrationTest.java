@@ -16,6 +16,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import com.patrick.stratum.application.transaction.UnitOfWork;
+import com.patrick.stratum.application.job.DeadLetterReplayCancellationService;
 import com.patrick.stratum.application.event.OutboxReconciliationApplicationService;
 import com.patrick.stratum.application.event.OutboxRelayControlApplicationService;
 import com.patrick.stratum.application.event.OutboxRelayControlAdministrationService;
@@ -39,6 +40,10 @@ import com.patrick.stratum.domain.event.OutboxReconciliationRepository;
 import com.patrick.stratum.domain.event.OutboxRelayRepository;
 import com.patrick.stratum.domain.event.OutboxRelayControlRepository;
 import com.patrick.stratum.domain.event.OutboxRepository;
+import com.patrick.stratum.domain.job.DeadLetterReplayJob;
+import com.patrick.stratum.domain.job.JobCancellationRepository;
+import com.patrick.stratum.domain.job.JobDefinition;
+import com.patrick.stratum.domain.job.JobExecutionRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -90,6 +95,7 @@ class OutboxReconciliationIntegrationTest {
     private final List<UUID> replayArchives = new ArrayList<>();
     private final List<UUID> ownedUsers = new ArrayList<>();
     private final List<UUID> ownedRoles = new ArrayList<>();
+    private final List<UUID> ownedJobs = new ArrayList<>();
     private boolean verified;
 
     /**
@@ -168,6 +174,10 @@ class OutboxReconciliationIntegrationTest {
         for (var id : recoveryRequests) jdbc.update("DELETE FROM outbox_original_recovery_request WHERE request_id=?", id.toString());
         for (var id : replayArchives) jdbc.update("DELETE FROM outbox_replay_delivery WHERE dead_id=?", id.toString());
         for (var id : replayArchives) jdbc.update("DELETE FROM outbox_dead_letter WHERE dead_id=?", id.toString());
+        for (var id : ownedJobs) {
+            jdbc.update("DELETE FROM job_attempt WHERE execution_id=?", id.toString());
+            jdbc.update("DELETE FROM job_execution WHERE execution_id=?", id.toString());
+        }
         for (var id : ownedUsers) {
             jdbc.update("DELETE FROM auth_user_role WHERE user_id=?", id.toString());
             jdbc.update("DELETE FROM auth_user WHERE id=?", id.toString());
@@ -365,6 +375,61 @@ class OutboxReconciliationIntegrationTest {
             } finally { release.countDown(); }
         }
         assertEquals(new OutboxRelayControlRepository.State(true, 0), relayAdministration(otherAdministrator).current());
+    }
+
+    /** 仅当前管理员可取消固定重放任务；重复调用仍重新授权，已开始和其他类型不能取消。 */
+    @Test
+    void authorizesReplayTaskCancellationOnEveryCall() {
+        UUID role = administratorRole(); UUID administrator = account(); UUID otherAdministrator = account(); UUID ordinary = account();
+        assignRole(administrator, Set.of(role)); assignRole(otherAdministrator, Set.of(role));
+        UUID target = replayTask(DeadLetterReplayJob.CODE); UUID other = replayTask("other.probe");
+        var service = replayCancellation(administrator); var denied = replayCancellation(ordinary);
+        assertEquals(CommonErrorCode.FORBIDDEN, assertThrows(StratumException.class, () -> denied.cancel(target)).getErrorCode());
+        assertEquals(CommonErrorCode.NOT_FOUND, assertThrows(StratumException.class, () -> service.cancel(other)).getErrorCode());
+        assertEquals(CommonErrorCode.NOT_FOUND, assertThrows(StratumException.class, () -> service.cancel(UUID.randomUUID())).getErrorCode());
+        assertThrows(NullPointerException.class, () -> service.cancel(null));
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> service.cancel(target)));
+        assertEquals(target, service.cancel(target)); assertEquals(target, service.cancel(target));
+        UUID started = replayTask(DeadLetterReplayJob.CODE);
+        unitOfWork.execute(() -> { application.getBean(JobExecutionRepository.class).claim(started).orElseThrow(); return null; });
+        assertEquals(CommonErrorCode.CONFLICT, assertThrows(StratumException.class, () -> service.cancel(started)).getErrorCode());
+        unitOfWork.execute(() -> { administration.lock(); jdbc.update("UPDATE auth_user SET enabled=0 WHERE id=?", administrator.toString()); return null; });
+        assertEquals(CommonErrorCode.FORBIDDEN, assertThrows(StratumException.class, () -> service.cancel(target)).getErrorCode());
+        unitOfWork.execute(() -> { administration.lock(); jdbc.update("UPDATE auth_user SET enabled=1 WHERE id=?", administrator.toString());
+            administration.replaceRoleIds(administrator, Set.of()); return null; });
+        assertEquals(CommonErrorCode.FORBIDDEN, assertThrows(StratumException.class, () -> service.cancel(target)).getErrorCode());
+        assertEquals("CANCELLED", jdbc.queryForObject("SELECT state FROM job_execution WHERE execution_id=?", String.class, target.toString()));
+        assertEquals("WAITING", jdbc.queryForObject("SELECT state FROM job_execution WHERE execution_id=?", String.class, other.toString()));
+    }
+
+    /**
+     * 并发撤权持有管理锁时，任务取消等待提交后拒绝，不能沿用旧身份快照。
+     * @throws Exception 并发执行失败或等待超时
+     */
+    @Test
+    void replayTaskCancellationWaitsForAdministratorRevocation() throws Exception {
+        UUID role = administratorRole(); UUID administrator = account(); UUID otherAdministrator = account();
+        assignRole(administrator, Set.of(role)); assignRole(otherAdministrator, Set.of(role));
+        UUID target = replayTask(DeadLetterReplayJob.CODE); var service = replayCancellation(administrator);
+        var held = new CountDownLatch(1); var started = new CountDownLatch(1); var release = new CountDownLatch(1);
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var owner = workers.submit(() -> unitOfWork.execute(() -> {
+                administration.lock(); administration.replaceRoleIds(administrator, Set.of()); held.countDown();
+                try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+                catch (InterruptedException signal) { Thread.currentThread().interrupt(); throw new IllegalStateException("测试锁等待中断"); }
+                return null;
+            }));
+            try {
+                assertTrue(held.await(5, TimeUnit.SECONDS));
+                var contender = workers.submit(() -> { started.countDown(); return service.cancel(target); });
+                assertTrue(started.await(5, TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.TimeoutException.class, () -> contender.get(300, TimeUnit.MILLISECONDS));
+                release.countDown(); owner.get(5, TimeUnit.SECONDS);
+                var failure = assertThrows(java.util.concurrent.ExecutionException.class, () -> contender.get(5, TimeUnit.SECONDS));
+                assertEquals(CommonErrorCode.FORBIDDEN, assertInstanceOf(StratumException.class, failure.getCause()).getErrorCode());
+            } finally { release.countDown(); }
+        }
+        assertEquals("WAITING", jdbc.queryForObject("SELECT state FROM job_execution WHERE execution_id=?", String.class, target.toString()));
     }
 
     /** 应用入口拒绝已有工作单元，避免把恢复结果误报为已提交。 */
@@ -1202,6 +1267,30 @@ class OutboxReconciliationIntegrationTest {
         CurrentIdentity identity = () -> new CurrentIdentity.Snapshot(user, UUID.randomUUID(), 0);
         return new OutboxRelayControlAdministrationService(identity, administration,
                 application.getBean(OutboxRelayControlRepository.class), unitOfWork);
+    }
+
+    /**
+     * 构造使用权威管理员和任务存储的取消应用入口。
+     * @param user 测试账号UUID
+     * @return 对该身份复核授权的服务
+     */
+    private DeadLetterReplayCancellationService replayCancellation(UUID user) {
+        CurrentIdentity identity = () -> new CurrentIdentity.Snapshot(user, UUID.randomUUID(), 0);
+        return new DeadLetterReplayCancellationService(identity, administration,
+                application.getBean(JobCancellationRepository.class), unitOfWork);
+    }
+
+    /**
+     * 在独占库登记固定代码的一次性任务，并记录仅本测试清理的身份。
+     * @param code 允许测试的固定任务代码
+     * @return 新任务UUID
+     */
+    private UUID replayTask(String code) {
+        UUID id = UUID.randomUUID(); ownedJobs.add(id); Instant time = Instant.parse("2026-01-01T00:00:00Z");
+        var definition = new JobDefinition(code, JobDefinition.Type.ONCE, java.util.Optional.empty(), java.util.Optional.of(time), 30,
+                new JobDefinition.RetryPolicy(3, Duration.ofSeconds(1), Duration.ofSeconds(5)), JobDefinition.IdempotencyRule.EXPLICIT_KEY);
+        var input = new JobExecutionRepository.Submission(id, definition, time, id.toString(), "{}", "replay-cancellation-test");
+        unitOfWork.execute(() -> application.getBean(JobExecutionRepository.class).register(input)); return id;
     }
 
     /**
