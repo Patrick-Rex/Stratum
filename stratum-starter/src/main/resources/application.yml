@@ -39,6 +39,11 @@ stratum:
     enabled: ${STRATUM_JOBS_ENABLED:false}
     name: ${STRATUM_JOBS_NAME:stratum}
     workers: ${STRATUM_JOBS_WORKERS:2}
+    deadletter-sampling:
+      enabled: ${STRATUM_DEADLETTER_SAMPLING_ENABLED:false}
+      cron: ${STRATUM_DEADLETTER_SAMPLING_CRON:0 0/5 * * * ?}
+      timeout-sec: ${STRATUM_DEADLETTER_SAMPLING_TIMEOUT_SEC:60}
+      ttl: ${STRATUM_DEADLETTER_SAMPLING_TTL:10m}
   messaging:
     enabled: ${STRATUM_MQ_ENABLED:false}
     host: ${STRATUM_MQ_HOST:127.0.0.1}

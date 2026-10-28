@@ -1626,11 +1626,11 @@ Gateway与Starter分别启动固定版本Agent，通过真实本机HTTP转发并
 
 设置 `STRATUM_DEADLETTER_METRICS_ENABLED=true` 可在应用实例上注册 `stratum.messaging.deadletter.visible` Gauge；`STRATUM_DEADLETTER_METRICS_NAMESPACE` 默认`stratum`，同一采集集群和Broker虚拟主机使用相同命名空间，不同环境或虚拟主机必须隔离。只有固定`group`标签；有效零值显示零，未采样、显式不可用、结果过期、Redis故障或损坏时显示`NaN`，不将其转换为零。可见数不包含未确认和延迟重试消息。
 
-每个实例暴露同一共享结果，跨实例汇总时不能求和；每个Gauge在抓取时执行一次有界Redis读取，因此两组不是原子同时采样。3项测试通过，零失败、错误或跳过：真实本机Prometheus HTTP覆盖零、不可用与过期，并验证本机Redis连接失败及受控读取异常。周期采集任务尚未接入，单独开启指标时初始显示不可用。
+每个实例暴露同一共享结果，跨实例汇总时不能求和；每个Gauge在抓取时执行一次有界Redis读取，因此两组不是原子同时采样。3项测试通过，零失败、错误或跳过：真实本机Prometheus HTTP覆盖零、不可用与过期，并验证本机Redis连接失败及受控读取异常。单独开启指标而未启用采集时初始显示不可用；周期采集装配见下文。
 
 ### 死信采集独立调度资源
 
-`stratum.jobs.deadletter-sampling.enabled=true` 时，SchedulerConfiguration创建 `backlog:<stratum.jobs.name>` 独立Quartz JDBC集群调度器，初始待机、单个固定工作线程；关闭时不创建此调度器。此节点仅准备调度资源，尚未登记或启动采集任务，不能据此宣称周期采集完成。
+`stratum.jobs.deadletter-sampling.enabled=true` 时，SchedulerConfiguration创建 `backlog:<stratum.jobs.name>` 独立Quartz JDBC集群调度器，初始待机、单个固定工作线程；关闭时不创建此调度器。此节点仅准备调度资源；后续处理器装配和验收见下文。
 
 6项调度装配测试通过，零失败、错误或跳过；真实MariaDB验证两个启用实例共享持久采集命名空间、禁用实例不加入、普通及Relay组看不到采集目标，重启可读取自身持久目标。未运行旧版本进程，不能据此宣称已完成旧版本滚动升级验收。
 
@@ -1642,7 +1642,7 @@ Gateway与Starter分别启动固定版本Agent，通过真实本机HTTP转发并
 
 ### 死信采集固定目标路由
 
-固定任务注册表将 `deadletter.backlog` 排除在普通组之外，只登记至独立采集调度器；驱动在执行前校验实际调度器身份。缺少专用调度器时拒绝采集处理器；只创建调度器但没有处理器时保持待机。专用组在目标核验后加入统一启动和关闭流程。该节点仅验证受控处理器，实际采集处理器尚未接入。
+固定任务注册表将 `deadletter.backlog` 排除在普通组之外，只登记至独立采集调度器；驱动在执行前校验实际调度器身份。缺少专用调度器时拒绝采集处理器；只创建调度器但没有处理器时保持待机。专用组在目标核验后加入统一启动和关闭流程。该节点仅验证受控处理器，实际采集处理器的装配和验收见下文。
 
 12项任务注册及生命周期单元测试、3项真实MariaDB调度测试通过，零失败、错误或跳过；覆盖双实例共享、并存禁用实例、重启、Relay目标不变及普通调度器伪造采集执行和计划目标被拒绝。没有运行旧版本进程。
 
@@ -1650,4 +1650,12 @@ Gateway与Starter分别启动固定版本Agent，通过真实本机HTTP转发并
 
 固定处理器 `deadletter.backlog` 仅接受自身代码及空JSON参数，复用事务外采集用例，计划使用UTC Quartz Cron和计划时刻幂等；每周期最多一次尝试，失败后由下一周期重新采样，避免旧周期重试覆盖较新结果。结果成功表示采集状态已登记或本次已被新代号替代，不代表Broker两组都可用；各组状态以指标为准。超时通过现有工作器中断，不保证网络调用立即退出；已写入的单组快照仍按Redis有效期显示。
 
-5项处理器单元测试通过，零失败、错误或跳过；覆盖固定定义、参数拒绝、事务边界、中断及采样代号被替代。生产组件装配和真实周期执行尚待后续节点。
+5项处理器单元测试通过，零失败、错误或跳过；覆盖固定定义、参数拒绝、事务边界、中断及采样代号被替代。生产组件装配及真实周期执行验收见下文。
+
+### 死信周期采集装配
+
+在需要采集的实例上显式设置 `STRATUM_JOBS_ENABLED=true`、`STRATUM_MQ_ENABLED=true`、`STRATUM_DEADLETTER_METRICS_ENABLED=true` 和 `STRATUM_DEADLETTER_SAMPLING_ENABLED=true`，并配置既有独立Broker、数据库和共享Redis；缺失必需开关或端口时启动失败。只读指标实例可只启用共享指标，不创建采集调度器。同一采集集群的指标命名空间必须一致，并与其他环境、Broker虚拟主机隔离。
+
+默认每5分钟UTC采集，单次任务中断预算60秒，快照有效期10分钟；可通过 `STRATUM_DEADLETTER_SAMPLING_CRON`、`STRATUM_DEADLETTER_SAMPLING_TIMEOUT_SEC`、`STRATUM_DEADLETTER_SAMPLING_TTL` 调整，有效期允许1秒至10分钟。有效期应覆盖计划间隔及预期延迟，否则结果可能在下一次采集前过期；超时不保证阻塞网络调用立即退出。每次周期任务产生执行与尝试历史，项目当前不自动删除这些记录。
+
+9项配置和处理器单元测试、8项Broker拓扑回归通过，零失败、错误或跳过；配置缺失拒绝、默认关闭及可用端口已核对。真实Quartz、Broker、Redis组合执行与多实例验收尚待后续节点，不能把装配测试当作周期采集闭环验收。

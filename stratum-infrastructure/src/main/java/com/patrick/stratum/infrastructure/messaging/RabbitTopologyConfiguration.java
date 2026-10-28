@@ -2,6 +2,8 @@ package com.patrick.stratum.infrastructure.messaging;
 
 import java.time.Duration;
 
+import com.patrick.stratum.domain.event.DeadLetterBacklogProbe;
+
 import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.Declarables;
 import org.springframework.amqp.core.DirectExchange;
@@ -62,6 +64,15 @@ public class RabbitTopologyConfiguration {
         admin.setAutoStartup(false);
         admin.setIgnoreDeclarationExceptions(false);
         return admin;
+    }
+
+    /**
+     * 提供只读死信队列探针，不创建采集任务或消费消息。
+     * @param admin 使用现有有界连接的管理员
+     * @return 固定订阅组的单次查询端口
+     */
+    @Bean DeadLetterBacklogProbe deadLetterBacklogProbe(RabbitAdmin admin) {
+        return new RabbitDeadLetterBacklogProbe(admin);
     }
 
     /**
