@@ -1,0 +1,120 @@
+package com.patrick.stratum.infrastructure.messaging;
+
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/** 在真实Agent和无Agent的独立JVM中观察RabbitMQ生产监听器。 */
+@Tag("otel-agent")
+class RabbitTraceAgentIntegrationTest {
+    /**
+     * 验证无Agent时头透传但生产监听器没有自动恢复跨度。
+     * @throws Exception 进程或输出失败
+     */
+    @Test
+    void observesListenerWithoutAgent() throws Exception {
+        var probe = runFixture(false).fields();
+        assertEquals("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01", probe.get(1));
+        assertEquals("vendor=value", probe.get(2));
+        assertEquals("none", probe.get(3)); assertEquals("none", probe.get(4));
+    }
+
+    /**
+     * 验证固定Agent的生产监听器是否建立属于原消息追踪的消费跨度。
+     * @throws Exception 进程或输出失败
+     */
+    @Test
+    void observesListenerWithAgent() throws Exception {
+        var observation = runFixture(true); var probe = observation.fields();
+        assertTrue(probe.get(1).startsWith("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-"), probe.toString());
+        assertEquals("vendor=value", probe.get(2));
+        assertTrue(probe.get(4).startsWith("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"), probe.toString());
+        assertFalse(probe.get(4).endsWith(":true"), probe.toString()); assertEquals(probe.get(3), probe.get(4));
+        String producerId = probe.get(1).substring(36, 52); String consumerId = probe.get(4).split(":")[1];
+        var producer = observation.spans().get(producerId); var consumer = observation.spans().get(consumerId);
+        assertNotNull(producer); assertNotNull(consumer); assertNotEquals(producerId, consumerId);
+        assertEquals("stratum.topic publish", producer.name()); assertEquals("bbbbbbbbbbbbbbbb", producer.parent());
+        assertEquals("erp.probe.created process", consumer.name()); assertEquals(producerId, consumer.parent());
+    }
+
+    /**
+     * 启动带或不带Agent的独立JVM并读取唯一有界探针。
+     * @param agentEnabled 是否加载固定版本Agent
+     * @return 消费探针和实际导出的同链路跨度
+     * @throws Exception 进程或输出读取失败
+     */
+    private Observation runFixture(boolean agentEnabled) throws Exception {
+        String agent = Objects.requireNonNull(System.getProperty("stratum.test.otel-agent"));
+        String classpath = Objects.requireNonNull(System.getProperty("stratum.test.runtime-classpath"));
+        assertTrue(Files.isRegularFile(Path.of(agent)));
+        String executable = System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java";
+        var command = new ArrayList<String>(List.of(Path.of(System.getProperty("java.home"), "bin", executable).toString(),
+                "-Xms32m", "-Xmx256m", "-XX:ActiveProcessorCount=2"));
+        if (agentEnabled) command.add("-javaagent:" + agent);
+        command.addAll(List.of("-cp", classpath, RabbitTraceAgentFixture.class.getName()));
+        Path output = Files.createTempFile("stratum-rabbit-trace-agent-", ".log"); Process process = null;
+        try {
+            var builder = new ProcessBuilder(command); var environment = builder.environment();
+            environment.keySet().removeIf(name -> name.startsWith("OTEL_") || name.equals("JAVA_TOOL_OPTIONS") || name.equals("JDK_JAVA_OPTIONS"));
+            environment.put("OTEL_TRACES_EXPORTER", "logging-otlp"); environment.put("OTEL_METRICS_EXPORTER", "none");
+            environment.put("OTEL_LOGS_EXPORTER", "none"); environment.put("OTEL_TRACES_SAMPLER", "always_on");
+            environment.put("OTEL_BSP_SCHEDULE_DELAY", "100");
+            builder.redirectErrorStream(true).redirectOutput(output.toFile()); process = builder.start();
+            assertTrue(process.waitFor(Duration.ofSeconds(55)), "消息追踪测试进程未退出");
+            String text;
+            try (var input = Files.newInputStream(output)) {
+                byte[] bytes = input.readNBytes(4 * 1024 * 1024 + 1);
+                if (bytes.length > 4 * 1024 * 1024) throw new IllegalStateException("追踪探针输出超界");
+                text = new String(bytes, StandardCharsets.UTF_8);
+            }
+            assertEquals(0, process.exitValue(), "消息追踪测试进程失败");
+            var probes = text.lines().filter(line -> line.startsWith("STRATUM_TRACE_PROBE|")).toList();
+            assertEquals(1, probes.size(), "缺少唯一消费探针");
+            var fields = List.of(probes.getFirst().split("\\|", -1)); assertEquals(5, fields.size());
+            var spans = new HashMap<String, SpanIdentity>();
+            var json = tools.jackson.databind.json.JsonMapper.builder().build();
+            for (String line : text.split("\\R")) {
+                int offset = line.indexOf("{\"resource\""); if (offset < 0) continue;
+                for (var scope : json.readTree(line.substring(offset)).path("scopeSpans")) for (var span : scope.path("spans")) {
+                    if ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".equals(span.path("traceId").asText())) {
+                        String id = span.path("spanId").asText();
+                        assertNull(spans.put(id, new SpanIdentity(span.path("name").asText(), span.path("parentSpanId").asText(""))));
+                    }
+                }
+            }
+            return new Observation(fields, Map.copyOf(spans));
+        } finally {
+            try {
+                if (process != null && process.isAlive()) {
+                    process.destroyForcibly();
+                    if (!process.waitFor(Duration.ofSeconds(5))) throw new IllegalStateException("消息追踪子进程未退出");
+                }
+            } finally { Files.deleteIfExists(output); }
+        }
+    }
+
+    /**
+     * 测试接收的固定探针与导出跨度。
+     * @param fields 传输头及当前跨度
+     * @param spans 按跨度ID索引的实际导出结果
+     */
+    private record Observation(List<String> fields, Map<String, SpanIdentity> spans) { }
+
+    /**
+     * 不包含正文或凭据的导出跨度快照。
+     * @param name 固定Agent跨度名称
+     * @param parent 直接父跨度ID
+     */
+    private record SpanIdentity(String name, String parent) { }
+}
