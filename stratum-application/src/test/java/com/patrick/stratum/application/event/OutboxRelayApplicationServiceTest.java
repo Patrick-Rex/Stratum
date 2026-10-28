@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
 import com.patrick.stratum.application.transaction.UnitOfWork;
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.event.OutboxMessage;
 import com.patrick.stratum.domain.event.OutboxPublisher;
 import com.patrick.stratum.domain.event.OutboxRelayRepository;
@@ -67,7 +68,7 @@ class OutboxRelayApplicationServiceTest {
     @Test
     void rejectsDisabledOrTransactionalEntryBeforeClaim() {
         var repository = new RepositoryFake(1);
-        var disabled = new OutboxRelayApplicationService(new UnitFake(), repository, provider(null));
+        var disabled = new OutboxRelayApplicationService(new UnitFake(), repository, provider(null), new TraceFake());
         assertThrows(IllegalStateException.class, () -> disabled.runBatch(request(1), policy));
         var service = service(repository, delivery -> CONFIRMED);
         boolean previous = TransactionSynchronizationManager.isActualTransactionActive();
@@ -147,7 +148,7 @@ class OutboxRelayApplicationServiceTest {
      * @return 应用服务
      */
     private static OutboxRelayApplicationService service(RepositoryFake repository, OutboxPublisher publisher) {
-        return new OutboxRelayApplicationService(new UnitFake(), repository, provider(publisher));
+        return new OutboxRelayApplicationService(new UnitFake(), repository, provider(publisher), new TraceFake());
     }
 
     /**
@@ -182,6 +183,16 @@ class OutboxRelayApplicationServiceTest {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("测试发布等待中断", failure);
         }
+    }
+
+    /** 不使用标准追踪的隔离测试替身。 */
+    private static final class TraceFake implements StandardTraceContext {
+        /** {@inheritDoc} */
+        @Override public java.util.Optional<Carrier> capture() { return java.util.Optional.empty(); }
+        /** {@inheritDoc} */
+        @Override public java.util.Optional<Carrier> normalize(String parent, String state) { return java.util.Optional.empty(); }
+        /** {@inheritDoc} */
+        @Override public TraceScope restore(java.util.Optional<Carrier> carrier) { return () -> { }; }
     }
 
     /** 仅模拟事务活动标志供编排单元验证，不模拟数据库提交成功。 */

@@ -6,14 +6,17 @@ import java.net.Socket;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Consumer;
 
 import com.patrick.stratum.application.event.OutboxRelayApplicationService;
 import com.patrick.stratum.application.transaction.UnitOfWork;
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.event.OutboxMessage;
 import com.patrick.stratum.domain.event.OutboxPublisher;
 import com.patrick.stratum.domain.event.OutboxRelayRepository;
@@ -25,6 +28,7 @@ import com.rabbitmq.client.GetResponse;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.amqp.rabbit.connection.CachingConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -47,6 +51,8 @@ import tools.jackson.databind.json.JsonMapper;
 import static com.patrick.stratum.domain.event.OutboxPublisher.PublishResult.*;
 import static com.patrick.stratum.infrastructure.messaging.RabbitTopologyConfiguration.*;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
 
 /** 完整Starter与真实DB/Redis/Broker验证Relay；故障只注入本用例连接、租约或专用拓扑。 */
 @Import(OutboxRelayIntegrationTest.ProbeConfiguration.class)
@@ -61,6 +67,7 @@ class OutboxRelayIntegrationTest extends MariaDbIntegrationTest {
     private final CachingConnectionFactory factory;
     private final RecordingPublisher recorder;
     private final StringRedisTemplate redis;
+    private final StandardTraceContext standardTrace;
     private final List<String> aggregates = new ArrayList<>();
     private final OutboxRelayRepository.RetryPolicy policy =
             new OutboxRelayRepository.RetryPolicy(3, Duration.ofSeconds(30), Duration.ofSeconds(30));
@@ -76,14 +83,15 @@ class OutboxRelayIntegrationTest extends MariaDbIntegrationTest {
      * @param factory 主/发布连接
      * @param recorder 包装真实发布器的提交可见性探针
      * @param redis 本轮独立Redis
+     * @param standardTrace 实际标准追踪适配器
      */
     @Autowired
     OutboxRelayIntegrationTest(UnitOfWork unitOfWork, OutboxRepository outbox, OutboxRelayRepository relayRepository,
             OutboxRelayApplicationService runner, JdbcTemplate jdbc, RabbitAdmin admin,
-            CachingConnectionFactory factory, RecordingPublisher recorder, StringRedisTemplate redis) {
+            CachingConnectionFactory factory, RecordingPublisher recorder, StringRedisTemplate redis, StandardTraceContext standardTrace) {
         this.unitOfWork = unitOfWork; this.outbox = outbox; this.relayRepository = relayRepository;
         this.runner = runner; this.jdbc = jdbc; this.admin = admin; this.factory = factory;
-        this.recorder = recorder; this.redis = redis;
+        this.recorder = recorder; this.redis = redis; this.standardTrace = standardTrace;
     }
 
     /**
@@ -145,6 +153,169 @@ class OutboxRelayIntegrationTest extends MariaDbIntegrationTest {
         var last = drain(factory, 1).getFirst();
         assertEquals(first.get(1).eventId(), last.getProps().getMessageId());
         assertEquals(2L, ((Number) last.getProps().getHeaders().get("stratum-sequence")).longValue());
+    }
+
+    /** 发布、重试与历史事件逐条恢复原标准上下文，并在返回后恢复调用线程。 */
+    @Test
+    void isolatesEventContextsAndRestoresCallingThread() {
+        var first = seed(1).getFirst(); var second = seed(1).getFirst(); var historical = seed(1).getFirst();
+        String one = "00-11111111111111111111111111111111-1111111111111111-01";
+        String two = "00-22222222222222222222222222222222-2222222222222222-01";
+        String scheduler = "00-33333333333333333333333333333333-3333333333333333-01";
+        jdbc.update("UPDATE outbox_event SET standard_traceparent=?,standard_tracestate=? WHERE event_id=?", one, "vendor=one", first.eventId());
+        jdbc.update("UPDATE outbox_event SET standard_traceparent=?,standard_tracestate=? WHERE event_id=?", two, "vendor=two", second.eventId());
+        var seen = new HashMap<String, Optional<StandardTraceContext.Carrier>>();
+        recorder.override = delivery -> {
+            assertEquals("relay-real-trace", MDC.get("businessTraceId"));
+            seen.put(delivery.message().eventId(), standardTrace.capture()); return CONFIRMED;
+        };
+        MDC.put("businessTraceId", "scheduler-business");
+        try (var ignored = standardTrace.restore(standardTrace.normalize(scheduler, "vendor=scheduler"))) {
+            assertEquals(3, runner.runBatch(request(3), policy));
+            assertEquals(one, seen.get(first.eventId()).orElseThrow().traceparent());
+            assertEquals("vendor=one", seen.get(first.eventId()).orElseThrow().tracestate());
+            assertEquals(two, seen.get(second.eventId()).orElseThrow().traceparent());
+            assertEquals("vendor=two", seen.get(second.eventId()).orElseThrow().tracestate());
+            assertTrue(seen.get(historical.eventId()).isEmpty());
+            assertEquals(scheduler, standardTrace.capture().orElseThrow().traceparent());
+            assertEquals("scheduler-business", MDC.get("businessTraceId"));
+        } finally { MDC.remove("businessTraceId"); }
+        assertTrue(standardTrace.capture().isEmpty());
+    }
+
+    /** 同一事件重试仍以原父上下文发布，异常分类与调用线程恢复保持。 */
+    @Test
+    void retriesFromOriginalContextEvenAfterPublisherFailure() {
+        var event = seed(1).getFirst();
+        String parent = "00-44444444444444444444444444444444-4444444444444444-01";
+        jdbc.update("UPDATE outbox_event SET standard_traceparent=? WHERE event_id=?", parent, event.eventId());
+        var seen = new ArrayList<Optional<StandardTraceContext.Carrier>>();
+        recorder.override = delivery -> {
+            seen.add(standardTrace.capture());
+            if (seen.size() == 1) throw new IllegalStateException("private-publisher-error");
+            return CONFIRMED;
+        };
+        assertEquals(1, runner.runBatch(request(1), policy)); assertEquals("PENDING", status(event));
+        assertTrue(standardTrace.capture().isEmpty());
+        ready(event); assertEquals(1, runner.runBatch(request(1), policy));
+        assertEquals("SENT", status(event)); assertEquals(2, seen.size());
+        assertEquals(parent, seen.getFirst().orElseThrow().traceparent()); assertEquals(seen.getFirst(), seen.getLast());
+        assertTrue(standardTrace.capture().isEmpty());
+    }
+
+    /**
+     * 两个Relay实例并发发布时各自使用事件上下文，退出后保留各自调用线程的上下文。
+     * @throws Exception 并发测试超时或执行失败
+     */
+    @Test
+    void isolatesContextsAcrossConcurrentRelayInstances() throws Exception {
+        var first = new OutboxMessage(UUID.randomUUID().toString(), "erp.probe.created", UUID.randomUUID().toString(),
+                Instant.EPOCH, "{}", "relay-real-trace");
+        var second = new OutboxMessage(UUID.randomUUID().toString(), "erp.probe.created", UUID.randomUUID().toString(),
+                Instant.EPOCH, "{}", "relay-real-trace");
+        String one = "00-55555555555555555555555555555555-5555555555555555-01";
+        String two = "00-66666666666666666666666666666666-6666666666666666-01";
+        String caller = "00-77777777777777777777777777777777-7777777777777777-01";
+        var seen = new java.util.concurrent.ConcurrentHashMap<String, String>();
+        var entered = new java.util.concurrent.CountDownLatch(2);
+        OutboxPublisher publisher = delivery -> {
+            seen.put(delivery.message().eventId(), standardTrace.capture().orElseThrow().traceparent());
+            entered.countDown();
+            try {
+                if (!entered.await(5, java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("并发发布未就绪");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt(); throw new IllegalStateException("并发发布中断", interrupted);
+            }
+            return CONFIRMED;
+        };
+        var beans = new org.springframework.beans.factory.support.StaticListableBeanFactory();
+        beans.addBean("publisher", publisher);
+        var oneClaim = new OutboxRelayRepository.Claim(new OutboxPublisher.Delivery(first, 1), UUID.randomUUID(),
+                Instant.now().plusSeconds(30), 0, standardTrace.normalize(one, null));
+        var twoClaim = new OutboxRelayRepository.Claim(new OutboxPublisher.Delivery(second, 1), UUID.randomUUID(),
+                Instant.now().plusSeconds(30), 0, standardTrace.normalize(two, null));
+        var oneRunner = new OutboxRelayApplicationService(unitOfWork, new SingleClaim(oneClaim), beans.getBeanProvider(OutboxPublisher.class), standardTrace);
+        var twoRunner = new OutboxRelayApplicationService(unitOfWork, new SingleClaim(twoClaim), beans.getBeanProvider(OutboxPublisher.class), standardTrace);
+        try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            java.util.concurrent.Callable<Integer> runOne = () -> {
+                try (var ignored = standardTrace.restore(standardTrace.normalize(caller, null))) {
+                    int count = oneRunner.runBatch(request(1), policy);
+                    assertEquals(caller, standardTrace.capture().orElseThrow().traceparent()); return count;
+                }
+            };
+            java.util.concurrent.Callable<Integer> runTwo = () -> {
+                try (var ignored = standardTrace.restore(standardTrace.normalize(caller, null))) {
+                    int count = twoRunner.runBatch(request(1), policy);
+                    assertEquals(caller, standardTrace.capture().orElseThrow().traceparent()); return count;
+                }
+            };
+            var a = executor.submit(runOne); var b = executor.submit(runTwo);
+            assertEquals(1, a.get(10, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(1, b.get(10, java.util.concurrent.TimeUnit.SECONDS));
+        }
+        assertEquals(Map.of(first.eventId(), one, second.eventId(), two), seen);
+        assertTrue(standardTrace.capture().isEmpty());
+    }
+
+    /** 发布中断时作用域仍关闭，租约留待到期恢复。 */
+    @Test
+    void restoresContextAfterPublisherInterruption() {
+        var event = seed(1).getFirst();
+        String parent = "00-88888888888888888888888888888888-8888888888888888-01";
+        String caller = "00-99999999999999999999999999999999-9999999999999999-01";
+        jdbc.update("UPDATE outbox_event SET standard_traceparent=? WHERE event_id=?", parent, event.eventId());
+        recorder.override = delivery -> {
+            assertEquals(parent, standardTrace.capture().orElseThrow().traceparent());
+            Thread.currentThread().interrupt(); return UNAVAILABLE;
+        };
+        try (var ignored = standardTrace.restore(standardTrace.normalize(caller, null))) {
+            try {
+                assertEquals(0, runner.runBatch(request(1), policy));
+                assertTrue(Thread.currentThread().isInterrupted());
+                assertEquals(caller, standardTrace.capture().orElseThrow().traceparent());
+            } finally { Thread.interrupted(); }
+        }
+        assertTrue(standardTrace.capture().isEmpty()); assertEquals("PROCESSING", status(event));
+    }
+
+    /** 恢复追踪失败时不发送、不推进状态，租约到期后仍发布原事件。 */
+    @Test
+    void leavesLeaseWhenTraceRestoreFailsAndRetriesAfterExpiry() {
+        var event = seed(1).getFirst(); var next = seed(1).getFirst();
+        String parent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aaaaaaaaaaaaaaaa-01";
+        jdbc.update("UPDATE outbox_event SET standard_traceparent=?,next_retry_at='2000-01-01 00:00:00' WHERE event_id=?", parent, event.eventId());
+        jdbc.update("UPDATE outbox_event SET next_retry_at='2001-01-01 00:00:00' WHERE event_id=?", next.eventId());
+        var broken = mock(StandardTraceContext.class);
+        when(broken.restore(any())).thenThrow(new IllegalStateException("private-trace-failure"));
+        var beans = new org.springframework.beans.factory.support.StaticListableBeanFactory();
+        beans.addBean("publisher", recorder);
+        var faulty = new OutboxRelayApplicationService(unitOfWork, relayRepository, beans.getBeanProvider(OutboxPublisher.class), broken);
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(OutboxRelayApplicationService.class);
+        var captured = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        captured.start(); logger.addAppender(captured);
+        String previous = MDC.get("businessTraceId"); MDC.put("businessTraceId", "caller-business");
+        try {
+            assertEquals(0, faulty.runBatch(request(2), policy));
+            assertEquals("caller-business", MDC.get("businessTraceId"));
+            assertEquals("PROCESSING", status(event)); assertEquals(0, retryCount(event));
+            assertEquals("PENDING", status(next)); assertTrue(recorder.ids.isEmpty());
+            String token = jdbc.queryForObject("SELECT lease_token FROM outbox_event WHERE event_id=?", String.class, event.eventId());
+            assertNotNull(token);
+            var warnings = captured.list.stream().filter(log -> log.getFormattedMessage().contains("标准追踪作用域恢复失败")).toList();
+            assertEquals(1, warnings.size()); assertNull(warnings.getFirst().getThrowableProxy());
+            assertTrue(warnings.getFirst().getKeyValuePairs().stream().anyMatch(pair -> "errorType".equals(pair.key) && "IllegalStateException".equals(pair.value)));
+            assertFalse(warnings.toString().contains("private-trace-failure"));
+            jdbc.update("UPDATE outbox_event SET lease_until='2000-01-01 00:00:00' WHERE event_id=?", event.eventId());
+            recorder.override = delivery -> {
+                assertEquals(parent, standardTrace.capture().orElseThrow().traceparent()); return CONFIRMED;
+            };
+            assertEquals(1, runner.runBatch(request(1), policy));
+            assertEquals("SENT", status(event)); assertEquals(List.of(event.eventId()), recorder.ids);
+            assertNotEquals(token, recorder.tokens.getFirst()); assertEquals("caller-business", MDC.get("businessTraceId"));
+        } finally {
+            logger.detachAppender(captured); captured.stop();
+            if (previous == null) MDC.remove("businessTraceId"); else MDC.put("businessTraceId", previous);
+        }
     }
 
     /** 实际mandatory返回持久化重试；恢复拓扑后原事件及原序号再次发送成功。 */
@@ -255,6 +426,7 @@ class OutboxRelayIntegrationTest extends MariaDbIntegrationTest {
             if (withRunner) {
                 context.registerBean(UnitOfWork.class, () -> unitOfWork);
                 context.registerBean(OutboxRelayRepository.class, () -> relayRepository);
+                context.registerBean(StandardTraceContext.class, () -> standardTrace);
                 context.register(OutboxRelayApplicationService.class);
             }
             context.refresh();
@@ -331,6 +503,28 @@ class OutboxRelayIntegrationTest extends MariaDbIntegrationTest {
             }
         }
         return messages;
+    }
+
+    /** 并发追踪测试使用的单条领取替身，不模拟数据库竞争。 */
+    private static final class SingleClaim implements OutboxRelayRepository {
+        private final Claim claim;
+        private boolean available = true;
+
+        /**
+         * 创建独立实例的固定领取证据。
+         * @param claim 含原标准上下文的领取证据
+         */
+        private SingleClaim(Claim claim) { this.claim = claim; }
+
+        /** {@inheritDoc} */
+        @Override public List<Claim> claim(ClaimRequest request) {
+            if (!available) return List.of(); available = false; return List.of(claim);
+        }
+
+        /** {@inheritDoc} */
+        @Override public boolean finish(Claim claimed, OutboxPublisher.PublishResult result, RetryPolicy policy) {
+            return claimed == claim && result == CONFIRMED;
+        }
     }
 
     /** 仅本测试显式导入的观察配置，包装实际适配而非替换Broker行为。 */

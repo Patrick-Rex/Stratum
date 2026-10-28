@@ -10,6 +10,7 @@ import java.util.function.Supplier;
 import com.patrick.stratum.application.event.OutboxReconciliationApplicationService;
 import com.patrick.stratum.application.event.OutboxRelayApplicationService;
 import com.patrick.stratum.application.transaction.UnitOfWork;
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.event.OutboxPublisher;
 import com.patrick.stratum.domain.event.OutboxReconciliationRepository;
 import com.patrick.stratum.domain.event.OutboxRelayRepository;
@@ -85,6 +86,16 @@ class OutboxRelayJobHandlerTest {
         }
     }
 
+    /** 不使用标准追踪的隔离测试替身。 */
+    private static final class TraceFake implements StandardTraceContext {
+        /** {@inheritDoc} */
+        @Override public java.util.Optional<Carrier> capture() { return java.util.Optional.empty(); }
+        /** {@inheritDoc} */
+        @Override public java.util.Optional<Carrier> normalize(String parent, String state) { return java.util.Optional.empty(); }
+        /** {@inheritDoc} */
+        @Override public TraceScope restore(java.util.Optional<Carrier> carrier) { return () -> { }; }
+    }
+
     /**
      * 用独立Spring上下文验证配置开关及端口装配，失败时关闭上下文。
      * @param relayEnabled Relay开关
@@ -102,7 +113,7 @@ class OutboxRelayJobHandlerTest {
         var work = new UnitFake(); var probe = new Probe();
         if (publisherPresent) context.registerBean(OutboxPublisher.class, () -> delivery -> OutboxPublisher.PublishResult.CONFIRMED);
         context.registerBean(OutboxRelayApplicationService.class,
-                () -> new OutboxRelayApplicationService(work, probe, context.getBeanProvider(OutboxPublisher.class)));
+                () -> new OutboxRelayApplicationService(work, probe, context.getBeanProvider(OutboxPublisher.class), new TraceFake()));
         context.registerBean(OutboxReconciliationApplicationService.class, () -> new OutboxReconciliationApplicationService(work, probe::scan));
         context.register(OutboxRelayJobConfiguration.class);
         try { context.refresh(); return context; }
@@ -118,7 +129,7 @@ class OutboxRelayJobHandlerTest {
     private OutboxRelayJobHandler handler(Probe probe, int limit) {
         var work = new UnitFake(); var beans = new StaticListableBeanFactory();
         beans.addBean("publisher", (OutboxPublisher) delivery -> OutboxPublisher.PublishResult.CONFIRMED);
-        var relay = new OutboxRelayApplicationService(work, probe, beans.getBeanProvider(OutboxPublisher.class));
+        var relay = new OutboxRelayApplicationService(work, probe, beans.getBeanProvider(OutboxPublisher.class), new TraceFake());
         var reconciliation = new OutboxReconciliationApplicationService(work, probe::scan);
         return new OutboxRelayJobHandler(relay, reconciliation, new OutboxRelayJobConfiguration.Properties("0 0/1 * * * ?", 16, limit, 30));
     }

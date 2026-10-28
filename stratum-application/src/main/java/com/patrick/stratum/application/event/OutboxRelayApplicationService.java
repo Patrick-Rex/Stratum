@@ -5,13 +5,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.common.trace.CorrelationIdPolicy;
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.event.OutboxPublisher;
 import com.patrick.stratum.domain.event.OutboxRelayRepository;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -19,13 +20,29 @@ import lombok.extern.slf4j.Slf4j;
  * <p>示例：由任务执行器调用runBatch(request, retryPolicy)，跨实例资格由数据库租约控制。</p>
  */
 @Component
-@RequiredArgsConstructor
 @Slf4j
 public class OutboxRelayApplicationService {
+    private static final String BUSINESS_TRACE_MDC_KEY = "businessTraceId";
     private final UnitOfWork unitOfWork;
     private final OutboxRelayRepository relay;
     private final ObjectProvider<OutboxPublisher> publishers;
+    private final StandardTraceContext standardTrace;
     private final AtomicBoolean running = new AtomicBoolean();
+
+    /**
+     * 注入工作单元、领取端口、可选发布端口及标准追踪边界。
+     * @param unitOfWork Application事务边界
+     * @param relay 领取与完成端口
+     * @param publishers 可选的消息发布端口
+     * @param standardTrace 标准追踪上下文边界
+     * @throws NullPointerException 必需依赖为空
+     * @apiNote 示例：{@code new OutboxRelayApplicationService(work, relay, publishers, trace)}。
+     */
+    public OutboxRelayApplicationService(UnitOfWork unitOfWork, OutboxRelayRepository relay,
+            ObjectProvider<OutboxPublisher> publishers, StandardTraceContext standardTrace) {
+        this.unitOfWork = Objects.requireNonNull(unitOfWork); this.relay = Objects.requireNonNull(relay);
+        this.publishers = Objects.requireNonNull(publishers); this.standardTrace = Objects.requireNonNull(standardTrace);
+    }
 
     /**
      * 顺序执行有界批次，每次只领取即将发送的一条，避免预先持有等待发送的租约。
@@ -34,7 +51,7 @@ public class OutboxRelayApplicationService {
      * @return 成功记录投递结果的条数，包含SENT及已记录的重试/失败，不表示业务消费成功
      * @throws IllegalStateException 仍处于事务、消息未启用、本实例已有批次执行或存储契约不符
      * @apiNote 示例：relay.runBatch(new OutboxRelayRepository.ClaimRequest(16, Duration.ofSeconds(30)), retryPolicy)。
-     * 中断或持久化异常时，尚未完成的领取由数据库租约到期恢复。
+     * 中断、追踪作用域恢复故障或持久化异常时，尚未完成的领取由数据库租约到期恢复。
      */
     public int runBatch(OutboxRelayRepository.ClaimRequest request, OutboxRelayRepository.RetryPolicy retryPolicy) {
         Objects.requireNonNull(request, "Relay请求不能为空");
@@ -54,17 +71,33 @@ public class OutboxRelayApplicationService {
                 if (claims.isEmpty()) break;
                 if (claims.size() != 1) throw new IllegalStateException("Relay存储返回了超出请求的领取结果");
                 var claim = claims.getFirst();
-                var result = publish(publisher, claim);
-                if (Thread.currentThread().isInterrupted()) break;
-                boolean changed = unitOfWork.execute(() -> relay.finish(claim, result, retryPolicy));
-                if (changed) updated++;
                 var event = claim.delivery().message();
                 String trace = CorrelationIdPolicy.isValid(event.traceId()) ? event.traceId() : "invalid";
-                log.atInfo().addKeyValue("eventId", event.eventId()).addKeyValue("messageId", event.eventId())
-                        .addKeyValue("traceId", trace).addKeyValue("consumerGroup", "")
-                        .addKeyValue("outcome", result.name()).addKeyValue("stateUpdated", changed)
-                        .log("Outbox投递结果 eventId={} messageId={} traceId={} result={} stateUpdated={}",
-                                event.eventId(), event.eventId(), trace, result, changed);
+                String previousBusinessTrace = MDC.get(BUSINESS_TRACE_MDC_KEY);
+                MDC.put(BUSINESS_TRACE_MDC_KEY, trace);
+                try {
+                    StandardTraceContext.TraceScope restored;
+                    try { restored = Objects.requireNonNull(standardTrace.restore(claim.standardTrace())); }
+                    catch (RuntimeException failure) {
+                        try { log.atWarn().addKeyValue("errorType", failure.getClass().getSimpleName()).log("标准追踪作用域恢复失败，保留租约"); }
+                        catch (RuntimeException ignored) { /* 告警失败仍不能发送或覆盖租约。 */ }
+                        break;
+                    }
+                    try (restored) {
+                        var result = publish(publisher, claim);
+                        if (Thread.currentThread().isInterrupted()) break;
+                        boolean changed = unitOfWork.execute(() -> relay.finish(claim, result, retryPolicy));
+                        if (changed) updated++;
+                        log.atInfo().addKeyValue("eventId", event.eventId()).addKeyValue("messageId", event.eventId())
+                                .addKeyValue("traceId", trace).addKeyValue("consumerGroup", "")
+                                .addKeyValue("outcome", result.name()).addKeyValue("stateUpdated", changed)
+                                .log("Outbox投递结果 eventId={} messageId={} traceId={} result={} stateUpdated={}",
+                                        event.eventId(), event.eventId(), trace, result, changed);
+                    }
+                } finally {
+                    if (previousBusinessTrace == null) MDC.remove(BUSINESS_TRACE_MDC_KEY);
+                    else MDC.put(BUSINESS_TRACE_MDC_KEY, previousBusinessTrace);
+                }
             }
             return updated;
         } finally {

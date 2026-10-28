@@ -419,7 +419,8 @@ class PeriodicRelayIsolationIntegrationTest {
         if (relayEnabled) {
             context.registerBean("relayProbePublisher", OutboxPublisher.class, () -> publisher, definition -> definition.setPrimary(true));
             context.registerBean("outboxRelayApplicationService", OutboxRelayApplicationService.class,
-                    () -> new OutboxRelayApplicationService(work, parent.getBean(OutboxRelayRepository.class), context.getBeanProvider(OutboxPublisher.class)));
+                    () -> new OutboxRelayApplicationService(work, parent.getBean(OutboxRelayRepository.class), context.getBeanProvider(OutboxPublisher.class),
+                            parent.getBean(com.patrick.stratum.common.trace.StandardTraceContext.class)));
             context.register(OutboxRelayJobConfiguration.class);
         }
         context.register(SchedulerConfiguration.class, JobRuntimeConfiguration.class, QuartzTriggerConfiguration.class);

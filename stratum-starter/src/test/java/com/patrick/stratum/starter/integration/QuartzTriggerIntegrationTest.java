@@ -641,7 +641,8 @@ class QuartzTriggerIntegrationTest extends MariaDbIntegrationTest {
         if (actualRelay) {
             context.registerBean("testPublisher", OutboxPublisher.class, () -> delivery -> OutboxPublisher.PublishResult.CONFIRMED);
             context.registerBean(OutboxRelayApplicationService.class, () -> new OutboxRelayApplicationService(
-                    parent.getBean(UnitOfWork.class), parent.getBean(OutboxRelayRepository.class), context.getBeanProvider(OutboxPublisher.class)));
+                    parent.getBean(UnitOfWork.class), parent.getBean(OutboxRelayRepository.class), context.getBeanProvider(OutboxPublisher.class),
+                    parent.getBean(com.patrick.stratum.common.trace.StandardTraceContext.class)));
             context.register(OutboxRelayJobConfiguration.class);
         }
         context.register(SchedulerConfiguration.class, JobRuntimeConfiguration.class, QuartzTriggerConfiguration.class);
