@@ -72,6 +72,7 @@ class OpenTelemetryAgentIntegrationTest {
             String trace = UUID.randomUUID().toString().replace("-", "");
             String parent = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
             String business = "business-" + UUID.randomUUID();
+            String cookie = "test-cookie-" + UUID.randomUUID();
             try (var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()) {
                 var request = HttpRequest.newBuilder(endpoint).timeout(Duration.ofSeconds(15))
                         .header("traceparent", "00-" + trace + "-" + parent + "-01").header("X-Trace-Id", business).GET().build();
@@ -80,11 +81,18 @@ class OpenTelemetryAgentIntegrationTest {
                 var rootRequest = HttpRequest.newBuilder(endpoint).timeout(Duration.ofSeconds(15))
                         .header("X-Trace-Id", "root-" + UUID.randomUUID()).GET().build();
                 assertEquals(200, client.send(rootRequest, HttpResponse.BodyHandlers.discarding()).statusCode());
+                URI docs = URI.create("http://127.0.0.1:" + portMatcher.group(1) + "/v3/api-docs");
+                var docsRequest = HttpRequest.newBuilder(docs).timeout(Duration.ofSeconds(15))
+                        .header("traceparent", "00-" + trace + "-" + parent + "-01").header("X-Trace-Id", business)
+                        .header("Cookie", "session=" + cookie).GET().build();
+                assertEquals(200, client.send(docsRequest, HttpResponse.BodyHandlers.discarding()).statusCode());
             }
             await().atMost(Duration.ofSeconds(15)).until(() -> {
                 String exported = readOutput(output);
-                return hasServerSpan(exported, trace, parent) && hasServerSpan(exported, null, "");
+                return hasServerSpan(exported, trace, parent) && hasServerSpan(exported, null, "")
+                        && hasApplicationLog(exported, business, trace);
             });
+            assertFalse(readOutput(output).contains(cookie));
             assertTrue(child.isAlive());
         } finally {
             try {
@@ -101,6 +109,24 @@ class OpenTelemetryAgentIntegrationTest {
                 }
             } finally { Files.deleteIfExists(output); }
         }
+    }
+
+    /**
+     * 在真实JSON请求日志中核对业务关联与Agent提供的有效标准跨度。
+     * @param output 本测试子进程输出
+     * @param business 业务关联ID
+     * @param trace 标准trace ID
+     * @return 是否存在匹配日志
+     */
+    private boolean hasApplicationLog(String output, String business, String trace) {
+        for (String line : output.split("\\R")) {
+            if (!line.startsWith("{\"timestamp\"")) continue;
+            var row = json.readTree(line);
+            if (business.equals(row.path("businessTraceId").asText()) && trace.equals(row.path("traceId").asText())
+                    && row.path("spanId").asText().matches("[0-9a-f]{16}")
+                    && !row.path("spanId").asText().equals("0000000000000000")) return true;
+        }
+        return false;
     }
 
     /**

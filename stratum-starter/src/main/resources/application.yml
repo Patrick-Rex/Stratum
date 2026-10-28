@@ -81,3 +81,8 @@ springdoc:
     urls:
       - name: Stratum
         url: /v3/api-docs
+
+logging:
+  structured:
+    format:
+      console: com.patrick.stratum.starter.logging.StarterStructuredLogFormatter
