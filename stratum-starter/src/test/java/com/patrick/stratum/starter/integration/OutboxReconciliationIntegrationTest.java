@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit;
 
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.application.job.DeadLetterReplayCancellationService;
+import com.patrick.stratum.application.job.DeadLetterReplayRegistrationService;
 import com.patrick.stratum.application.event.OutboxReconciliationApplicationService;
 import com.patrick.stratum.application.event.OutboxRelayControlApplicationService;
 import com.patrick.stratum.application.event.OutboxRelayControlAdministrationService;
@@ -41,6 +42,7 @@ import com.patrick.stratum.domain.event.OutboxRelayRepository;
 import com.patrick.stratum.domain.event.OutboxRelayControlRepository;
 import com.patrick.stratum.domain.event.OutboxRepository;
 import com.patrick.stratum.domain.job.DeadLetterReplayJob;
+import com.patrick.stratum.domain.job.DeadLetterReplayTaskRepository;
 import com.patrick.stratum.domain.job.JobCancellationRepository;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository;
@@ -96,6 +98,7 @@ class OutboxReconciliationIntegrationTest {
     private final List<UUID> ownedUsers = new ArrayList<>();
     private final List<UUID> ownedRoles = new ArrayList<>();
     private final List<UUID> ownedJobs = new ArrayList<>();
+    private final List<UUID> ownedTaskRequests = new ArrayList<>();
     private boolean verified;
 
     /**
@@ -174,6 +177,12 @@ class OutboxReconciliationIntegrationTest {
         for (var id : recoveryRequests) jdbc.update("DELETE FROM outbox_original_recovery_request WHERE request_id=?", id.toString());
         for (var id : replayArchives) jdbc.update("DELETE FROM outbox_replay_delivery WHERE dead_id=?", id.toString());
         for (var id : replayArchives) jdbc.update("DELETE FROM outbox_dead_letter WHERE dead_id=?", id.toString());
+        for (var id : ownedTaskRequests) {
+            for (String task : jdbc.queryForList("SELECT task_id FROM dead_letter_replay_task WHERE request_id=? AND task_id IS NOT NULL", String.class, id.toString())) {
+                ownedJobs.add(UUID.fromString(task));
+            }
+            jdbc.update("DELETE FROM dead_letter_replay_task WHERE request_id=?", id.toString());
+        }
         for (var id : ownedJobs) {
             jdbc.update("DELETE FROM job_attempt WHERE execution_id=?", id.toString());
             jdbc.update("DELETE FROM job_execution WHERE execution_id=?", id.toString());
@@ -430,6 +439,71 @@ class OutboxReconciliationIntegrationTest {
             } finally { release.countDown(); }
         }
         assertEquals("WAITING", jdbc.queryForObject("SELECT state FROM job_execution WHERE execution_id=?", String.class, target.toString()));
+    }
+
+    /** 登记只允许当前管理员，重复请求固定首次任务、目标及操作者，不提前声称实际重放成功。 */
+    @Test
+    void registersReplayTaskOnlyForCurrentAdministrator() {
+        UUID role = administratorRole(); UUID administrator = account(); UUID otherAdministrator = account(); UUID ordinary = account();
+        assignRole(administrator, Set.of(role)); assignRole(otherAdministrator, Set.of(role));
+        UUID request = UUID.randomUUID(), archive = UUID.randomUUID(); ownedTaskRequests.add(request);
+        var service = replayRegistration(administrator); var denied = replayRegistration(ordinary);
+        assertThrows(NullPointerException.class, () -> service.register(null, archive));
+        assertThrows(NullPointerException.class, () -> service.register(request, null));
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> service.register(request, archive)));
+        assertEquals(CommonErrorCode.FORBIDDEN, assertThrows(StratumException.class, () -> denied.register(request, archive)).getErrorCode());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dead_letter_replay_task WHERE request_id=?", Integer.class, request.toString()));
+        var previousTrace = TraceIdContext.getTraceId();
+        try {
+            TraceIdContext.setTraceId("first-task-trace"); UUID task = service.register(request, archive);
+            TraceIdContext.setTraceId("later-task-trace"); assertEquals(task, service.register(request, archive));
+            assertEquals(CommonErrorCode.CONFLICT, assertThrows(StratumException.class, () -> service.register(request, UUID.randomUUID())).getErrorCode());
+            assertEquals(CommonErrorCode.CONFLICT, assertThrows(StratumException.class, () -> replayRegistration(otherAdministrator).register(request, archive)).getErrorCode());
+            var row = jdbc.queryForMap("SELECT job_code,job_type,state,arguments,initial_trace_id FROM job_execution WHERE execution_id=?", task.toString());
+            assertEquals(DeadLetterReplayJob.CODE, row.get("job_code")); assertEquals("ONCE", row.get("job_type"));
+            assertEquals("WAITING", row.get("state")); assertEquals(DeadLetterReplayJob.arguments(archive), row.get("arguments"));
+            assertEquals("first-task-trace", row.get("initial_trace_id"));
+            assertEquals(administrator.toString(), jdbc.queryForObject("SELECT operator_id FROM dead_letter_replay_task WHERE request_id=?", String.class, request.toString()));
+            assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_replay_request WHERE request_id=?", Integer.class, task.toString()));
+            unitOfWork.execute(() -> { administration.lock(); jdbc.update("UPDATE auth_user SET enabled=0 WHERE id=?", administrator.toString()); return null; });
+            assertEquals(CommonErrorCode.FORBIDDEN, assertThrows(StratumException.class, () -> service.register(request, archive)).getErrorCode());
+            unitOfWork.execute(() -> { administration.lock(); jdbc.update("UPDATE auth_user SET enabled=1 WHERE id=?", administrator.toString());
+                administration.replaceRoleIds(administrator, Set.of()); return null; });
+            assertEquals(CommonErrorCode.FORBIDDEN, assertThrows(StratumException.class, () -> service.register(request, archive)).getErrorCode());
+        } finally {
+            if (previousTrace.isPresent()) TraceIdContext.setTraceId(previousTrace.orElseThrow()); else TraceIdContext.clear();
+        }
+    }
+
+    /**
+     * 并发管理员撤权先提交时，等待中的任务登记拒绝且不留绑定。
+     * @throws Exception 并发执行失败或等待超时
+     */
+    @Test
+    void replayTaskRegistrationWaitsForAdministratorRevocation() throws Exception {
+        UUID role = administratorRole(); UUID administrator = account(); UUID otherAdministrator = account();
+        assignRole(administrator, Set.of(role)); assignRole(otherAdministrator, Set.of(role));
+        UUID request = UUID.randomUUID(), archive = UUID.randomUUID(); ownedTaskRequests.add(request);
+        var service = replayRegistration(administrator);
+        var held = new CountDownLatch(1); var started = new CountDownLatch(1); var release = new CountDownLatch(1);
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var owner = workers.submit(() -> unitOfWork.execute(() -> {
+                administration.lock(); administration.replaceRoleIds(administrator, Set.of()); held.countDown();
+                try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+                catch (InterruptedException signal) { Thread.currentThread().interrupt(); throw new IllegalStateException("测试锁等待中断"); }
+                return null;
+            }));
+            try {
+                assertTrue(held.await(5, TimeUnit.SECONDS));
+                var contender = workers.submit(() -> { started.countDown(); return service.register(request, archive); });
+                assertTrue(started.await(5, TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.TimeoutException.class, () -> contender.get(300, TimeUnit.MILLISECONDS));
+                release.countDown(); owner.get(5, TimeUnit.SECONDS);
+                var failure = assertThrows(java.util.concurrent.ExecutionException.class, () -> contender.get(5, TimeUnit.SECONDS));
+                assertEquals(CommonErrorCode.FORBIDDEN, assertInstanceOf(StratumException.class, failure.getCause()).getErrorCode());
+            } finally { release.countDown(); }
+        }
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dead_letter_replay_task WHERE request_id=?", Integer.class, request.toString()));
     }
 
     /** 应用入口拒绝已有工作单元，避免把恢复结果误报为已提交。 */
@@ -1291,6 +1365,17 @@ class OutboxReconciliationIntegrationTest {
                 new JobDefinition.RetryPolicy(3, Duration.ofSeconds(1), Duration.ofSeconds(5)), JobDefinition.IdempotencyRule.EXPLICIT_KEY);
         var input = new JobExecutionRepository.Submission(id, definition, time, id.toString(), "{}", "replay-cancellation-test");
         unitOfWork.execute(() -> application.getBean(JobExecutionRepository.class).register(input)); return id;
+    }
+
+    /**
+     * 为可信测试身份构造真实管理员锁与重放任务登记入口。
+     * @param user 测试账号UUID
+     * @return 管理员登记服务
+     */
+    private DeadLetterReplayRegistrationService replayRegistration(UUID user) {
+        CurrentIdentity identity = () -> new CurrentIdentity.Snapshot(user, UUID.randomUUID(), 0);
+        return new DeadLetterReplayRegistrationService(identity, administration,
+                application.getBean(DeadLetterReplayTaskRepository.class), unitOfWork);
     }
 
     /**
