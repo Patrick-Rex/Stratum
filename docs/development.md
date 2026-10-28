@@ -42,11 +42,11 @@
 | stratum-starter | 启动类、全局异常处理、国际化资源、Web 与 Actuator 依赖 |
 | stratum-infrastructure | 已引入 Easy-Query 3.3.1（Boot 4 starter / MySQL 方言 / 处理器）、MariaDB JDBC、Flyway、Redis、Caffeine；已配置数据源与 Flyway；NODE-B03.2b 已验证真实 MariaDB 提交、回滚和嵌套事务 |
 | stratum-gateway | 独立运行时依赖：Spring Cloud 2025.1.4 / Gateway Server WebFlux 5.0.4；不再由Starter聚合，已提供独立启动、固定上游路由、Header灰度、协议透传和代理超时/错误处理；已具备头体防护及管理直连CIDR限制，已绑定直连IP共享Redis限流，已提供JSON访问日志及受管理CIDR保护的Prometheus指标；双进程ERP闭环、权限组合及g3全工程回归已验收，D04.1完成 |
-| stratum-job | Quartz/ShedLock Spring依赖、固定处理器注册表与有界虚拟线程执行器已接入；实际工作器持有数据库锁，已接入固定Quartz触发及数据库重试驱动，周期Relay继续E03后续节点 |
+| stratum-job | Quartz/ShedLock Spring依赖、固定处理器注册表与有界虚拟线程执行器已接入；实际工作器持有数据库锁，固定Quartz触发、数据库重试驱动及可选周期Relay已验收，E04异步任务API待继续 |
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
 
-Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ已接入显式启用的连接配置，持久化Topic/Quorum拓扑及发布确认适配已建立，Relay、有序消费、死信归档及人工重放闭环已通过E02.5全工程验收；Quartz JDBC/ShedLock数据库锁已具备默认关闭的显式装配；任务有界执行器已接入，固定Quartz触发已接入，周期Relay、Nacos和完整观测组件仍待后续节点。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
+Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ已接入显式启用的连接配置，持久化Topic/Quorum拓扑及发布确认适配已建立，Relay、有序消费、死信归档及人工重放闭环已通过E02.5全工程验收；Quartz JDBC/ShedLock数据库锁已具备默认关闭的显式装配；任务有界执行器、固定Quartz触发及可选周期Relay已接入并验收；异步任务API、Nacos和完整观测组件仍待后续节点。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
 
 以下目标基线沿用原项目入口的既有约定，尚未接入时不作为当前依赖版本：
 
