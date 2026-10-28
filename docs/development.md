@@ -1728,3 +1728,8 @@ RabbitMQ发布器在无Agent时将当前有效、规范化的 `traceparent` 和�
 ### RabbitMQ监听追踪现状
 
 在独立JVM、真实Broker和固定OpenTelemetry Java Agent 2.33.0下，生产发布器发送的消息头指向Agent生成的发布跨度，该跨度以恢复的原事件上下文为父；生产监听器的接收后处理器和应用消费回调处均处于同一个Agent消费跨度，其直接父跨度是消息头所指的发布跨度。无Agent时有效消息头可到达监听器，但当前监听器不会自动恢复该上下文。2项真实Broker进程测试通过，零失败、错误或跳过；消费业务使用受控端口替身，真实事务链路及消费端处理仍待后续节点。
+
+
+### 消息监听线程追踪隔离
+
+每条消息进入Spring监听入口前临时切换到根上下文，结束后恢复工作线程原值，防止复用线程残留追踪或baggage串入消息。固定Agent在Spring监听入口建立自己的消费跨度；切换消息语义约定时可能通过父跨度或跨度链接表达关联，参考[固定版本Agent实现](https://github.com/open-telemetry/opentelemetry-java-instrumentation/blob/v2.33.0/instrumentation/spring/spring-rabbit-1.0/javaagent/src/main/java/io/opentelemetry/javaagent/instrumentation/spring/rabbit/v1_0/SpringRabbitSingletons.java)。3项真实Broker独立JVM测试、8项消费单元及7项真实Broker/调度集成测试通过，零失败、错误或跳过；无Agent消息头恢复仍待下一节点。

@@ -6,17 +6,26 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.patrick.stratum.domain.event.OutboxConsumer;
 import com.patrick.stratum.domain.event.OutboxMessage;
 import com.patrick.stratum.domain.event.OutboxPublisher;
 import com.patrick.stratum.infrastructure.tracing.OpenTelemetryTraceContext;
+import io.opentelemetry.api.baggage.Baggage;
 import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanContext;
+import io.opentelemetry.api.trace.TraceFlags;
+import io.opentelemetry.api.trace.TraceState;
+import io.opentelemetry.context.Context;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.core.env.MapPropertySource;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import tools.jackson.databind.json.JsonMapper;
 
 import static com.patrick.stratum.infrastructure.messaging.RabbitTopologyConfiguration.*;
@@ -43,12 +52,36 @@ public final class RabbitTraceAgentFixture {
         values.put("stratum.messaging.password", required("STRATUM_IT_MQ_PASSWORD"));
         var done = new CountDownLatch(1); var current = new AtomicReference<String>(); var header = new AtomicReference<String>();
         var headerState = new AtomicReference<String>(); var postCurrent = new AtomicReference<String>();
+        var baggageVisible = new AtomicReference<Boolean>();
+        var restoredWorkers = new AtomicInteger(); var badRestore = new AtomicBoolean();
         var context = new AnnotationConfigApplicationContext();
         try {
+            context.getBeanFactory().addBeanPostProcessor(new BeanPostProcessor() {
+                /** {@inheritDoc} */
+                @Override public Object postProcessBeforeInitialization(Object bean, String name) {
+                    if ("rabbitConsumerExecutor".equals(name) && bean instanceof ThreadPoolTaskExecutor executor) {
+                        var stale = SpanContext.createFromRemoteParent("dddddddddddddddddddddddddddddddd", "eeeeeeeeeeeeeeee",
+                                TraceFlags.getSampled(), TraceState.getDefault());
+                        executor.setTaskDecorator(task -> () -> {
+                            var baggage = Baggage.builder().put("fixture", "do-not-propagate").build();
+                            try (var ignored = Context.root().with(Span.wrap(stale)).with(baggage).makeCurrent()) {
+                                try { task.run(); }
+                                finally {
+                                    if ("dddddddddddddddddddddddddddddddd:eeeeeeeeeeeeeeee:true".equals(identity())
+                                            && "do-not-propagate".equals(Baggage.current().getEntryValue("fixture"))) restoredWorkers.incrementAndGet();
+                                    else badRestore.set(true);
+                                }
+                            }
+                        });
+                    }
+                    return bean;
+                }
+            });
             context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("trace-broker-fixture", values));
             context.registerBean(JsonMapper.class, () -> JsonMapper.builder().build());
             context.registerBean(OutboxConsumer.class, () -> (delivery, group) -> {
-                current.set(identity()); done.countDown(); return OutboxConsumer.Outcome.CONSUMED;
+                current.set(identity()); baggageVisible.set(Baggage.current().getEntryValue("fixture") != null);
+                done.countDown(); return OutboxConsumer.Outcome.CONSUMED;
             });
             context.register(RabbitMessagingConfiguration.class, RabbitTopologyConfiguration.class,
                     RabbitOutboxPublisherConfiguration.class, RabbitOutboxConsumerConfiguration.class);
@@ -70,7 +103,6 @@ public final class RabbitTraceAgentFixture {
             }
             if (!done.await(15, TimeUnit.SECONDS)) throw new IllegalStateException("测试监听器未消费消息");
             listener.stop();
-            System.out.println("STRATUM_TRACE_PROBE|" + header.get() + "|" + headerState.get() + "|" + postCurrent.get() + "|" + current.get());
         } finally {
             try {
                 if (context.isActive()) {
@@ -81,6 +113,8 @@ public final class RabbitTraceAgentFixture {
                 }
             } finally { context.close(); }
         }
+        System.out.println("STRATUM_TRACE_PROBE|" + header.get() + "|" + headerState.get() + "|" + postCurrent.get()
+                + "|" + current.get() + "|" + baggageVisible.get() + "|" + restoredWorkers.get() + "|" + badRestore.get());
     }
 
     /**

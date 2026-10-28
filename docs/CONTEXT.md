@@ -10,8 +10,8 @@
 
 ```
 阶段：Phase F（可观测性与收敛）
-当前节点：NODE-F02.5c4b1（待开始）
-上次会话日期：2026-10-28（NODE-F02.5c4a 验收）
+当前节点：NODE-F02.5c4b2（待开始）
+上次会话日期：2026-10-28（NODE-F02.5c4b1 验收）
 项目状态：NODE-B01 已完成，Domain 核心抽象已建立（AggregateRoot、Entity、ValueObject、Repository、DomainEvent），domain 模块直接声明 common 依赖，源码无框架导入；根构建统一配置 Lombok 编译期依赖；Phase A 与 Phase B 已完成；Phase C 已完成；Phase D 非部署范围已完成，D04.2部署暂缓
 ```
 
@@ -327,12 +327,13 @@
 | NODE-F02.5c2 | 逐事件恢复Relay发布追踪作用域 | 2026-10-28 | Application 26项、Job 41项单元及12项MariaDB、Redis、RabbitMQ、Quartz集成测试通过，零失败、错误或跳过；覆盖重试、历史根、并发、中断及恢复故障租约重试 |
 | NODE-F02.5c3 | RabbitMQ发布标准追踪头 | 2026-10-28 | 17项发布及消费单元测试和24项真实MariaDB、Redis、RabbitMQ集成测试通过，零失败、错误或跳过；覆盖无Agent头传播、历史空值、异常降级及原业务正文 |
 | NODE-F02.5c4a | 核实真实Agent下的消息消费跨度 | 2026-10-28 | 2项真实RabbitMQ独立JVM测试通过，零失败、错误或跳过；固定Agent的发布与消费跨度直接关联，消费回调处保留Agent跨度；无Agent头到达但不会自动恢复 |
+| NODE-F02.5c4b1 | 隔离消费线程残留追踪 | 2026-10-28 | 3项Agent与无Agent真实Broker进程测试、8项消费单元及7项Broker和Quartz集成通过，零失败、错误或跳过；验证线程恢复及Agent父链或链接 |
 
 ---
 
 ## 3. 待执行节点（按顺序）
 
-下一节点为 **NODE-F02.5c4b1**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
+下一节点为 **NODE-F02.5c4b2**；范围、依赖及后续顺序见 [开发计划](AI可执行开发计划.md) 第 4 节。每节点验收、审查、提交并推送后继续；部署相关节点暂缓。
 
 ---
 

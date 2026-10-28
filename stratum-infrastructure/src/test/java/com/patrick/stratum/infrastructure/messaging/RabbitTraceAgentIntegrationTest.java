@@ -24,10 +24,11 @@ class RabbitTraceAgentIntegrationTest {
      */
     @Test
     void observesListenerWithoutAgent() throws Exception {
-        var probe = runFixture(false).fields();
+        var probe = runFixture(false, false).fields();
         assertEquals("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01", probe.get(1));
         assertEquals("vendor=value", probe.get(2));
-        assertEquals("none", probe.get(3)); assertEquals("none", probe.get(4));
+        assertEquals("none", probe.get(3)); assertEquals("none", probe.get(4)); assertEquals("false", probe.get(5));
+        assertTrue(Integer.parseInt(probe.get(6)) >= 1); assertEquals("false", probe.get(7));
     }
 
     /**
@@ -36,11 +37,12 @@ class RabbitTraceAgentIntegrationTest {
      */
     @Test
     void observesListenerWithAgent() throws Exception {
-        var observation = runFixture(true); var probe = observation.fields();
+        var observation = runFixture(true, false); var probe = observation.fields();
         assertTrue(probe.get(1).startsWith("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-"), probe.toString());
         assertEquals("vendor=value", probe.get(2));
         assertTrue(probe.get(4).startsWith("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"), probe.toString());
         assertFalse(probe.get(4).endsWith(":true"), probe.toString()); assertEquals(probe.get(3), probe.get(4));
+        assertEquals("false", probe.get(5)); assertTrue(Integer.parseInt(probe.get(6)) >= 1); assertEquals("false", probe.get(7));
         String producerId = probe.get(1).substring(36, 52); String consumerId = probe.get(4).split(":")[1];
         var producer = observation.spans().get(producerId); var consumer = observation.spans().get(consumerId);
         assertNotNull(producer); assertNotNull(consumer); assertNotEquals(producerId, consumerId);
@@ -49,12 +51,30 @@ class RabbitTraceAgentIntegrationTest {
     }
 
     /**
+     * 消息语义约定切换后仍保留Agent处理跨度及与发布跨度的父链或链接。
+     * @throws Exception 进程或输出失败
+     */
+    @Test
+    void preservesAgentSpanWithMessagingSemconvOptIn() throws Exception {
+        var observation = runFixture(true, true); var probe = observation.fields();
+        assertTrue(probe.get(1).startsWith("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-"), probe.toString());
+        assertEquals("vendor=value", probe.get(2)); assertEquals(probe.get(3), probe.get(4));
+        assertEquals("false", probe.get(5)); assertTrue(Integer.parseInt(probe.get(6)) >= 1); assertEquals("false", probe.get(7));
+        assertFalse(probe.get(4).startsWith("dddddddddddddddddddddddddddddddd:"));
+        assertFalse(probe.get(4).endsWith(":true"));
+        String producerId = probe.get(1).substring(36, 52); String consumerId = probe.get(4).split(":")[1];
+        var consumer = observation.spans().get(consumerId); assertNotNull(consumer);
+        assertTrue(producerId.equals(consumer.parent()) || consumer.links().contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:" + producerId));
+    }
+
+    /**
      * 启动带或不带Agent的独立JVM并读取唯一有界探针。
      * @param agentEnabled 是否加载固定版本Agent
+     * @param stableMessaging 是否启用新的消息语义约定
      * @return 消费探针和实际导出的同链路跨度
      * @throws Exception 进程或输出读取失败
      */
-    private Observation runFixture(boolean agentEnabled) throws Exception {
+    private Observation runFixture(boolean agentEnabled, boolean stableMessaging) throws Exception {
         String agent = Objects.requireNonNull(System.getProperty("stratum.test.otel-agent"));
         String classpath = Objects.requireNonNull(System.getProperty("stratum.test.runtime-classpath"));
         assertTrue(Files.isRegularFile(Path.of(agent)));
@@ -70,6 +90,7 @@ class RabbitTraceAgentIntegrationTest {
             environment.put("OTEL_TRACES_EXPORTER", "logging-otlp"); environment.put("OTEL_METRICS_EXPORTER", "none");
             environment.put("OTEL_LOGS_EXPORTER", "none"); environment.put("OTEL_TRACES_SAMPLER", "always_on");
             environment.put("OTEL_BSP_SCHEDULE_DELAY", "100");
+            if (stableMessaging) environment.put("OTEL_SEMCONV_STABILITY_OPT_IN", "messaging");
             builder.redirectErrorStream(true).redirectOutput(output.toFile()); process = builder.start();
             assertTrue(process.waitFor(Duration.ofSeconds(55)), "消息追踪测试进程未退出");
             String text;
@@ -81,15 +102,17 @@ class RabbitTraceAgentIntegrationTest {
             assertEquals(0, process.exitValue(), "消息追踪测试进程失败");
             var probes = text.lines().filter(line -> line.startsWith("STRATUM_TRACE_PROBE|")).toList();
             assertEquals(1, probes.size(), "缺少唯一消费探针");
-            var fields = List.of(probes.getFirst().split("\\|", -1)); assertEquals(5, fields.size());
+            var fields = List.of(probes.getFirst().split("\\|", -1)); assertEquals(8, fields.size());
             var spans = new HashMap<String, SpanIdentity>();
             var json = tools.jackson.databind.json.JsonMapper.builder().build();
             for (String line : text.split("\\R")) {
                 int offset = line.indexOf("{\"resource\""); if (offset < 0) continue;
                 for (var scope : json.readTree(line.substring(offset)).path("scopeSpans")) for (var span : scope.path("spans")) {
-                    if ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".equals(span.path("traceId").asText())) {
-                        String id = span.path("spanId").asText();
-                        assertNull(spans.put(id, new SpanIdentity(span.path("name").asText(), span.path("parentSpanId").asText(""))));
+                    String trace = span.path("traceId").asText();
+                    if ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".equals(trace) || fields.get(4).startsWith(trace + ":")) {
+                        String id = span.path("spanId").asText(); var links = new ArrayList<String>();
+                        for (var link : span.path("links")) links.add(link.path("traceId").asText() + ":" + link.path("spanId").asText());
+                        assertNull(spans.put(id, new SpanIdentity(span.path("name").asText(), span.path("parentSpanId").asText(""), List.copyOf(links))));
                     }
                 }
             }
@@ -115,6 +138,7 @@ class RabbitTraceAgentIntegrationTest {
      * 不包含正文或凭据的导出跨度快照。
      * @param name 固定Agent跨度名称
      * @param parent 直接父跨度ID
+     * @param links 消息创建跨度链接
      */
-    private record SpanIdentity(String name, String parent) { }
+    private record SpanIdentity(String name, String parent, List<String> links) { }
 }

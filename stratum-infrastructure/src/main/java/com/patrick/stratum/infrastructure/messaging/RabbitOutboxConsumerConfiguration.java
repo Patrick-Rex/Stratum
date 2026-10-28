@@ -7,6 +7,7 @@ import com.patrick.stratum.domain.event.OutboxConsumptionRepository.Group;
 import com.patrick.stratum.domain.event.OutboxConsumer;
 import com.rabbitmq.client.Channel;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.opentelemetry.context.Context;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.AcknowledgeMode;
 import org.springframework.amqp.core.Message;
@@ -114,7 +115,7 @@ public class RabbitOutboxConsumerConfiguration {
     private static SimpleMessageListenerContainer listener(CachingConnectionFactory factory, RabbitAdmin admin,
             ThreadPoolTaskExecutor executor, Properties properties, OutboxConsumer consumer, JsonMapper json,
             String queue, Group group, MessageMetrics metrics) {
-        var container = new SimpleMessageListenerContainer(factory);
+        var container = new RootIsolatedListenerContainer(factory);
         container.setQueueNames(queue); container.setAmqpAdmin(admin); container.setTaskExecutor(executor);
         container.setConcurrentConsumers(properties.concurrency()); container.setMaxConcurrentConsumers(properties.concurrency());
         container.setPrefetchCount(properties.prefetch()); container.setAcknowledgeMode(AcknowledgeMode.MANUAL);
@@ -130,6 +131,24 @@ public class RabbitOutboxConsumerConfiguration {
                 .addKeyValue("errorType", failure.getClass().getSimpleName())
                 .log("消息监听传输失败 consumerGroup={} errorType={}", group, failure.getClass().getSimpleName()));
         return container;
+    }
+
+    /** 每次消息进入Spring监听前隔离工作线程遗留的标准上下文。 */
+    static final class RootIsolatedListenerContainer extends SimpleMessageListenerContainer {
+        /**
+         * 创建受同一工厂管理的监听容器。
+         * @param factory 受容器管理的RabbitMQ连接工厂
+         */
+        RootIsolatedListenerContainer(CachingConnectionFactory factory) { super(factory); }
+
+        /**
+         * 先进入根上下文，再调用Spring监听入口，让Agent插桩在干净边界内建立自身跨度。
+         * @param channel 本次消费通道
+         * @param data Spring传入的消息数据
+         */
+        @Override protected void executeListener(Channel channel, Object data) {
+            try (var ignored = Context.root().makeCurrent()) { super.executeListener(channel, data); }
+        }
     }
 
     /**
