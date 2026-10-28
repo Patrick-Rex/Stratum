@@ -1586,7 +1586,7 @@ Rabbit业务监听按固定订阅组及结果记录 `stratum.messaging.consumed`
 
 死信监听在归档入口成功返回后按固定订阅组和归档类别累计 `stratum.messaging.deadletter.archived`，调用或准备抛错时累计 `stratum.messaging.deadletter.archive.failed`；重复归档请求按调用次数统计，不代表唯一死信数。失败只说明本次入口未成功返回，提交后响应失败时不能推断数据库没有归档。指标记录异常不改变原有手动确认和保留语义，标签不包含事件或trace。
 
-27项Infrastructure单元及5项真实Starter/MariaDB/Redis/RabbitMQ集成测试通过，零失败、错误或跳过；覆盖真实原生死信、双订阅归档、受控归档不可用与恢复。此计数不是Broker队列积压；积压口径待用户确认后继续F02.3d2。
+27项Infrastructure单元及5项真实Starter/MariaDB/Redis/RabbitMQ集成测试通过，零失败、错误或跳过；覆盖真实原生死信、双订阅归档、受控归档不可用与恢复。此计数不是Broker队列积压；积压口径及后续实现见下文。
 
 ### Gateway标准HTTP追踪
 
@@ -1603,3 +1603,9 @@ Gateway访问JSON的`businessTraceId`记录经既有关联策略校验的业务�
 ### Gateway与Starter标准追踪组合验收
 
 Gateway与Starter分别启动固定版本Agent，通过真实本机HTTP转发并连接独立MariaDB、Redis；测试校验网关客户端跨度与Starter服务跨度的直接父子关系、两个进程日志中的同一标准追踪及业务关联ID，并核对响应关联头。为确保重复请求也产生可检查的Starter日志，验收仅在测试子进程开启DispatcherServlet DEBUG；这不改变应用默认日志级别。Gateway Agent测试和Starter组合测试各1项通过，零失败、错误或跳过。测试不启动外部观测服务；异步消息和任务的标准上下文传播尚未完成。
+
+### 死信队列可见数单次查询
+
+`RabbitDeadLetterBacklogProbe` 使用现有有界连接的AMQP被动队列查询，固定映射ERP审计与缓存补偿的两个死信队列；返回非负可见待处理数或不可用，不把不存在、查询异常或非法计数当作零。此数不包含已投递未确认消息，也不包含Broker原生延迟重试中的消息；它不是全部未处理死信数。本子节点只提供单次查询，周期采集及Prometheus指标尚未接入。
+
+8项拓扑与查询测试通过，零失败、错误或跳过；其中真实隔离Broker验证双队列、未确认消息、队列缺失与恢复，受控异常验证不可用语义。

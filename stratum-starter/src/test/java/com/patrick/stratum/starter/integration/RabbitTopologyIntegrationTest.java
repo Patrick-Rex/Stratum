@@ -9,6 +9,8 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import com.patrick.stratum.infrastructure.messaging.RabbitMessagingConfiguration;
+import com.patrick.stratum.infrastructure.messaging.RabbitDeadLetterBacklogProbe;
+import com.patrick.stratum.domain.event.OutboxConsumptionRepository.Group;
 import com.patrick.stratum.infrastructure.messaging.RabbitTopologyConfiguration;
 import com.rabbitmq.client.AMQP;
 import com.rabbitmq.client.Channel;
@@ -70,6 +72,43 @@ class RabbitTopologyIntegrationTest {
             assertNull(channel.basicGet(CACHE_QUEUE + ".dlq", true));
             assertNull(channel.basicGet(ERP_QUEUE + ".dlq", true));
         }
+    }
+
+    /**
+     * 被动查询核对两个死信队列就绪数、未确认消息及独立故障恢复。
+     * @throws Exception Broker不可用或通道操作失败
+     */
+    @Test
+    void readsVisibleDeadLettersWithoutCountingUnacknowledged() throws Exception {
+        start(Map.of());
+        var admin = context.getBean(RabbitAdmin.class);
+        var probe = new RabbitDeadLetterBacklogProbe(admin);
+        try (var channel = channel()) {
+            channel.basicPublish(DEAD_EXCHANGE, ERP_QUEUE, null, "first".getBytes(StandardCharsets.UTF_8));
+            channel.basicPublish(DEAD_EXCHANGE, ERP_QUEUE, null, "second".getBytes(StandardCharsets.UTF_8));
+            channel.basicPublish(DEAD_EXCHANGE, CACHE_QUEUE, null, "cache".getBytes(StandardCharsets.UTF_8));
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(5)).until(() ->
+                    probe.ready(Group.ERP_AUDIT).orElse(-1) == 2 && probe.ready(Group.CACHE_INVALIDATION).orElse(-1) == 1);
+            var held = channel.basicGet(ERP_QUEUE + ".dlq", false); assertNotNull(held);
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(5)).until(() -> probe.ready(Group.ERP_AUDIT).orElse(-1) == 1);
+            assertEquals(1, probe.ready(Group.CACHE_INVALIDATION).orElseThrow());
+            channel.basicAck(held.getEnvelope().getDeliveryTag(), false);
+            assertTrue(admin.deleteQueue(ERP_QUEUE + ".dlq"));
+            assertTrue(probe.ready(Group.ERP_AUDIT).isEmpty());
+            assertEquals(1, probe.ready(Group.CACHE_INVALIDATION).orElseThrow());
+            admin.initialize();
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(5)).until(() -> probe.ready(Group.ERP_AUDIT).orElse(-1) == 0);
+        }
+    }
+
+    /** 查询异常不被误报为零，非法订阅组由调用方修正。 */
+    @Test
+    void treatsBacklogQueryExceptionAsUnavailable() {
+        var admin = mock(RabbitAdmin.class);
+        when(admin.getQueueInfo(ERP_QUEUE + ".dlq")).thenThrow(new IllegalStateException("测试故障"));
+        var probe = new RabbitDeadLetterBacklogProbe(admin);
+        assertTrue(probe.ready(Group.ERP_AUDIT).isEmpty());
+        assertThrows(NullPointerException.class, () -> probe.ready(null));
     }
 
     /**
