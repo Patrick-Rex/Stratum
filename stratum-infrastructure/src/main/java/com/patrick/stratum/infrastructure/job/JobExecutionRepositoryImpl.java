@@ -17,6 +17,7 @@ import com.patrick.stratum.common.error.StratumException;
 import com.patrick.stratum.domain.job.JobCancellationRepository;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository;
+import com.patrick.stratum.domain.job.JobLeaseAuthority;
 import com.patrick.stratum.domain.job.JobRecoveryRepository.Outcome;
 import org.quartz.CronExpression;
 import org.springframework.dao.DataAccessException;
@@ -32,7 +33,7 @@ import tools.jackson.databind.json.JsonMapper;
  * <p>示例：由Application调用register和claim，不从Job直接操作本适配。</p>
  */
 @Repository
-public class JobExecutionRepositoryImpl implements JobExecutionRepository, JobCancellationRepository {
+public class JobExecutionRepositoryImpl implements JobExecutionRepository, JobCancellationRepository, JobLeaseAuthority {
     private final JdbcTemplate jdbc;
     private final JsonMapper json;
 
@@ -163,6 +164,31 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository, JobCa
         } catch (DataAccessException failure) {
             throw translate(failure);
         }
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public boolean lockCurrent(Lease lease) {
+        requireWrite(); Objects.requireNonNull(lease, "任务领取不能为空");
+        try {
+            var row = load(lease.submission().executionId(), "FOR UPDATE SKIP LOCKED");
+            if (!matchesLease(row, lease)) return false;
+            var now = databaseNow();
+            return row.expiresAt().isAfter(now) && !now.isBefore(row.startTime());
+        } catch (DataAccessException failure) { throw translate(failure); }
+    }
+
+    /**
+     * 比较受锁定的执行行和完整领取证据；数据库时钟需由调用方另行核验。
+     * @param row 当前行或锁忙/不存在时为空
+     * @param lease 已验证非空的领取证据
+     * @return 所有固定字段和令牌匹配时为true
+     */
+    static boolean matchesLease(Row row, Lease lease) {
+        return row != null && row.state() == State.RUNNING && lease.token().equals(row.token())
+                && row.attempt() == lease.attempt() && row.failures() == lease.failures() && row.cycle() == lease.cycle()
+                && lease.submission().equals(row.submission()) && lease.startTime().equals(row.startTime())
+                && lease.expiresAt().equals(row.expiresAt());
     }
 
     /**

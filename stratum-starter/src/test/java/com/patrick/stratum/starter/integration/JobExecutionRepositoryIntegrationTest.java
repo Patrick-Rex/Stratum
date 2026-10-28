@@ -18,6 +18,7 @@ import com.patrick.stratum.domain.job.DeadLetterReplayJob;
 import com.patrick.stratum.domain.job.DeadLetterReplayTaskRepository;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository;
+import com.patrick.stratum.domain.job.JobLeaseAuthority;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -33,6 +34,7 @@ class JobExecutionRepositoryIntegrationTest extends MariaDbIntegrationTest {
     private final JobExecutionRepository repository;
     private final JobCancellationRepository cancellation;
     private final DeadLetterReplayTaskRepository replayTasks;
+    private final JobLeaseAuthority leaseAuthority;
     private final JdbcTemplate jdbc;
     private final List<UUID> executions = new ArrayList<>();
     private final List<UUID> replayRequests = new ArrayList<>();
@@ -44,12 +46,14 @@ class JobExecutionRepositoryIntegrationTest extends MariaDbIntegrationTest {
      * @param repository 生产登记领取端口
      * @param cancellation 生产未开始取消端口
      * @param replayTasks 重放任务绑定端口
+     * @param leaseAuthority 任务领取资格端口
      * @param jdbc 独立断言与自身夹具清理
      */
     @Autowired
     JobExecutionRepositoryIntegrationTest(UnitOfWork unitOfWork, JobExecutionRepository repository,
-            JobCancellationRepository cancellation, DeadLetterReplayTaskRepository replayTasks, JdbcTemplate jdbc) {
-        this.unitOfWork = unitOfWork; this.repository = repository; this.cancellation = cancellation; this.replayTasks = replayTasks; this.jdbc = jdbc;
+            JobCancellationRepository cancellation, DeadLetterReplayTaskRepository replayTasks, JobLeaseAuthority leaseAuthority, JdbcTemplate jdbc) {
+        this.unitOfWork = unitOfWork; this.repository = repository; this.cancellation = cancellation; this.replayTasks = replayTasks;
+        this.leaseAuthority = leaseAuthority; this.jdbc = jdbc;
     }
 
     /** 仅清理本用例登记的随机执行身份及其技术历史。 */
@@ -523,6 +527,63 @@ class JobExecutionRepositoryIntegrationTest extends MariaDbIntegrationTest {
                 policy, JobDefinition.IdempotencyRule.EXPLICIT_KEY);
         var submission = new JobExecutionRepository.Submission(id(), definition, time, request.toString(), DeadLetterReplayJob.arguments(archive), "task-trace");
         return new DeadLetterReplayTaskRepository.Request(request, archive, actor, submission);
+    }
+
+    /** 持久领取资格校验完整原快照和令牌；过期及接管后旧证据失效。 */
+    @Test
+    void verifiesCurrentLeaseAndFencesExpiredOrReplacedEvidence() {
+        var input = input("{}", 3); register(input); var lease = claim(input.executionId()).orElseThrow();
+        assertThrows(IllegalStateException.class, () -> leaseAuthority.lockCurrent(lease));
+        assertThrows(NullPointerException.class, () -> unitOfWork.execute(() -> leaseAuthority.lockCurrent(null)));
+        assertTrue(unitOfWork.execute(() -> leaseAuthority.lockCurrent(lease)));
+        var forgedToken = new JobExecutionRepository.Lease(lease.submission(), UUID.randomUUID(), lease.startTime(), lease.expiresAt(),
+                lease.attempt(), lease.failures(), lease.cycle());
+        var altered = copy(input, input.executionId(), input.idempotencyKey(), input.arguments(), "altered-trace");
+        var forgedInput = new JobExecutionRepository.Lease(altered, lease.token(), lease.startTime(), lease.expiresAt(),
+                lease.attempt(), lease.failures(), lease.cycle());
+        assertFalse(unitOfWork.execute(() -> leaseAuthority.lockCurrent(forgedToken)));
+        assertFalse(unitOfWork.execute(() -> leaseAuthority.lockCurrent(forgedInput)));
+        expire(input.executionId());
+        var times = jdbc.queryForObject("SELECT start_time,lease_until FROM job_execution WHERE execution_id=?",
+                (rs, index) -> List.of(rs.getObject(1, java.time.LocalDateTime.class).toInstant(java.time.ZoneOffset.UTC),
+                        rs.getObject(2, java.time.LocalDateTime.class).toInstant(java.time.ZoneOffset.UTC)), input.executionId().toString());
+        Instant start = times.getFirst(); Instant until = times.getLast();
+        var expired = new JobExecutionRepository.Lease(lease.submission(), lease.token(), start, until,
+                lease.attempt(), lease.failures(), lease.cycle());
+        assertFalse(unitOfWork.execute(() -> leaseAuthority.lockCurrent(expired)));
+        assertTrue(claim(input.executionId()).isEmpty());
+        jdbc.update("UPDATE job_execution SET next_attempt_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE execution_id=?", input.executionId().toString());
+        var replacement = claim(input.executionId()).orElseThrow();
+        assertFalse(unitOfWork.execute(() -> leaseAuthority.lockCurrent(expired)));
+        assertTrue(unitOfWork.execute(() -> leaseAuthority.lockCurrent(replacement)));
+    }
+
+    /**
+     * 当前领取的行锁与竞争校验互斥，锁忙时失败关闭，释放或回滚后可再次核验。
+     * @throws Exception 并发执行失败或等待超时
+     */
+    @Test
+    void keepsLeaseLockUntilTransactionEnds() throws Exception {
+        var input = input("{}", 3); register(input); var lease = claim(input.executionId()).orElseThrow();
+        var held = new CountDownLatch(1); var release = new CountDownLatch(1);
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var owner = workers.submit(() -> unitOfWork.execute(() -> {
+                assertTrue(leaseAuthority.lockCurrent(lease)); held.countDown();
+                try { if (!release.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("测试等待超时"); }
+                catch (InterruptedException failure) { Thread.currentThread().interrupt(); throw new IllegalStateException("测试等待中断", failure); }
+                return true;
+            }));
+            try {
+                assertTrue(held.await(5, TimeUnit.SECONDS));
+                assertFalse(unitOfWork.execute(() -> leaseAuthority.lockCurrent(lease)));
+            } finally { release.countDown(); }
+            assertTrue(owner.get(5, TimeUnit.SECONDS));
+        }
+        assertTrue(unitOfWork.execute(() -> leaseAuthority.lockCurrent(lease)));
+        assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
+            assertTrue(leaseAuthority.lockCurrent(lease)); throw new IllegalStateException("rollback-probe");
+        }));
+        assertTrue(unitOfWork.execute(() -> leaseAuthority.lockCurrent(lease)));
     }
 
     /** 极大累计序号和版本不发生溢出，也不留下半条尝试。 */

@@ -48,10 +48,7 @@ public class JobRecoveryRepositoryImpl implements JobRecoveryRepository {
         if (outcome == Outcome.LEASE_EXPIRED) throw new IllegalArgumentException("租约过期仅由数据库接管路径登记");
         try {
             var row = executions.load(lease.submission().executionId(), "FOR UPDATE SKIP LOCKED");
-            if (row == null || row.state() != State.RUNNING || !lease.token().equals(row.token())
-                    || row.attempt() != lease.attempt() || row.failures() != lease.failures() || row.cycle() != lease.cycle()
-                    || !lease.submission().equals(row.submission()) || !lease.startTime().equals(row.startTime())
-                    || !lease.expiresAt().equals(row.expiresAt())) return false;
+            if (!JobExecutionRepositoryImpl.matchesLease(row, lease)) return false;
             var now = executions.databaseNow();
             if (!row.expiresAt().isAfter(now) || now.isBefore(row.startTime())) return false;
             executions.complete(row, outcome, now);
