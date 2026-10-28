@@ -1533,3 +1533,7 @@ Starter默认使用Boot结构化控制台格式器输出JSON； `businessTraceId
 ## NODE-F01.3a Starter指标注册表
 
 Starter接入Spring Boot统一管理的Micrometer Prometheus注册表，沿用Gateway已采用的开源组件；不改变HTTP端点暴露配置。真实Starter与独立MariaDB/Redis测试核对JVM、HTTP及现有缓存指标可抓取，缓存业务键与关联ID不进入指标标签，直接HTTP抓取仍非200。注册表及现有缓存、锁、认证相关回归共26项通过，零失败、错误或跳过；实际HTTP开放和管理来源规则继续F01.3b。
+
+## NODE-F01.3b1 指标直连来源判定
+
+建立指标来源CIDR策略：默认配置为IPv4和IPv6回环，允许完整列表替换；空列表拒绝全部。启动时只解析地址字面量和合法前缀，不进行DNS查询；直连地址缺失、非法或不在网段时拒绝。14项Interface单元测试通过，零失败、错误或跳过，覆盖IPv4/IPv6、零前缀、边界及非法配置。本节点未接入HTTP，转发头防护与实际端点继续F01.3b2。
