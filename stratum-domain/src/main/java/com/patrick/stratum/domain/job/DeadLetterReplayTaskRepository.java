@@ -50,6 +50,18 @@ public interface DeadLetterReplayTaskRepository {
         public Binding {
             Objects.requireNonNull(requestId); Objects.requireNonNull(archiveId); Objects.requireNonNull(operatorId); Objects.requireNonNull(taskId);
         }
+
+        /**
+         * 核对已领取任务与首次绑定的任务、请求、归档及固定处理器一致。
+         * @param submission 已领取的任务输入
+         * @return 所有绑定一致时为true；不代表授权、领取或消费成功
+         * @throws NullPointerException 任务输入为空
+         * @apiNote 示例：{@code binding.matches(lease.submission())}后再复核执行资格。
+         */
+        public boolean matches(JobExecutionRepository.Submission submission) {
+            Objects.requireNonNull(submission, "任务输入不能为空");
+            return taskId.equals(submission.executionId()) && matchesRequest(requestId, archiveId, submission);
+        }
     }
 
     /**
@@ -72,13 +84,22 @@ public interface DeadLetterReplayTaskRepository {
          */
         public Request {
             Objects.requireNonNull(requestId); Objects.requireNonNull(archiveId); Objects.requireNonNull(operatorId); Objects.requireNonNull(submission);
-            var definition = submission.definition();
-            if (!DeadLetterReplayJob.CODE.equals(definition.jobCode()) || definition.jobType() != JobDefinition.Type.ONCE
-                    || definition.idempotencyKeyRule() != JobDefinition.IdempotencyRule.EXPLICIT_KEY
-                    || !requestId.toString().equals(submission.idempotencyKey())
-                    || !DeadLetterReplayJob.arguments(archiveId).equals(submission.arguments())) {
-                throw new IllegalArgumentException("重放任务与请求身份不匹配");
-            }
+            if (!matchesRequest(requestId, archiveId, submission)) throw new IllegalArgumentException("重放任务与请求身份不匹配");
         }
+    }
+
+    /**
+     * 在登记和执行校验之间复用固定任务类型、请求键及归档参数规则。
+     * @param requestId 首次请求UUID
+     * @param archiveId 首次归档UUID
+     * @param submission 已验证非空的任务输入
+     * @return 目标与固定协议一致时为true
+     */
+    private static boolean matchesRequest(UUID requestId, UUID archiveId, JobExecutionRepository.Submission submission) {
+        var definition = submission.definition();
+        return DeadLetterReplayJob.CODE.equals(definition.jobCode()) && definition.jobType() == JobDefinition.Type.ONCE
+                && definition.idempotencyKeyRule() == JobDefinition.IdempotencyRule.EXPLICIT_KEY
+                && requestId.toString().equals(submission.idempotencyKey())
+                && DeadLetterReplayJob.arguments(archiveId).equals(submission.arguments());
     }
 }
