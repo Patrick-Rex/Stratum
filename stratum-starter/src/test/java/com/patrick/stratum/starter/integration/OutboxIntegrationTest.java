@@ -7,6 +7,9 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.IllegalTransactionStateException;
@@ -18,21 +21,27 @@ import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.common.error.CommonErrorCode;
 import com.patrick.stratum.common.error.StratumException;
 import com.patrick.stratum.common.trace.TraceIdContext;
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.event.DomainEvent;
 import com.patrick.stratum.domain.event.OutboxMessage;
 import com.patrick.stratum.domain.event.OutboxRepository;
+import com.patrick.stratum.infrastructure.outbox.OutboxRepositoryImpl;
 import com.patrick.stratum.starter.integration.fixture.domain.PersistenceProbe;
 import com.patrick.stratum.starter.integration.fixture.persistence.ProbeRepositoryImpl;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 /** 通过真实 MariaDB 验证领域写入与 Outbox 的原子性及重复事件保护。 */
+@ExtendWith(OutputCaptureExtension.class)
 class OutboxIntegrationTest extends MariaDbIntegrationTest {
     private final UnitOfWork unitOfWork;
     private final OutboxEventWriter writer;
     private final OutboxRepository outbox;
     private final JdbcTemplate jdbc;
     private final ProbeRepositoryImpl repository;
+    private final EasyEntityQuery query;
+    private final StandardTraceContext standardTrace;
     private final List<String> aggregateIds = new ArrayList<>();
     private final List<String> eventIds = new ArrayList<>();
 
@@ -43,15 +52,18 @@ class OutboxIntegrationTest extends MariaDbIntegrationTest {
      * @param outbox 事件仓储端口
      * @param jdbc 断言查询客户端
      * @param query ORM 客户端
+     * @param standardTrace 标准上下文边界
      */
     @Autowired
     OutboxIntegrationTest(UnitOfWork unitOfWork, OutboxEventWriter writer, OutboxRepository outbox,
-            JdbcTemplate jdbc, EasyEntityQuery query) {
+            JdbcTemplate jdbc, EasyEntityQuery query, StandardTraceContext standardTrace) {
         this.unitOfWork = unitOfWork;
         this.writer = writer;
         this.outbox = outbox;
         this.jdbc = jdbc;
         this.repository = new ProbeRepositoryImpl(query);
+        this.query = query;
+        this.standardTrace = standardTrace;
     }
 
     /** 成功工作单元同时提交聚合与事件，保留 trace、类型及原始业务数据。 */
@@ -69,6 +81,7 @@ class OutboxIntegrationTest extends MariaDbIntegrationTest {
         assertEquals("PENDING", row.get("status"));
         assertEquals(0, ((Number) row.get("retry_count")).intValue());
         assertEquals("outbox-integration-trace", row.get("trace_id"));
+        assertNull(row.get("standard_traceparent")); assertNull(row.get("standard_tracestate"));
         assertEquals("test.probe.created", row.get("event_type"));
         assertTrue(row.get("payload").toString().contains("测试事件数据"));
     }
@@ -129,6 +142,73 @@ class OutboxIntegrationTest extends MariaDbIntegrationTest {
         var message = new OutboxMessage(event.getEventId(), "test.probe.created", probe.getId(), Instant.now(), "{}", "trace");
         assertThrows(IllegalStateException.class, () -> outbox.append(message));
         assertEquals(0, eventCount(event.getEventId()));
+    }
+
+    /**
+     * 事务内捕获标准上下文，与业务关联和原正文独立；重复事件不能覆盖原上下文。
+     */
+    @Test
+    void commitsStandardContextWithoutChangingBusinessIdentity() {
+        var probe = probe(); var event = event(probe);
+        String parent = "00-1234567890abcdef1234567890abcdef-1234567890abcdef-03";
+        var original = standardTrace.normalize(parent, "vendor=value");
+        TraceIdContext.setTraceId("business-correlation");
+        try (var scope = standardTrace.restore(original)) {
+            unitOfWork.execute(() -> { repository.save(probe); return writer.append(event, "test.probe.created"); });
+        }
+        var row = jdbc.queryForMap("SELECT * FROM outbox_event WHERE event_id=?", event.getEventId());
+        assertEquals(parent, row.get("standard_traceparent")); assertEquals("vendor=value", row.get("standard_tracestate"));
+        assertEquals("business-correlation", row.get("trace_id")); assertTrue(row.get("payload").toString().contains("测试事件数据"));
+        var different = standardTrace.normalize("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01", "other=value");
+        try (var scope = standardTrace.restore(different)) {
+            assertThrows(StratumException.class, () -> unitOfWork.execute(() -> writer.append(event, "test.probe.created")));
+        }
+        var unchanged = jdbc.queryForMap("SELECT standard_traceparent,standard_tracestate FROM outbox_event WHERE event_id=?", event.getEventId());
+        assertEquals(parent, unchanged.get("standard_traceparent")); assertEquals("vendor=value", unchanged.get("standard_tracestate"));
+    }
+
+    /**
+     * 带标准上下文的事件和序号随外层工作单元回滚，不留下部分写入。
+     */
+    @Test
+    void rollsBackEventAndStandardContextTogether() {
+        var probe = probe(); var event = event(probe);
+        var parent = standardTrace.normalize("00-1234567890abcdef1234567890abcdef-1234567890abcdef-01", "vendor=value");
+        try (var scope = standardTrace.restore(parent)) {
+            assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
+                repository.save(probe); writer.append(event, "test.probe.created"); throw new IllegalStateException("controlled");
+            }));
+        }
+        assertEquals(0, eventCount(event.getEventId()));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_aggregate_progress WHERE aggregate_id=?", Integer.class, probe.getId()));
+        assertTrue(repository.findById(probe.getId()).isEmpty());
+    }
+
+    /**
+     * 捕获或规范化故障均不回滚业务，事件保留空标准上下文且日志不泄露异常原文。
+     * @param output 捕获的控制台日志
+     */
+    @Test
+    void continuesBusinessWhenTraceComponentFails(CapturedOutput output) {
+        String parent = "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01";
+        for (boolean failCapture : List.of(true, false)) {
+            var trace = mock(StandardTraceContext.class);
+            if (failCapture) when(trace.capture()).thenThrow(new IllegalStateException("sensitive-capture-value"));
+            else {
+                when(trace.capture()).thenReturn(java.util.Optional.of(new StandardTraceContext.Carrier(parent, "vendor=value")));
+                when(trace.normalize(parent, "vendor=value")).thenThrow(new IllegalStateException("sensitive-normalize-value"));
+            }
+            var probe = probe(); String eventId = UUID.randomUUID().toString(); eventIds.add(eventId);
+            var message = new OutboxMessage(eventId, "test.probe.created", probe.getId(), Instant.now(), "{}", "business-trace");
+            var failingRepository = new OutboxRepositoryImpl(query, jdbc, trace);
+            unitOfWork.execute(() -> { repository.save(probe); failingRepository.append(message); return null; });
+            assertTrue(repository.findById(probe.getId()).isPresent());
+            var row = jdbc.queryForMap("SELECT standard_traceparent,standard_tracestate,trace_id FROM outbox_event WHERE event_id=?", eventId);
+            assertNull(row.get("standard_traceparent")); assertNull(row.get("standard_tracestate")); assertEquals("business-trace", row.get("trace_id"));
+        }
+        assertTrue(output.getOut().contains("标准追踪上下文捕获失败"));
+        assertFalse(output.getOut().contains("sensitive-capture-value"));
+        assertFalse(output.getOut().contains("sensitive-normalize-value"));
     }
 
     /** 清理当前测试拥有的数据与线程上下文，不清空共享表。 */

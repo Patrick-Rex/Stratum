@@ -27,6 +27,8 @@ public class OutboxRecord implements ProxyEntityAvailable<OutboxRecord, OutboxRe
     private LocalDateTime occurredAt;
     private String payload;
     private String traceId;
+    private String standardTraceparent;
+    private String standardTracestate;
     private String status;
     private Integer retryCount;
     private LocalDateTime nextRetryAt;
