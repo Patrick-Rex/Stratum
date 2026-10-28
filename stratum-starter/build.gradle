@@ -52,6 +52,7 @@ dependencies {
     testImplementation 'org.flywaydb:flyway-core'
     testImplementation 'com.easy-query:sql-springboot4-starter'
     testImplementation 'org.springframework.data:spring-data-redis'
+    testImplementation 'io.lettuce:lettuce-core'
     testImplementation 'com.github.ben-manes.caffeine:caffeine'
     annotationProcessor 'com.easy-query:sql-processor'
 }
@@ -72,7 +73,8 @@ tasks.register('otelIntegrationTest', Test) {
     classpath = sourceSets.test.runtimeClasspath
     useJUnitPlatform { includeTags 'otel-agent' }
     outputs.upToDateWhen { false }
-    dependsOn tasks.named('bootJar')
+    dependsOn tasks.named('bootJar'), project(':stratum-gateway').tasks.named('bootJar')
+    systemProperty 'stratum.test.gateway-jar', project(':stratum-gateway').tasks.named('bootJar').get().archiveFile.get().asFile.absolutePath
     systemProperty 'stratum.test.starter-jar', tasks.named('bootJar').get().archiveFile.get().asFile.absolutePath
     doFirst { systemProperty 'stratum.test.otel-agent', configurations.otelAgent.singleFile.absolutePath }
 }

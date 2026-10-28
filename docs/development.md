@@ -1592,10 +1592,14 @@ Rabbit业务监听按固定订阅组及结果记录 `stratum.messaging.consumed`
 
 独立Gateway复用根工程固定的OpenTelemetry Java Agent版本，默认启动不加载或解析Agent；需要时在现有Gateway配置和Redis就绪后运行 `.\gradlew.bat --no-daemon :stratum-gateway:bootRun -PotelAgent=true`。采样和导出由Agent标准环境变量控制；本地无采集端时可将`OTEL_TRACES_EXPORTER`、`OTEL_METRICS_EXPORTER`和`OTEL_LOGS_EXPORTER`设置为`none`。既有业务关联头`X-Trace-Id`保持独立。
 
-`:stratum-gateway:otelIntegrationTest` 使用`STRATUM_IT_REDIS_PORT`及可选`STRATUM_IT_REDIS_PASSWORD`，在真实独立Gateway JVM、Agent、本机上游和独立Redis上验证：已采样上游W3C追踪的服务跨度和转发客户端跨度为父子关系；没有上游上下文时建立新追踪；业务关联头保持一致。测试不启动采集服务，输出仅使用本地OTLP日志导出；当前未验证跨消息传播，网关双标识日志和真实Starter链路留待后续节点。
+`:stratum-gateway:otelIntegrationTest` 使用`STRATUM_IT_REDIS_PORT`及可选`STRATUM_IT_REDIS_PASSWORD`，在真实独立Gateway JVM、Agent、本机上游和独立Redis上验证：已采样上游W3C追踪的服务跨度和转发客户端跨度为父子关系；没有上游上下文时建立新追踪；业务关联头保持一致。测试不启动采集服务，输出仅使用本地OTLP日志导出；当前未验证跨消息传播；网关双标识日志和真实Starter链路的后续验收见下文。
 
 ### Gateway双标识日志
 
 Gateway访问JSON的`businessTraceId`记录经既有关联策略校验的业务关联ID；`traceId`和`spanId`仅接收Agent MDC中非零、小写十六进制标准标识，无Agent或无上下文时为空。此前网关访问日志中名为`traceId`的业务关联字段已改名为`businessTraceId`，依赖日志字段的本地检索需同步调整；HTTP关联头不变。格式器继续只输出登记的安全字段，不展开任意MDC、请求头或请求体。
 
-网关访问日志单元测试与独立Gateway到Starter业务回归已验证字段隔离及无Agent行为；Agent模式与真实HTTP链路的标准跨度关联留待F02.4c。
+网关访问日志单元测试与独立Gateway到Starter业务回归已验证字段隔离及无Agent行为；Agent模式与真实HTTP链路的标准跨度关联见下文。
+
+### Gateway与Starter标准追踪组合验收
+
+Gateway与Starter分别启动固定版本Agent，通过真实本机HTTP转发并连接独立MariaDB、Redis；测试校验网关客户端跨度与Starter服务跨度的直接父子关系、两个进程日志中的同一标准追踪及业务关联ID，并核对响应关联头。为确保重复请求也产生可检查的Starter日志，验收仅在测试子进程开启DispatcherServlet DEBUG；这不改变应用默认日志级别。Gateway Agent测试和Starter组合测试各1项通过，零失败、错误或跳过。测试不启动外部观测服务；异步消息和任务的标准上下文传播尚未完成。

@@ -16,6 +16,9 @@ import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.awaitility.Awaitility.await;
@@ -46,7 +49,8 @@ class OpenTelemetryAgentIntegrationTest {
         Path java = Path.of(System.getProperty("java.home"), "bin", executable);
         var builder = new ProcessBuilder(List.of(java.toString(), "-Xms32m", "-Xmx384m", "-XX:ActiveProcessorCount=2",
                 "-javaagent:" + agent, "-jar", jar, "--server.port=0", "--server.address=127.0.0.1",
-                "--spring.main.banner-mode=off", "--spring.flyway.validate-on-migrate=false"));
+                "--spring.main.banner-mode=off", "--spring.flyway.validate-on-migrate=false",
+                "--logging.level.org.springframework.web.servlet.DispatcherServlet=DEBUG"));
         var environment = builder.environment();
         environment.keySet().removeIf(name -> name.startsWith("STRATUM_") || name.startsWith("SPRING_") || name.startsWith("OTEL_")
                 || name.equals("JAVA_TOOL_OPTIONS") || name.equals("JDK_JAVA_OPTIONS"));
@@ -100,6 +104,7 @@ class OpenTelemetryAgentIntegrationTest {
                         && hasApplicationLog(exported, business, trace);
             });
             assertFalse(readOutput(output).contains(cookie));
+            verifyGatewayLink(Integer.parseInt(portMatcher.group(1)), agent, output);
             assertTrue(child.isAlive());
         } finally {
             try {
@@ -116,6 +121,71 @@ class OpenTelemetryAgentIntegrationTest {
                 }
             } finally { Files.deleteIfExists(output); }
         }
+    }
+
+    /**
+     * 启动独立网关并核对实际跨进程客户端跨度与Starter服务跨度。
+     * @param starterPort 已就绪的Starter随机端口
+     * @param agent 固定版本Agent路径
+     * @param starterOutput Starter进程输出
+     * @throws Exception 网关、Redis或HTTP失败
+     */
+    private void verifyGatewayLink(int starterPort, String agent, Path starterOutput) throws Exception {
+        var configuration = new RedisStandaloneConfiguration("127.0.0.1", Integer.parseInt(requiredEnvironment("STRATUM_IT_REDIS_PORT")));
+        String password = System.getenv().getOrDefault("STRATUM_IT_REDIS_PASSWORD", "");
+        if (!password.isEmpty()) configuration.setPassword(password);
+        var factory = new LettuceConnectionFactory(configuration); factory.afterPropertiesSet(); factory.start();
+        try {
+            var redis = new StringRedisTemplate(factory); redis.afterPropertiesSet();
+            try (var gateway = GatewayProcessFixture.start(starterPort, redis, agent);
+                 var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()) {
+                String trace = UUID.randomUUID().toString().replace("-", "");
+                String parent = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+                String business = "gateway-" + UUID.randomUUID();
+                var request = HttpRequest.newBuilder(gateway.endpoint("/v3/api-docs")).timeout(Duration.ofSeconds(20))
+                        .header("traceparent", "00-" + trace + "-" + parent + "-01").header("X-Trace-Id", business).GET().build();
+                var response = client.send(request, HttpResponse.BodyHandlers.discarding());
+                assertEquals(200, response.statusCode()); assertEquals(business, response.headers().firstValue("X-Trace-Id").orElseThrow());
+                try {
+                    await().atMost(Duration.ofSeconds(20)).until(() -> {
+                        String gatewayOutput = gateway.readOutput(); String applicationOutput = readOutput(starterOutput);
+                        return hasApplicationLog(gatewayOutput, business, trace) && hasApplicationLog(applicationOutput, business, trace)
+                                && linkedRemoteSpans(gatewayOutput, applicationOutput, trace);
+                    });
+                } catch (org.awaitility.core.ConditionTimeoutException failure) {
+                    String gatewayOutput = gateway.readOutput(); String applicationOutput = readOutput(starterOutput);
+                    throw new AssertionError("Gateway日志=" + hasApplicationLog(gatewayOutput, business, trace)
+                            + "，Starter日志=" + hasApplicationLog(applicationOutput, business, trace)
+                            + "，跨度相连=" + linkedRemoteSpans(gatewayOutput, applicationOutput, trace), failure);
+                }
+            }
+        } finally { factory.destroy(); }
+    }
+
+    /**
+     * 验证网关导出的客户端跨度是Starter导出服务跨度的直接父节点。
+     * @param gatewayOutput 网关输出
+     * @param starterOutput 应用输出
+     * @param trace 预期追踪标识
+     * @return 跨进程跨度是否相连
+     */
+    private boolean linkedRemoteSpans(String gatewayOutput, String starterOutput, String trace) {
+        var clients = new java.util.HashSet<String>(); var parents = new java.util.HashSet<String>();
+        for (String line : gatewayOutput.split("\\R")) {
+            int offset = line.indexOf("{\"resource\""); if (offset < 0) continue;
+            for (var scope : json.readTree(line.substring(offset)).path("scopeSpans")) for (var span : scope.path("spans")) {
+                String kind = span.path("kind").asText();
+                if (trace.equals(span.path("traceId").asText()) && ("3".equals(kind) || "SPAN_KIND_CLIENT".equals(kind))) clients.add(span.path("spanId").asText());
+            }
+        }
+        for (String line : starterOutput.split("\\R")) {
+            int offset = line.indexOf("{\"resource\""); if (offset < 0) continue;
+            for (var scope : json.readTree(line.substring(offset)).path("scopeSpans")) for (var span : scope.path("spans")) {
+                String kind = span.path("kind").asText();
+                if (trace.equals(span.path("traceId").asText()) && ("2".equals(kind) || "SPAN_KIND_SERVER".equals(kind))) parents.add(span.path("parentSpanId").asText());
+            }
+        }
+        return clients.stream().anyMatch(parents::contains);
     }
 
     /**

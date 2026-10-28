@@ -45,18 +45,38 @@ final class GatewayProcessFixture implements AutoCloseable {
      * @throws Exception JAR缺失、启动或就绪失败
      */
     static GatewayProcessFixture start(int upstreamPort, StringRedisTemplate redis) throws Exception {
+        return start(upstreamPort, redis, null);
+    }
+
+    /**
+     * 可选加载Agent并按测试配置导出跨度，仅供本机跨进程验收。
+     * @param upstreamPort 已就绪的本机ERP端口
+     * @param redis 测试清理客户端
+     * @param agent Agent文件路径，空值表示不启用
+     * @return 已就绪的子进程夹具
+     * @throws Exception 启动或就绪失败
+     */
+    static GatewayProcessFixture start(int upstreamPort, StringRedisTemplate redis, String agent) throws Exception {
         Objects.requireNonNull(redis, "redis");
         Path jar = Path.of(Objects.requireNonNull(System.getProperty("stratum.test.gateway-jar"), "必须通过集成任务提供Gateway JAR"));
         if (!Files.isRegularFile(jar)) throw new IllegalStateException("Gateway可执行JAR不存在");
         String executable = System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java";
         Path java = Path.of(System.getProperty("java.home"), "bin", executable);
         String namespace = "it-" + UUID.randomUUID(); Path output = Files.createTempFile("stratum-gateway-it-", ".log");
-        var builder = new ProcessBuilder(List.of(java.toString(), "-Xms32m", "-Xmx256m", "-XX:MaxDirectMemorySize=64m", "-XX:ActiveProcessorCount=2", "-jar", jar.toString(), "--server.port=0", "--server.address=127.0.0.1",
+        var command = new java.util.ArrayList<>(List.of(java.toString(), "-Xms32m", "-Xmx256m", "-XX:MaxDirectMemorySize=64m", "-XX:ActiveProcessorCount=2"));
+        if (agent != null) command.add("-javaagent:" + agent);
+        command.addAll(List.of("-jar", jar.toString(), "--server.port=0", "--server.address=127.0.0.1",
                 "--spring.main.banner-mode=off", "--stratum.gateway.routing.enabled=true", "--stratum.gateway.routing.upstream=http://127.0.0.1:" + upstreamPort,
                 "--stratum.gateway.routing.gray-enabled=false", "--stratum.gateway.rate-limit.namespace=" + namespace));
+        var builder = new ProcessBuilder(command);
         var environment = builder.environment();
         environment.keySet().removeIf(name -> name.startsWith("STRATUM_") || name.startsWith("SPRING_") || name.startsWith("OTEL_")
                 || name.equals("JAVA_TOOL_OPTIONS") || name.equals("JDK_JAVA_OPTIONS"));
+        if (agent != null) {
+            environment.put("OTEL_TRACES_EXPORTER", "logging-otlp"); environment.put("OTEL_METRICS_EXPORTER", "none");
+            environment.put("OTEL_LOGS_EXPORTER", "none"); environment.put("OTEL_TRACES_SAMPLER", "always_on");
+            environment.put("OTEL_BSP_SCHEDULE_DELAY", "100");
+        }
         environment.put("STRATUM_GATEWAY_REDIS_HOST", "127.0.0.1");
         environment.put("STRATUM_GATEWAY_REDIS_PORT", Objects.requireNonNull(System.getenv("STRATUM_IT_REDIS_PORT"), "必须提供独立Redis端口"));
         environment.put("STRATUM_GATEWAY_REDIS_PASSWORD", System.getenv().getOrDefault("STRATUM_IT_REDIS_PASSWORD", ""));
@@ -71,7 +91,7 @@ final class GatewayProcessFixture implements AutoCloseable {
     }
 
     /**
-     * 在30秒上界内解析实际随机端口并执行直接健康请求，不使用Thread.sleep或外部代理。
+     * 在90秒上界内解析实际随机端口并执行直接健康请求，不使用Thread.sleep或外部代理。
      * @throws Exception 进程退出、输出超限或就绪失败
      */
     private void awaitReady() throws Exception {
@@ -82,7 +102,7 @@ final class GatewayProcessFixture implements AutoCloseable {
             /** {@inheritDoc} */
             @Override public void connectFailed(URI uri, java.net.SocketAddress address, IOException failure) { }
         }).build()) {
-            while (System.nanoTime() - started < Duration.ofSeconds(30).toNanos()) {
+            while (System.nanoTime() - started < Duration.ofSeconds(90).toNanos()) {
                 if (process.waitFor(Duration.ofMillis(100))) throw new IllegalStateException("Gateway子进程提前退出，日志：" + output);
                 if (port == 0) {
                     var matcher = STARTED_PORT.matcher(readOutput()); if (matcher.find()) port = Integer.parseInt(matcher.group(1));
@@ -99,14 +119,14 @@ final class GatewayProcessFixture implements AutoCloseable {
     }
 
     /**
-     * 读取最多1MiB自身输出，拒绝无限日志积累；暂存不完整UTF8尾部不影响ASCII端口/关联探测。
+     * 读取最多4MiB自身输出，拒绝无限日志积累；暂存不完整UTF8尾部不影响ASCII端口/关联探测。
      * @return 当前UTF8输出
      * @throws IOException 输出无法读取或超界
      */
-    private String readOutput() throws IOException {
+    String readOutput() throws IOException {
         try (var input = Files.newInputStream(output)) {
-            byte[] bytes = input.readNBytes(1048577);
-            if (bytes.length > 1048576) throw new IOException("Gateway测试输出超界");
+            byte[] bytes = input.readNBytes(4194305);
+            if (bytes.length > 4194304) throw new IOException("Gateway测试输出超界");
             return new String(bytes, StandardCharsets.UTF_8);
         }
     }

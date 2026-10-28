@@ -91,7 +91,8 @@ class GatewayOpenTelemetryIntegrationTest {
                 var forwarded = TRACEPARENT.matcher(Objects.requireNonNull(parentHeader.get(), "未转发标准追踪头"));
                 assertTrue(forwarded.matches()); assertEquals(trace, forwarded.group(1)); assertNotEquals(parent, forwarded.group(2));
                 String clientSpan = forwarded.group(2);
-                await().atMost(Duration.ofSeconds(15)).until(() -> linkedSpans(readOutput(output), trace, parent, clientSpan));
+                await().atMost(Duration.ofSeconds(15)).until(() -> linkedSpans(readOutput(output), trace, parent, clientSpan)
+                        && hasGatewayLog(readOutput(output), trace, business));
                 parentHeader.set(null);
                 assertEquals(204, client.send(HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(15)).GET().build(),
                         HttpResponse.BodyHandlers.discarding()).statusCode());
@@ -117,6 +118,25 @@ class GatewayOpenTelemetryIntegrationTest {
                 finally { factory.destroy(); Files.deleteIfExists(output); }
             }
         }
+    }
+
+    /**
+     * 核对真实网关访问日志携带业务关联及有效标准追踪标识。
+     * @param output 子进程输出
+     * @param trace 预期标准追踪标识
+     * @param business 预期业务关联标识
+     * @return 是否找到同一访问事件
+     */
+    private boolean hasGatewayLog(String output, String trace, String business) {
+        for (String line : output.split("\\R")) {
+            if (!line.startsWith("{\"timestamp\"")) continue;
+            var row = json.readTree(line);
+            if ("网关访问".equals(row.path("message").asText()) && trace.equals(row.path("traceId").asText())
+                    && business.equals(row.path("businessTraceId").asText())
+                    && row.path("spanId").asText().matches("[0-9a-f]{16}")
+                    && !row.path("spanId").asText().equals("0".repeat(16))) return true;
+        }
+        return false;
     }
 
     /**
