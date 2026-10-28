@@ -1487,3 +1487,9 @@ Quartz驱动在Relay计划登记及到期查询前核验专用调度器和共享
 ## NODE-E04.3a 重放任务状态判定
 
 新增基于技术状态、重放意图与可信消费证据的领域判定：已发送仍为RUNNING，只有有效消费证据可返回SUCCEEDED及100；异常证据失败关闭，错误只使用固定分类。4项Domain单元测试通过，零失败、错误或跳过，覆盖未开始、取消、重试、技术失败、重放失败及不一致证据；此节点尚未接入数据库查询。
+
+## NODE-E04.3b 重放任务状态查询
+
+新增QueryGateway管理员单任务查询，通过固定参数化SQL在单一快照核验任务、重放目标、原事件及消费凭据；只返回任务UUID、状态、单事件进度、安全错误分类和首次trace，不读取正文到应用投影。归档和原事件载荷使用 [MariaDB JSON_EQUALS](https://mariadb.com/docs/server/reference/sql-functions/special-functions/json-functions/json_equals) 进行JSON值比较，当前MariaDB基线高于其10.7最低版本；消费凭据与原始正文精确比对。
+
+59项独占MariaDB集成测试通过，零失败、错误或跳过；覆盖当前管理员、取消、退避和两类失败、技术成功及模拟发布确认后仍等待、真实消费后成功、高精度JSON等价与篡改失败关闭。发送确认由测试调用存储端口模拟，本节点未连接Broker；HTTP接口与Broker组合仍待后续节点。E04.3完成。

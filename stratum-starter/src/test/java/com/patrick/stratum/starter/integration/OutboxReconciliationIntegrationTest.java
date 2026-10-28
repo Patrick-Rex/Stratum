@@ -54,6 +54,11 @@ import com.patrick.stratum.domain.job.JobCancellationRepository;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository;
 import com.patrick.stratum.domain.job.JobLeaseAuthority;
+import com.patrick.stratum.domain.job.JobRecoveryRepository;
+import com.patrick.stratum.domain.job.DeadLetterReplayTaskStatus;
+import com.patrick.stratum.query.QueryContext;
+import com.patrick.stratum.query.QueryGateway;
+import com.patrick.stratum.query.job.DeadLetterReplayStatusQuery;
 import com.patrick.stratum.infrastructure.job.SchedulerConfiguration;
 import com.patrick.stratum.job.DeadLetterReplayJobConfiguration;
 import com.patrick.stratum.job.JobExecutionResult;
@@ -65,6 +70,7 @@ import org.quartz.Scheduler;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.core.env.MapPropertySource;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.DeserializationFeature;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -722,6 +728,108 @@ class OutboxReconciliationIntegrationTest {
             assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_replay_request WHERE request_id=?", Integer.class, task.toString()));
             assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM outbox_replay_delivery WHERE dead_id=?", Integer.class, archive.toString()));
         }
+    }
+
+    /** 单任务查询只允许当前管理员，取消可见且不存在或其他类型不泄漏。 */
+    @Test
+    void replayStatusQueryEnforcesCurrentAdministration() {
+        UUID role = administratorRole(), admin = account(), other = account(), ordinary = account();
+        assignRole(admin, Set.of(role)); assignRole(other, Set.of(role));
+        UUID request = UUID.randomUUID(), archive = UUID.randomUUID(); ownedTaskRequests.add(request);
+        UUID task = replayRegistration(admin).register(request, archive);
+        var gateway = application.getBean(QueryGateway.class); var query = DeadLetterReplayStatusQuery.create(task);
+        assertEquals(CommonErrorCode.UNAUTHORIZED, assertThrows(StratumException.class,
+                () -> gateway.execute(query, QueryContext.anonymous("query-test"))).getErrorCode());
+        assertEquals(CommonErrorCode.FORBIDDEN, assertThrows(StratumException.class, () -> queryReplayStatus(ordinary, task)).getErrorCode());
+        assertTrue(queryReplayStatus(admin, UUID.randomUUID()).isEmpty());
+        UUID unrelated = replayTask("other.probe"); assertTrue(queryReplayStatus(admin, unrelated).isEmpty());
+        var pending = queryReplayStatus(admin, task).orElseThrow();
+        assertEquals(DeadLetterReplayTaskStatus.Status.PENDING, pending.status()); assertEquals(0, pending.progress());
+        assertNull(pending.lastError()); assertEquals(task, pending.taskId());
+        replayCancellation(admin).cancel(task);
+        assertEquals(DeadLetterReplayTaskStatus.Status.CANCELLED, queryReplayStatus(admin, task).orElseThrow().status());
+        unitOfWork.execute(() -> { administration.lock(); administration.replaceRoleIds(admin, Set.of()); return null; });
+        assertEquals(CommonErrorCode.FORBIDDEN, assertThrows(StratumException.class, () -> queryReplayStatus(admin, task)).getErrorCode());
+    }
+
+    /** 真实登记、技术执行与模拟发布确认都不能冒充消费；完整消费凭据才返回成功。 */
+    @Test
+    void replayStatusRequiresMatchingActualConsumption() throws Exception {
+        UUID role = administratorRole(), admin = account(); assignRole(admin, Set.of(role));
+        var source = unpublishedEvents(1).getFirst(); var original = source.message();
+        String payload = "{\"a\":1,\"amount\":999999999999999999.123456789012}";
+        jdbc.update("UPDATE outbox_event SET payload=? WHERE event_id=?", payload, original.eventId());
+        var event = new Delivery(new OutboxMessage(original.eventId(), original.eventType(), original.aggregateId(),
+                original.occurredAt(), payload, original.traceId()), source.sequence());
+        markFailed(event, 3); UUID archive = validReplayArchive(event);
+        var lease = registeredReplayLease(admin, archive); UUID task = lease.submission().executionId();
+        assertEquals(DeadLetterReplayTaskStatus.Status.RUNNING, queryReplayStatus(admin, task).orElseThrow().status());
+        var receipt = application.getBean(DeadLetterReplayExecutionService.class).execute(lease);
+        assertEquals(DeadLetterReplayTaskStatus.Status.RUNNING, queryReplayStatus(admin, task).orElseThrow().status());
+        assertTrue(unitOfWork.execute(() -> application.getBean(JobRecoveryRepository.class).finish(lease, JobRecoveryRepository.Outcome.SUCCEEDED)));
+        assertEquals(DeadLetterReplayTaskStatus.Status.RUNNING, queryReplayStatus(admin, task).orElseThrow().status());
+        var claim = unitOfWork.execute(() -> relay.claim(new OutboxRelayRepository.ClaimRequest(1, Duration.ofSeconds(30)))).getFirst();
+        assertEquals(event, claim.delivery());
+        var policy = new OutboxRelayRepository.RetryPolicy(2, Duration.ofSeconds(1), Duration.ofSeconds(5));
+        assertTrue(unitOfWork.execute(() -> relay.finish(claim, OutboxPublisher.PublishResult.CONFIRMED, policy)));
+        assertEquals("SENT", jdbc.queryForObject("SELECT status FROM outbox_replay_delivery WHERE delivery_id=?", String.class, receipt.deliveryId().orElseThrow().toString()));
+        assertEquals(DeadLetterReplayTaskStatus.Status.RUNNING, queryReplayStatus(admin, task).orElseThrow().status());
+        assertEquals(OutboxConsumer.Outcome.CONSUMED, consumer.consume(event, ERP_AUDIT));
+        var completed = queryReplayStatus(admin, task).orElseThrow();
+        assertEquals(DeadLetterReplayTaskStatus.Status.SUCCEEDED, completed.status()); assertEquals(100, completed.progress());
+        assertNull(completed.lastError()); assertEquals(lease.submission().traceId(), completed.traceId());
+        jdbc.update("UPDATE outbox_dead_letter SET payload=? WHERE dead_id=?",
+                "{ \"amount\":999999999999999999.123456789012, \"a\":1 }", archive.toString());
+        assertEquals(DeadLetterReplayTaskStatus.Status.SUCCEEDED, queryReplayStatus(admin, task).orElseThrow().status());
+        jdbc.update("UPDATE outbox_dead_letter SET payload=? WHERE dead_id=?",
+                "{\"a\":1,\"amount\":999999999999999999.123456789013}", archive.toString());
+        assertEquals(CommonErrorCode.INTERNAL_ERROR, assertThrows(StratumException.class, () -> queryReplayStatus(admin, task)).getErrorCode());
+        jdbc.update("UPDATE outbox_dead_letter SET payload=? WHERE dead_id=?", payload, archive.toString());
+        jdbc.update("UPDATE outbox_consumption SET trace_id='forged-trace' WHERE event_id=?", event.message().eventId());
+        assertEquals(CommonErrorCode.INTERNAL_ERROR, assertThrows(StratumException.class, () -> queryReplayStatus(admin, task)).getErrorCode());
+    }
+
+    /** 先前已消费的事件在任务执行前仍待处理，核验并登记已消费事实后才完成。 */
+    @Test
+    void replayStatusHandlesPreviouslyConsumedEvidence() throws Exception {
+        UUID role = administratorRole(), admin = account(); assignRole(admin, Set.of(role));
+        var event = unpublishedEvents(1).getFirst(); markFailed(event, 3); UUID archive = validReplayArchive(event);
+        assertEquals(OutboxConsumer.Outcome.CONSUMED, consumer.consume(event, ERP_AUDIT));
+        UUID request = UUID.randomUUID(); ownedTaskRequests.add(request); UUID task = replayRegistration(admin).register(request, archive);
+        assertEquals(DeadLetterReplayTaskStatus.Status.PENDING, queryReplayStatus(admin, task).orElseThrow().status());
+        var lease = claimReplayTask(task);
+        assertEquals(OutboxReplayRepository.Outcome.ALREADY_CONSUMED, application.getBean(DeadLetterReplayExecutionService.class).execute(lease).outcome());
+        var result = queryReplayStatus(admin, task).orElseThrow();
+        assertEquals(DeadLetterReplayTaskStatus.Status.SUCCEEDED, result.status()); assertEquals(100, result.progress());
+    }
+
+    /** 任务处理失败与投递失败只暴露固定分类，退避中的技术失败仍为进行中。 */
+    @Test
+    void replayStatusExposesSafeTerminalFailureCategories() throws Exception {
+        UUID role = administratorRole(), admin = account(); assignRole(admin, Set.of(role));
+        var event = unpublishedEvents(1).getFirst(); markFailed(event, 3); UUID archive = validReplayArchive(event);
+        var lease = registeredReplayLease(admin, archive); UUID task = lease.submission().executionId();
+        var recovery = application.getBean(JobRecoveryRepository.class);
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            var current = lease;
+            assertTrue(unitOfWork.execute(() -> recovery.finish(current, JobRecoveryRepository.Outcome.FAILED)));
+            if (attempt < 3) {
+                assertEquals(DeadLetterReplayTaskStatus.Status.RUNNING, queryReplayStatus(admin, task).orElseThrow().status());
+                jdbc.update("UPDATE job_execution SET next_attempt_at='2000-01-01 00:00:00' WHERE execution_id=?", task.toString());
+                lease = claimReplayTask(task);
+            }
+        }
+        var failed = queryReplayStatus(admin, task).orElseThrow();
+        assertEquals(DeadLetterReplayTaskStatus.Status.FAILED, failed.status()); assertEquals("EXECUTION_FAILED", failed.lastError());
+
+        var anotherEvent = unpublishedEvents(1).getFirst(); markFailed(anotherEvent, 3); UUID anotherArchive = validReplayArchive(anotherEvent);
+        var anotherLease = registeredReplayLease(admin, anotherArchive); UUID anotherTask = anotherLease.submission().executionId();
+        application.getBean(DeadLetterReplayExecutionService.class).execute(anotherLease);
+        var delivery = unitOfWork.execute(() -> relay.claim(new OutboxRelayRepository.ClaimRequest(1, Duration.ofSeconds(30)))).getFirst();
+        var policy = new OutboxRelayRepository.RetryPolicy(1, Duration.ofSeconds(1), Duration.ofSeconds(1));
+        assertTrue(unitOfWork.execute(() -> relay.finish(delivery, OutboxPublisher.PublishResult.RETURNED, policy)));
+        var replayFailure = queryReplayStatus(admin, anotherTask).orElseThrow();
+        assertEquals(DeadLetterReplayTaskStatus.Status.FAILED, replayFailure.status()); assertEquals("REPLAY_FAILED", replayFailure.lastError());
     }
 
     /** 应用入口拒绝已有工作单元，避免把恢复结果误报为已提交。 */
@@ -1616,6 +1724,26 @@ class OutboxReconciliationIntegrationTest {
     private JobExecutionRepository.Lease registeredReplayLease(UUID admin, UUID archive) {
         UUID request = UUID.randomUUID(); ownedTaskRequests.add(request);
         UUID task = replayRegistration(admin).register(request, archive);
+        return claimReplayTask(task);
+    }
+
+    /**
+     * 以可信管理员上下文经QueryGateway读取单一任务状态。
+     * @param user 当前测试账号
+     * @param task 目标任务UUID
+     * @return 可选安全任务详情
+     */
+    private Optional<DeadLetterReplayStatusQuery.Row> queryReplayStatus(UUID user, UUID task) {
+        var context = new QueryContext.Snapshot("query-test", Optional.of(user.toString()), Set.of());
+        return application.getBean(QueryGateway.class).execute(DeadLetterReplayStatusQuery.create(task), context).getItems().stream().findFirst();
+    }
+
+    /**
+     * 等待本测试登记任务到期并取得真实领取。
+     * @param task 本测试任务UUID
+     * @return 已提交领取证据
+     */
+    private JobExecutionRepository.Lease claimReplayTask(UUID task) {
         var found = new AtomicReference<JobExecutionRepository.Lease>();
         await().atMost(Duration.ofSeconds(5)).until(() -> {
             var lease = unitOfWork.execute(() -> application.getBean(JobExecutionRepository.class).claim(task));
@@ -1633,7 +1761,7 @@ class OutboxReconciliationIntegrationTest {
         var json = application.getBean(JsonMapper.class); var event = delivery.message();
         byte[] body = json.writeValueAsBytes(Map.of("eventId", event.eventId(), "eventType", event.eventType(), "aggregateId", event.aggregateId(),
                 "occurredAt", event.occurredAt().toString(), "traceId", event.traceId(), "sequence", delivery.sequence(),
-                "payload", json.readTree(event.payload())));
+                "payload", json.reader().with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).readTree(event.payload())));
         var letter = new OutboxDeadLetterRepository.Letter(UUID.randomUUID(), ERP_AUDIT, body, "{}", Optional.of(delivery),
                 OutboxDeadLetterRepository.Category.RETRIES_EXHAUSTED, 3);
         UUID archive = unitOfWork.execute(() -> application.getBean(OutboxDeadLetterRepository.class).append(letter));
