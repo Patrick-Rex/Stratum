@@ -113,7 +113,7 @@ $env:STRATUM_REDIS_PORT = '6379'
 Invoke-RestMethod http://localhost:8080/actuator/health
 ```
 
-健康状态包含数据库与 Redis。本地 Caffeine 客户端默认最多 10000 条、写入后 30 秒失效，可用 `stratum.cache.local.maximum-size` 和 `stratum.cache.local.ttl` 调整；Cache Aside、空值保护、single-flight、分布式锁及补偿落盘已通过 NODE-B05 验收；补偿投递与执行仍待 Phase E。OpenAPI JSON（`/v3/api-docs`）与 Knife4j 页面（`/doc.html`）已接入并通过真实HTTP端点测试；业务响应文档已通过 C02.4b 的真实HTTP与浏览器验收。当前尚无 Prometheus 注册表或追踪后端，`/actuator/prometheus` 尚不可用。
+健康状态包含数据库与 Redis。本地 Caffeine 客户端默认最多 10000 条、写入后 30 秒失效，可用 `stratum.cache.local.maximum-size` 和 `stratum.cache.local.ttl` 调整；Cache Aside、空值保护、single-flight、分布式锁及补偿落盘已通过 NODE-B05 验收；补偿投递与执行仍待 Phase E。OpenAPI JSON（`/v3/api-docs`）与 Knife4j 页面（`/doc.html`）已接入并通过真实HTTP端点测试；业务响应文档已通过 C02.4b 的真实HTTP与浏览器验收。Starter已具备Prometheus注册表及可选追踪Agent，指标HTTP入口尚未开放，追踪后端未部署。
 
 当前没有 `docker/compose/`，本轮不实施部署编排。可以连接现有 Docker 服务，也可创建独立测试容器；不要复用其他项目的业务库或清空共享 Redis。集成测试使用独立数据库及带 `stratum` 前缀的键。
 
@@ -1529,3 +1529,7 @@ HTTP过滤器将既有业务关联ID绑定到独立MDC键 `businessTraceId`，�
 Starter默认使用Boot结构化控制台格式器输出JSON； `businessTraceId` 为HTTP上下文或已有任务/消息日志的业务关联，`traceId` / `spanId` 仅接收非零且格式合法的Agent MDC值。没有Agent或未处于标准跨度时输出空值，不伪造追踪。常用业务日志只展开固定键与标量，异常保留类型和最多32个调用位置，不输出异常消息或未登记MDC。格式器不自动记录HTTP头或正文，也不负责清洗开发者主动写入的消息文本，业务日志仍须遵循敏感信息禁入规则。
 
 36项Starter单元、25项数据库/Redis日志回归及1项真实Agent子进程测试通过，零失败、错误或跳过；覆盖MDC和字段白名单、无追踪与非法标识、异常处理、真实请求日志中的业务关联及标准跨度、Cookie不出现在输出中。测试仅对指定Cookie及未登记字段作断言，不宣称任意日志文本均已脱敏。F01.2完成；指标入口及后续跨边界传播待继续。
+
+## NODE-F01.3a Starter指标注册表
+
+Starter接入Spring Boot统一管理的Micrometer Prometheus注册表，沿用Gateway已采用的开源组件；不改变HTTP端点暴露配置。真实Starter与独立MariaDB/Redis测试核对JVM、HTTP及现有缓存指标可抓取，缓存业务键与关联ID不进入指标标签，直接HTTP抓取仍非200。注册表及现有缓存、锁、认证相关回归共26项通过，零失败、错误或跳过；实际HTTP开放和管理来源规则继续F01.3b。
