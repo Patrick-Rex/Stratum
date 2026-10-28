@@ -61,27 +61,33 @@ class GatewayAccessLogTest extends GatewayHttpIntegrationTest {
         var expected = Map.of("log-stable", 204, "log-gray", 200, "log-denied", 403, "log-missing", 404,
                 "log-health", 200, "log-fault", 502, "log-rate", 429);
         for (var event : events) {
-            assertEquals(expected.get(event.path("traceId").asText()), event.path("status").asInt());
+            assertEquals(expected.get(event.path("businessTraceId").asText()), event.path("status").asInt());
             assertEquals("stratum-gateway", event.path("service").asText()); assertEquals("INFO", event.path("level").asText());
-            assertTrue(event.has("env")); assertTrue(event.has("spanId")); assertDoesNotThrow(() -> Instant.parse(event.path("timestamp").asText()));
+            assertTrue(event.has("env")); assertEquals("", event.path("traceId").asText()); assertEquals("", event.path("spanId").asText()); assertDoesNotThrow(() -> Instant.parse(event.path("timestamp").asText()));
             assertEquals("127.0.0.1", event.path("clientIp").asText()); assertTrue(event.path("latencyMs").asLong() >= 0);
             assertTrue(List.of("stable", "gray", "local", "unmatched").contains(event.path("upstream").asText()));
             assertFalse(event.toString().contains("secret")); assertFalse(event.has("Authorization")); assertFalse(event.has("body"));
         }
-        assertEquals("gray", events.stream().filter(event -> event.path("traceId").asText().equals("log-gray")).findFirst().orElseThrow().path("upstream").asText());
+        assertEquals("gray", events.stream().filter(event -> event.path("businessTraceId").asText().equals("log-gray")).findFirst().orElseThrow().path("upstream").asText());
     }
 
-    /** 格式器只收集登记属性，安全转义换行和引号，并读取已有OTel MDC而不生成虚假跨度。 */
+    /** 格式器只收集登记属性，校验已有OTel MDC而不生成虚假跨度。 */
     @Test void formatterUsesSafeFieldsAndExistingSpanContext() {
         var event = mock(ILoggingEvent.class); when(event.getInstant()).thenReturn(Instant.parse("2026-10-26T00:00:00Z"));
         when(event.getLevel()).thenReturn(Level.INFO); when(event.getLoggerName()).thenReturn("gateway-test"); when(event.getFormattedMessage()).thenReturn("固定访问事件");
-        when(event.getMDCPropertyMap()).thenReturn(Map.of("trace_id", "existing-trace", "span_id", "existing-span", "Authorization", "mdc-secret"));
-        when(event.getKeyValuePairs()).thenReturn(List.of(new KeyValuePair("traceId", "safe\"line\nnext"), new KeyValuePair("status", 200),
+        when(event.getMDCPropertyMap()).thenReturn(Map.of("trace_id", "1234567890abcdef1234567890abcdef", "span_id", "1234567890abcdef", "Authorization", "mdc-secret"));
+        when(event.getKeyValuePairs()).thenReturn(List.of(new KeyValuePair("businessTraceId", "safe-trace"), new KeyValuePair("status", 200),
                 new KeyValuePair("Authorization", "pair-secret"), new KeyValuePair("body", "body-secret")));
         String json = new GatewayStructuredLogFormatter().format(event);
         assertEquals(1, json.lines().count()); var parsed = JsonMapper.builder().build().readTree(json);
-        assertEquals("safe\"line\nnext", parsed.path("traceId").asText()); assertEquals("existing-span", parsed.path("spanId").asText());
+        assertEquals("safe-trace", parsed.path("businessTraceId").asText());
+        assertEquals("1234567890abcdef1234567890abcdef", parsed.path("traceId").asText()); assertEquals("1234567890abcdef", parsed.path("spanId").asText());
         assertEquals(200, parsed.path("status").asInt()); assertFalse(json.contains("secret"));
+        when(event.getMDCPropertyMap()).thenReturn(Map.of("trace_id", "0".repeat(32), "span_id", "invalid"));
+        when(event.getKeyValuePairs()).thenReturn(List.of(new KeyValuePair("businessTraceId", "invalid\nvalue")));
+        var invalid = JsonMapper.builder().build().readTree(new GatewayStructuredLogFormatter().format(event));
+        assertEquals("", invalid.path("traceId").asText()); assertEquals("", invalid.path("spanId").asText());
+        assertEquals("", invalid.path("businessTraceId").asText());
     }
 
     /** 取消后记录499，稍后的提交回调不能重复记录同一请求。 */
@@ -95,7 +101,7 @@ class GatewayAccessLogTest extends GatewayHttpIntegrationTest {
             exchange.getResponse().setComplete().block(Duration.ofSeconds(2));
             assertEquals(1, appender.list.size());
             var event = JsonMapper.builder().build().readTree(new GatewayStructuredLogFormatter().format(appender.list.getFirst()));
-            assertEquals(499, event.path("status").asInt()); assertEquals("cancelled-trace", event.path("traceId").asText());
+            assertEquals(499, event.path("status").asInt()); assertEquals("cancelled-trace", event.path("businessTraceId").asText());
         } finally { logger.detachAppender(appender); logger.setLevel(previous); appender.stop(); }
     }
 }

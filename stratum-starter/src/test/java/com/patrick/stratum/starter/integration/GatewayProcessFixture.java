@@ -127,7 +127,7 @@ final class GatewayProcessFixture implements AutoCloseable {
      * @return 是否存在该JSON属性
      * @throws IOException 输出读取失败
      */
-    boolean hasTrace(String traceId) throws IOException { return readOutput().contains("\"traceId\":\"" + traceId + "\""); }
+    boolean hasTrace(String traceId) throws IOException { return readOutput().contains("\"businessTraceId\":\"" + traceId + "\""); }
 
     /**
      * 返回本夹具唯一的限流空间，供组合测试精确操纵/核对自己的桶。

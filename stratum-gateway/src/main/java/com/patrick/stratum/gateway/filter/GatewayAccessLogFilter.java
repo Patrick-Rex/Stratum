@@ -44,7 +44,7 @@ public class GatewayAccessLogFilter implements WebFilter, Ordered {
         String traceId = exchange.getAttributeOrDefault(GatewayCorrelationFilter.TRACE_ATTRIBUTE, "");
         log.atInfo().addKeyValue("upstream", upstream(exchange)).addKeyValue("status", status)
                 .addKeyValue("latencyMs", Math.max(0, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)))
-                .addKeyValue("traceId", traceId).addKeyValue("clientIp", clientIp).log("网关访问");
+                .addKeyValue("businessTraceId", traceId).addKeyValue("clientIp", clientIp).log("网关访问");
     }
 
     /**
