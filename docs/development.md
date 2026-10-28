@@ -1687,3 +1687,9 @@ Common 9项及Infrastructure 31项单元测试通过，零失败、错误或跳�
 `:stratum-infrastructure:otelIntegrationTest` 显式启动JDK 25独立JVM和固定版本Java Agent，使用本地OTLP日志导出而不启动收集服务。真实导出结果核对有效非零标识：捕获并恢复的上下文使新跨度成为原跨度的子节点；空历史上下文建立不同trace的根跨度。测试同时核对恢复作用域不继承baggage，退出后恢复原线程状态；不会将baggage样本输出到导出日志。
 
 Infrastructure 31项常规单元测试和1项真实Agent独立进程测试通过，零失败、错误或跳过。该验收只证明上下文组件与Agent互通，不表示Outbox、RabbitMQ或后台任务的标准上下文已持久化传播。
+
+### Outbox标准上下文迁移
+
+Flyway新增 `standard_traceparent` 与 `standard_tracestate` 可空ASCII列；历史事件保持空值，约束禁止仅有state而没有parent。旧版本按原列集合写入仍可使用；事件身份、聚合顺序、业务trace与正文不改变。当前节点仅完成数据库迁移，尚未接入写入捕获或消息传播。
+
+1项独占MariaDB迁移测试通过，零失败、错误或跳过：先迁移到旧版本并写入历史事件，再升级，核对原字段及空新列，并通过旧列集合模拟迁移后旧写入；另核验state依赖parent的数据库约束。未启动旧版本应用进程。
