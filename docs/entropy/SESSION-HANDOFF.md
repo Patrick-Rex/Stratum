@@ -17,3 +17,5 @@
 - CONTEXT 已更新。用户原有Docker服务保留；本轮独立MariaDB、Redis及专用RabbitMQ测试空间暂留供后续节点使用，会话结束前清理。连接状态保存在本机临时目录stratum-E04-state.json及stratum-E04-mq.json，不提交凭据。
 
 - 等待用户确认Starter指标直连访问规则；没有答复之前不得开放指标HTTP。
+
+- 已同步README及可观测性设计中Starter日志的当前状态；该文档维护不计为开发节点完成。
