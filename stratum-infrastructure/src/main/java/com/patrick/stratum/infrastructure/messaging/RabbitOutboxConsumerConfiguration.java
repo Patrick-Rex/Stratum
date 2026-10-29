@@ -3,8 +3,10 @@ package com.patrick.stratum.infrastructure.messaging;
 import java.io.IOException;
 import java.time.Duration;
 
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.event.OutboxConsumptionRepository.Group;
 import com.patrick.stratum.domain.event.OutboxConsumer;
+import com.patrick.stratum.infrastructure.tracing.OpenTelemetryTraceContext;
 import com.rabbitmq.client.Channel;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.opentelemetry.context.Context;
@@ -70,14 +72,15 @@ public class RabbitOutboxConsumerConfiguration {
      * @param consumer 应用消费端口
      * @param json 项目JSON映射器
      * @param registries 可选指标注册表
+     * @param traces 可选标准追踪边界，独立装配时使用默认适配器
      * @return 手动确认监听容器
      */
     @Bean
     SimpleMessageListenerContainer erpOutboxListener(CachingConnectionFactory factory, RabbitAdmin admin,
             @Qualifier("rabbitConsumerExecutor") ThreadPoolTaskExecutor executor, Properties properties,
-            OutboxConsumer consumer, JsonMapper json, ObjectProvider<MeterRegistry> registries) {
+            OutboxConsumer consumer, JsonMapper json, ObjectProvider<MeterRegistry> registries, ObjectProvider<StandardTraceContext> traces) {
         return listener(factory, admin, executor, properties, consumer, json, RabbitTopologyConfiguration.ERP_QUEUE, Group.ERP_AUDIT,
-                new MessageMetrics(registries.getIfAvailable()));
+                new MessageMetrics(registries.getIfAvailable()), traces.getIfAvailable(OpenTelemetryTraceContext::new));
     }
 
     /**
@@ -89,14 +92,15 @@ public class RabbitOutboxConsumerConfiguration {
      * @param consumer 应用消费端口
      * @param json 项目JSON映射器
      * @param registries 可选指标注册表
+     * @param traces 可选标准追踪边界，独立装配时使用默认适配器
      * @return 手动确认监听容器
      */
     @Bean
     SimpleMessageListenerContainer cacheOutboxListener(CachingConnectionFactory factory, RabbitAdmin admin,
             @Qualifier("rabbitConsumerExecutor") ThreadPoolTaskExecutor executor, Properties properties,
-            OutboxConsumer consumer, JsonMapper json, ObjectProvider<MeterRegistry> registries) {
+            OutboxConsumer consumer, JsonMapper json, ObjectProvider<MeterRegistry> registries, ObjectProvider<StandardTraceContext> traces) {
         return listener(factory, admin, executor, properties, consumer, json, RabbitTopologyConfiguration.CACHE_QUEUE, Group.CACHE_INVALIDATION,
-                new MessageMetrics(registries.getIfAvailable()));
+                new MessageMetrics(registries.getIfAvailable()), traces.getIfAvailable(OpenTelemetryTraceContext::new));
     }
 
     /**
@@ -110,11 +114,12 @@ public class RabbitOutboxConsumerConfiguration {
      * @param queue 固定队列
      * @param group 固定组别
      * @param metrics 不改变确认语义的指标组件
+     * @param trace 标准追踪边界
      * @return 配置完成的容器
      */
     private static SimpleMessageListenerContainer listener(CachingConnectionFactory factory, RabbitAdmin admin,
             ThreadPoolTaskExecutor executor, Properties properties, OutboxConsumer consumer, JsonMapper json,
-            String queue, Group group, MessageMetrics metrics) {
+            String queue, Group group, MessageMetrics metrics, StandardTraceContext trace) {
         var container = new RootIsolatedListenerContainer(factory);
         container.setQueueNames(queue); container.setAmqpAdmin(admin); container.setTaskExecutor(executor);
         container.setConcurrentConsumers(properties.concurrency()); container.setMaxConcurrentConsumers(properties.concurrency());
@@ -125,7 +130,7 @@ public class RabbitOutboxConsumerConfiguration {
         container.setMissingQueuesFatal(true); container.setMismatchedQueuesFatal(true);
         container.setShutdownTimeout(properties.shutdownTimeout().toMillis());
         container.setForceStop(false); container.setForceCloseChannel(true);
-        var adapter = new RabbitOutboxConsumerAdapter(new RabbitOutboxMessageCodec(json), consumer, group, metrics);
+        var adapter = new RabbitOutboxConsumerAdapter(new RabbitOutboxMessageCodec(json), consumer, group, metrics, trace);
         container.setMessageListener((ChannelAwareMessageListener) (message, channel) -> dispatch(adapter, message, channel));
         container.setErrorHandler(failure -> log.atWarn().addKeyValue("consumerGroup", group.name())
                 .addKeyValue("errorType", failure.getClass().getSimpleName())

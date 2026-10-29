@@ -9,14 +9,17 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.event.OutboxConsumptionRepository.Group;
 import com.patrick.stratum.domain.event.OutboxConsumer;
 import com.patrick.stratum.domain.event.OutboxMessage;
 import com.patrick.stratum.domain.event.OutboxPublisher;
+import com.patrick.stratum.infrastructure.tracing.OpenTelemetryTraceContext;
 import com.rabbitmq.client.Channel;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.slf4j.MDC;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageDeliveryMode;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
@@ -45,6 +48,137 @@ class RabbitOutboxConsumerTest {
         var payload = json.reader().with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).readTree(delivery.message().payload());
         assertEquals(0, new BigDecimal("99999999999999999999999999.123456789012")
                 .compareTo(payload.path("quantity").decimalValue()));
+    }
+
+    /**
+     * 无Agent时仅从规范消息头恢复上下文，业务及标准日志字段在退出后恢复原值。
+     * @throws IOException 确认通道失败
+     */
+    @Test
+    void restoresBoundedHeadersAndLogContextWithoutAgent() throws IOException {
+        var bridge = new OpenTelemetryTraceContext(); var input = message();
+        String parent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        String previous = "00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01";
+        input.getMessageProperties().setHeader("traceparent", parent);
+        input.getMessageProperties().setHeader("tracestate", "vendor=value");
+        var port = mock(OutboxConsumer.class); var channel = mock(Channel.class);
+        when(port.consume(any(), any())).thenAnswer(call -> {
+            var current = bridge.capture().orElseThrow();
+            assertEquals(parent, current.traceparent()); assertEquals("vendor=value", current.tracestate());
+            assertEquals("codec-trace", MDC.get("businessTraceId"));
+            assertEquals("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", MDC.get("trace_id")); assertEquals("bbbbbbbbbbbbbbbb", MDC.get("span_id"));
+            return CONSUMED;
+        });
+        MDC.put("businessTraceId", "previous-business"); MDC.put("trace_id", "previous-standard"); MDC.put("span_id", "previous-span");
+        try (var ignored = bridge.restore(bridge.normalize(previous, null))) {
+            adapter(port).onMessage(input, channel); verify(channel).basicAck(7L, false);
+            assertEquals(previous, bridge.capture().orElseThrow().traceparent());
+            assertEquals("previous-business", MDC.get("businessTraceId"));
+            assertEquals("previous-standard", MDC.get("trace_id")); assertEquals("previous-span", MDC.get("span_id"));
+        } finally { MDC.remove("businessTraceId"); MDC.remove("trace_id"); MDC.remove("span_id"); }
+    }
+
+    /**
+     * 非法、超界或非文本父头只使用根上下文；非法state不丢弃有效parent。
+     * @throws IOException 确认通道失败
+     */
+    @Test
+    void handlesInvalidAndUntrustedHeadersWithoutLeakingContext() throws IOException {
+        var bridge = new OpenTelemetryTraceContext(); var port = mock(OutboxConsumer.class); var channel = mock(Channel.class);
+        var seen = new ArrayList<java.util.Optional<StandardTraceContext.Carrier>>();
+        when(port.consume(any(), any())).thenAnswer(call -> { seen.add(bridge.capture()); return CONSUMED; });
+        var malformed = message(); malformed.getMessageProperties().setHeader("traceparent", "invalid");
+        var oversized = message(); oversized.getMessageProperties().setHeader("traceparent", "a".repeat(1025));
+        var wrongType = message(); wrongType.getMessageProperties().setHeader("traceparent", new byte[]{1, 2});
+        var valid = message(); String parent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        valid.getMessageProperties().setHeader("traceparent", parent);
+        valid.getMessageProperties().setHeader("tracestate", "duplicate=one,duplicate=two");
+        try (var ignored = bridge.restore(bridge.normalize("00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01", null))) {
+            for (var input : List.of(malformed, oversized, wrongType, valid)) adapter(port).onMessage(input, channel);
+            assertTrue(seen.subList(0, 3).stream().allMatch(java.util.Optional::isEmpty));
+            assertEquals(parent, seen.getLast().orElseThrow().traceparent()); assertEquals("", seen.getLast().orElseThrow().tracestate());
+            assertEquals("cccccccccccccccccccccccccccccccc", bridge.capture().orElseThrow().traceparent().substring(3, 35));
+        }
+        verify(channel, times(4)).basicAck(7L, false);
+    }
+
+    /**
+     * 应用失败或确认传输异常均关闭消息作用域并恢复调用线程和日志字段。
+     * @throws IOException 受控通道行为外的失败
+     */
+    @Test
+    void restoresContextAfterConsumerOrAcknowledgementFailure() throws IOException {
+        var bridge = new OpenTelemetryTraceContext();
+        String parent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        String previous = "00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01";
+        for (boolean failConsumer : new boolean[]{true, false}) {
+            var input = message(); input.getMessageProperties().setHeader("traceparent", parent);
+            var port = mock(OutboxConsumer.class); var channel = mock(Channel.class);
+            when(port.consume(any(), any())).thenAnswer(call -> {
+                assertEquals(parent, bridge.capture().orElseThrow().traceparent());
+                if (failConsumer) throw new IllegalStateException("private-consume-failure"); return CONSUMED;
+            });
+            if (!failConsumer) doThrow(new IOException("private-ack-failure")).when(channel).basicAck(7L, false);
+            MDC.put("businessTraceId", "caller-business"); MDC.put("trace_id", "caller-trace"); MDC.put("span_id", "caller-span");
+            try (var ignored = bridge.restore(bridge.normalize(previous, null))) {
+                if (failConsumer) { adapter(port).onMessage(input, channel); verify(channel).basicReject(7L, true); }
+                else assertThrows(IOException.class, () -> adapter(port).onMessage(input, channel));
+                assertEquals(previous, bridge.capture().orElseThrow().traceparent());
+                assertEquals("caller-business", MDC.get("businessTraceId"));
+                assertEquals("caller-trace", MDC.get("trace_id")); assertEquals("caller-span", MDC.get("span_id"));
+            } finally { MDC.remove("businessTraceId"); MDC.remove("trace_id"); MDC.remove("span_id"); }
+        }
+    }
+
+    /**
+     * 规范化或恢复异常、组件返回空对象时不执行业务，仅等待重投且不泄露异常原文。
+     * @param output 捕获的日志
+     * @throws IOException 确认通道失败
+     */
+    @Test
+    void defersWhenTraceComponentCannotRestore(CapturedOutput output) throws IOException {
+        String parent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        for (int failure = 0; failure < 4; failure++) {
+            var input = message(); input.getMessageProperties().setHeader("traceparent", parent);
+            input.getMessageProperties().setHeader("tracestate", "vendor=value");
+            var trace = mock(StandardTraceContext.class);
+            if (failure == 0) when(trace.normalize(parent, "vendor=value")).thenThrow(new IllegalStateException("private-normalize"));
+            else if (failure == 1) when(trace.normalize(parent, "vendor=value")).thenReturn(null);
+            else {
+                when(trace.normalize(parent, "vendor=value")).thenReturn(java.util.Optional.of(new StandardTraceContext.Carrier(parent, "vendor=value")));
+                if (failure == 2) when(trace.restore(any())).thenThrow(new IllegalStateException("private-restore"));
+                else when(trace.restore(any())).thenReturn(null);
+            }
+            var channel = mock(Channel.class); var port = mock(OutboxConsumer.class); var registry = new SimpleMeterRegistry();
+            MDC.put("businessTraceId", "caller-business"); MDC.put("trace_id", "caller-trace"); MDC.put("span_id", "caller-span");
+            try {
+                new RabbitOutboxConsumerAdapter(codec(), port, Group.ERP_AUDIT, new MessageMetrics(registry), trace).onMessage(input, channel);
+                verifyNoInteractions(port); verify(channel).basicNack(7L, false, true); verifyNoMoreInteractions(channel);
+                assertEquals(1, registry.get("stratum.messaging.consumed").tags("group", "erp_audit", "result", "waiting").counter().count());
+                assertNull(registry.find("stratum.messaging.consumed").tags("group", "erp_audit", "result", "failed").counter());
+                assertEquals("caller-business", MDC.get("businessTraceId")); assertEquals("caller-trace", MDC.get("trace_id"));
+                assertEquals("caller-span", MDC.get("span_id"));
+            } finally { registry.close(); MDC.remove("businessTraceId"); MDC.remove("trace_id"); MDC.remove("span_id"); }
+        }
+        assertTrue(output.getAll().contains("消息追踪上下文恢复失败，等待重投"));
+        assertFalse(output.getAll().contains("private-normalize")); assertFalse(output.getAll().contains("private-restore"));
+        assertFalse(output.getAll().contains(parent));
+    }
+
+    /**
+     * 追踪故障的nack传输结果未知时传播原异常，不追加第二次确认或执行业务。
+     * @throws IOException 确认通道异常
+     */
+    @Test
+    void preservesUnknownTraceFailureNackOutcome() throws IOException {
+        var input = message(); input.getMessageProperties().setHeader("traceparent", "invalid");
+        var trace = mock(StandardTraceContext.class);
+        when(trace.normalize("invalid", null)).thenThrow(new IllegalStateException("private"));
+        var port = mock(OutboxConsumer.class); var channel = mock(Channel.class);
+        doThrow(new IOException("nack-unknown")).when(channel).basicNack(7L, false, true);
+        var adapter = new RabbitOutboxConsumerAdapter(codec(), port, Group.ERP_AUDIT, new MessageMetrics(null), trace);
+        assertThrows(IOException.class, () -> adapter.onMessage(input, channel));
+        verifyNoInteractions(port); verify(channel).basicNack(7L, false, true); verifyNoMoreInteractions(channel);
     }
 
     /** 应用返回前不确认；提交与重复都只确认当前一条。 */

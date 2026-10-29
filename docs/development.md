@@ -1733,3 +1733,10 @@ RabbitMQ发布器在无Agent时将当前有效、规范化的 `traceparent` 和�
 ### 消息监听线程追踪隔离
 
 每条消息进入Spring监听入口前临时切换到根上下文，结束后恢复工作线程原值，防止复用线程残留追踪或baggage串入消息。固定Agent在Spring监听入口建立自己的消费跨度；切换消息语义约定时可能通过父跨度或跨度链接表达关联，参考[固定版本Agent实现](https://github.com/open-telemetry/opentelemetry-java-instrumentation/blob/v2.33.0/instrumentation/spring/spring-rabbit-1.0/javaagent/src/main/java/io/opentelemetry/javaagent/instrumentation/spring/rabbit/v1_0/SpringRabbitSingletons.java)。3项真实Broker独立JVM测试、8项消费单元及7项真实Broker/调度集成测试通过，零失败、错误或跳过；无Agent消息头恢复仍待下一节点。
+
+
+### 消费标准上下文与故障等待
+
+每条消费优先保留Agent已建立的本地消费跨度；无Agent时从有界的文本消息头恢复规范W3C上下文，历史空值或非法父头使用根上下文，非法state只丢弃state。消息处理的业务关联及无Agent下有效标准标识写入独立日志字段，退出时恢复调用方线程上下文。用户确认：若追踪组件无法恢复上下文，跳过业务并以等待类别nack重投，不增加业务失败次数，只记录安全异常类型；确认传输异常仍按既有通道处理。
+
+13项消费单元测试及1项实际Agent独立进程测试通过，零失败、错误或跳过；Agent进程使用受控通道替身，不涉及Broker。本次未验证真实Broker的故障延迟、重投次数及真实监听链路，留待c4b2b。
