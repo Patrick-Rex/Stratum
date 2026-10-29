@@ -117,10 +117,10 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository, JobCa
     }
 
     /**
-     * 捕获并规范化任务登记上下文；追踪组件故障时安全告警并保持空值。
+     * 捕获并规范化任务登记或人工恢复上下文；追踪组件故障时安全告警并保持空值。
      * @return 可持久化的标准上下文，缺失或故障时为空
      */
-    private Optional<StandardTraceContext.Carrier> captureStandardTrace() {
+    Optional<StandardTraceContext.Carrier> captureStandardTrace() {
         try {
             return Objects.requireNonNull(standardTrace.capture()).flatMap(value ->
                     Objects.requireNonNull(standardTrace.normalize(value.traceparent(), value.tracestate())));

@@ -6,6 +6,7 @@ import javax.sql.DataSource;
 
 import com.patrick.stratum.common.error.CommonErrorCode;
 import com.patrick.stratum.common.error.StratumException;
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.job.JobExecutionRepository.Lease;
 import com.patrick.stratum.domain.job.JobExecutionRepository.State;
 import com.patrick.stratum.domain.job.JobRecoveryRepository;
@@ -80,10 +81,13 @@ public class JobRecoveryRepositoryImpl implements JobRecoveryRepository {
             var now = executions.databaseNow();
             long cycle = row.cycle() + 1;
             UUID execution = row.submission().executionId();
+            var trace = executions.captureStandardTrace();
+            String parent = trace.map(StandardTraceContext.Carrier::traceparent).orElse(null);
+            String state = trace.map(StandardTraceContext.Carrier::tracestate).filter(value -> !value.isEmpty()).orElse(null);
             jdbc.update("""
                     UPDATE job_execution SET state='WAITING',cycle_no=?,failure_count=0,trace_id=?,next_attempt_at=?,
-                    finished_at=NULL,updated_at=?,version=version+1 WHERE execution_id=?
-                    """, cycle, request.traceId(), time(now), time(now), execution.toString());
+                    standard_traceparent=?,standard_tracestate=?,finished_at=NULL,updated_at=?,version=version+1 WHERE execution_id=?
+                    """, cycle, request.traceId(), time(now), parent, state, time(now), execution.toString());
             jdbc.update("UPDATE dead_job SET state='REPLAY_REQUESTED' WHERE dead_id=?", request.deadId().toString());
             jdbc.update("""
                     INSERT INTO job_replay_request(request_id,dead_id,execution_id,resumed_cycle,trace_id)

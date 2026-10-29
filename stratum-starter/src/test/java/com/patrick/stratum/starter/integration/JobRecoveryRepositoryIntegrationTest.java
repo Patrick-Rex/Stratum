@@ -14,19 +14,28 @@ import java.util.concurrent.TimeUnit;
 
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.common.error.StratumException;
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository;
 import com.patrick.stratum.domain.job.JobExecutionRepository.Lease;
 import com.patrick.stratum.domain.job.JobRecoveryRepository;
 import com.patrick.stratum.domain.job.JobRecoveryRepository.Outcome;
 import com.patrick.stratum.domain.job.JobRecoveryRepository.ReplayRequest;
+import com.patrick.stratum.infrastructure.job.JobExecutionRepositoryImpl;
+import com.patrick.stratum.infrastructure.job.JobRecoveryRepositoryImpl;
+import com.patrick.stratum.infrastructure.tracing.OpenTelemetryTraceContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import tools.jackson.databind.json.JsonMapper;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 /** 真实数据库验证完成令牌、失败退避与人工恢复；结果由测试端口输入，不伪称实际执行器已交付。 */
 class JobRecoveryRepositoryIntegrationTest extends MariaDbIntegrationTest {
@@ -173,6 +182,75 @@ class JobRecoveryRepositoryIntegrationTest extends MariaDbIntegrationTest {
         assertEquals("RESOLVED", jdbc.queryForObject("SELECT state FROM dead_job WHERE dead_id=?", String.class, request.deadId().toString()));
         assertEquals(original.submission().executionId(), replay(request));
         assertEquals("SUCCEEDED", state(original));
+    }
+
+    /** 人工恢复保留首次上下文，首次恢复请求设置当前上下文且重复请求不能覆盖。 */
+    @Test
+    void preservesInitialAndUsesFirstManualRecoveryContext() {
+        var trace = new OpenTelemetryTraceContext(); Lease original;
+        String initial = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        String manual = "00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01";
+        try (var ignored = trace.restore(trace.normalize(initial, "vendor=initial"))) { original = start(1); }
+        assertTrue(finish(original, Outcome.FAILED)); var request = request(death(original));
+        try (var ignored = trace.restore(trace.normalize(manual, "vendor=manual"))) {
+            assertEquals(original.submission().executionId(), replay(request));
+        }
+        try (var ignored = trace.restore(Optional.empty())) {
+            assertEquals(original.submission().executionId(), replay(request));
+        }
+        var row = jdbc.queryForMap("""
+                SELECT initial_standard_traceparent,initial_standard_tracestate,standard_traceparent,standard_tracestate
+                FROM job_execution WHERE execution_id=?
+                """, id(original));
+        assertEquals(initial, row.get("initial_standard_traceparent")); assertEquals("vendor=initial", row.get("initial_standard_tracestate"));
+        assertEquals(manual, row.get("standard_traceparent")); assertEquals("vendor=manual", row.get("standard_tracestate"));
+        var recovered = claim(original.submission().executionId());
+        assertEquals(new JobExecutionRepository.TraceFields(manual, "vendor=manual"), recovered.standardTrace().orElseThrow());
+        assertEquals(1, recovered.cycle()); assertFalse(finish(original, Outcome.SUCCEEDED));
+        assertTrue(finish(recovered, Outcome.SUCCEEDED));
+    }
+
+    /** 无恢复上下文使用空值，恢复事务回滚时不能提前修改当前上下文或留下请求。 */
+    @Test
+    void rollsBackRecoveryContextAndAllowsEmptyManualContext() {
+        var trace = new OpenTelemetryTraceContext(); Lease original;
+        String initial = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        try (var ignored = trace.restore(trace.normalize(initial, "vendor=initial"))) { original = start(1); }
+        assertTrue(finish(original, Outcome.FAILED)); var request = request(death(original));
+        try (var ignored = trace.restore(trace.normalize("00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01", "vendor=rolledback"))) {
+            assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
+                recovery.replay(request); throw new IllegalStateException("rollback-probe");
+            }));
+        }
+        assertEquals(initial, jdbc.queryForObject("SELECT standard_traceparent FROM job_execution WHERE execution_id=?", String.class, id(original)));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM job_replay_request WHERE request_id=?", Integer.class, request.requestId().toString()));
+        try (var ignored = trace.restore(Optional.empty())) { assertEquals(original.submission().executionId(), replay(request)); }
+        var row = jdbc.queryForMap("SELECT initial_standard_traceparent,standard_traceparent,standard_tracestate FROM job_execution WHERE execution_id=?", id(original));
+        assertEquals(initial, row.get("initial_standard_traceparent")); assertNull(row.get("standard_traceparent")); assertNull(row.get("standard_tracestate"));
+        assertTrue(claim(original.submission().executionId()).standardTrace().isEmpty());
+    }
+
+    /**
+     * 人工恢复登记时追踪组件故障不阻断新周期，只记录安全类型并清空当前上下文。
+     * @param output 捕获的测试日志
+     */
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void continuesManualRecoveryWhenTraceCaptureFails(CapturedOutput output) {
+        var trace = new OpenTelemetryTraceContext(); Lease original;
+        String initial = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        try (var ignored = trace.restore(trace.normalize(initial, "vendor=initial"))) { original = start(1); }
+        assertTrue(finish(original, Outcome.FAILED)); var request = request(death(original));
+        var unavailable = mock(StandardTraceContext.class);
+        when(unavailable.capture()).thenThrow(new IllegalStateException("private-recovery-failure"));
+        var executionStore = new JobExecutionRepositoryImpl(jdbc.getDataSource(), JsonMapper.builder().build(), unavailable);
+        var recoveryStore = new JobRecoveryRepositoryImpl(jdbc.getDataSource(), executionStore);
+        assertEquals(original.submission().executionId(), unitOfWork.execute(() -> recoveryStore.replay(request)));
+        var row = jdbc.queryForMap("SELECT initial_standard_traceparent,standard_traceparent,standard_tracestate FROM job_execution WHERE execution_id=?", id(original));
+        assertEquals(initial, row.get("initial_standard_traceparent")); assertNull(row.get("standard_traceparent")); assertNull(row.get("standard_tracestate"));
+        assertTrue(claim(original.submission().executionId()).standardTrace().isEmpty());
+        assertTrue(output.getOut().contains("任务标准追踪上下文捕获失败"));
+        assertTrue(output.getOut().contains("IllegalStateException")); assertFalse(output.getOut().contains("private-recovery-failure"));
     }
 
     /** 同请求历史回执稳定；新请求不能重新恢复旧死亡周期，后续周期死亡需指定新目标。 */
