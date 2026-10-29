@@ -14,12 +14,17 @@ import javax.sql.DataSource;
 
 import com.patrick.stratum.common.error.CommonErrorCode;
 import com.patrick.stratum.common.error.StratumException;
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.job.JobCancellationRepository;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository;
 import com.patrick.stratum.domain.job.JobLeaseAuthority;
 import com.patrick.stratum.domain.job.JobRecoveryRepository.Outcome;
+import com.patrick.stratum.infrastructure.tracing.OpenTelemetryTraceContext;
 import org.quartz.CronExpression;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -34,19 +39,35 @@ import tools.jackson.databind.json.JsonMapper;
  */
 @Repository
 public class JobExecutionRepositoryImpl implements JobExecutionRepository, JobCancellationRepository, JobLeaseAuthority {
+    private static final Logger LOG = LoggerFactory.getLogger(JobExecutionRepositoryImpl.class);
     private final JdbcTemplate jdbc;
     private final JsonMapper json;
+    private final StandardTraceContext standardTrace;
 
     /**
      * 使用同一数据源参与应用事务，只为任务SQL设置五秒语句预算，不改变共享JdbcTemplate。
      * @param dataSource 应用工作单元使用的数据源
      * @param json 项目JSON映射器
+     * @param standardTrace 标准追踪边界
+     * @throws NullPointerException 必需依赖为空
      * @apiNote 示例：由Spring注入数据源和映射器创建组件，无新连接池。
      */
-    public JobExecutionRepositoryImpl(DataSource dataSource, JsonMapper json) {
-        this.jdbc = new JdbcTemplate(dataSource);
+    @Autowired
+    public JobExecutionRepositoryImpl(DataSource dataSource, JsonMapper json, StandardTraceContext standardTrace) {
+        this.jdbc = new JdbcTemplate(Objects.requireNonNull(dataSource));
         this.jdbc.setQueryTimeout(5);
-        this.json = json;
+        this.json = Objects.requireNonNull(json); this.standardTrace = Objects.requireNonNull(standardTrace);
+    }
+
+    /**
+     * 保留已有手动构造方式，使用无状态标准追踪适配器。
+     * @param dataSource 应用工作单元使用的数据源
+     * @param json 项目JSON映射器
+     * @throws NullPointerException 必需依赖为空
+     * @apiNote 示例：{@code new JobExecutionRepositoryImpl(dataSource, mapper)}。
+     */
+    public JobExecutionRepositoryImpl(DataSource dataSource, JsonMapper json) {
+        this(dataSource, json, new OpenTelemetryTraceContext());
     }
 
     /** {@inheritDoc} */
@@ -59,18 +80,23 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository, JobCa
         if (definition.cron().isPresent() && !CronExpression.isValidExpression(definition.cron().orElseThrow())) {
             throw new StratumException(CommonErrorCode.BAD_REQUEST, "任务Cron表达式不合法");
         }
+        var trace = captureStandardTrace();
+        String parent = trace.map(StandardTraceContext.Carrier::traceparent).orElse(null);
+        String state = trace.map(StandardTraceContext.Carrier::tracestate).filter(value -> !value.isEmpty()).orElse(null);
         try {
             jdbc.update("""
                     INSERT INTO job_execution(execution_id,job_code,job_type,cron_expression,trigger_at,
                     timeout_sec,max_attempts,initial_delay_ms,max_delay_ms,idempotency_rule,schedule_time,
-                    idempotency_key,arguments,initial_trace_id,trace_id,next_attempt_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    idempotency_key,arguments,initial_trace_id,trace_id,next_attempt_at,
+                    initial_standard_traceparent,initial_standard_tracestate,standard_traceparent,standard_tracestate)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON DUPLICATE KEY UPDATE execution_id=job_execution.execution_id
                     """, submission.executionId().toString(), definition.jobCode(), definition.jobType().name(),
                     definition.cron().orElse(null), definition.triggerAt().map(JobExecutionRepositoryImpl::time).orElse(null),
                     definition.timeoutSec(), definition.retryPolicy().maxAttempts(), definition.retryPolicy().initialDelay().toMillis(),
                     definition.retryPolicy().maxDelay().toMillis(), definition.idempotencyKeyRule().name(), time(submission.scheduleTime()),
-                    submission.idempotencyKey(), submission.arguments(), submission.traceId(), submission.traceId(), time(submission.scheduleTime()));
+                    submission.idempotencyKey(), submission.arguments(), submission.traceId(), submission.traceId(), time(submission.scheduleTime()),
+                    parent, state, parent, state);
             var sameId = load(submission.executionId(), "FOR UPDATE");
             if (sameId != null && (!sameId.submission().definition().jobCode().equals(definition.jobCode())
                     || !sameId.submission().idempotencyKey().equals(submission.idempotencyKey()))) {
@@ -87,6 +113,21 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository, JobCa
             return original.executionId();
         } catch (DataAccessException failure) {
             throw translate(failure);
+        }
+    }
+
+    /**
+     * 捕获并规范化任务登记上下文；追踪组件故障时安全告警并保持空值。
+     * @return 可持久化的标准上下文，缺失或故障时为空
+     */
+    private Optional<StandardTraceContext.Carrier> captureStandardTrace() {
+        try {
+            return Objects.requireNonNull(standardTrace.capture()).flatMap(value ->
+                    Objects.requireNonNull(standardTrace.normalize(value.traceparent(), value.tracestate())));
+        } catch (RuntimeException failure) {
+            try { LOG.atWarn().addKeyValue("errorType", failure.getClass().getSimpleName()).log("任务标准追踪上下文捕获失败"); }
+            catch (RuntimeException ignored) { /* 告警故障不能阻止任务登记。 */ }
+            return Optional.empty();
         }
     }
 

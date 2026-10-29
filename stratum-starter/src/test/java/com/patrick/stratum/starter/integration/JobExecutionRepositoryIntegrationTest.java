@@ -13,19 +13,27 @@ import java.util.concurrent.TimeUnit;
 
 import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.common.error.StratumException;
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.job.JobCancellationRepository;
 import com.patrick.stratum.domain.job.DeadLetterReplayJob;
 import com.patrick.stratum.domain.job.DeadLetterReplayTaskRepository;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository;
 import com.patrick.stratum.domain.job.JobLeaseAuthority;
+import com.patrick.stratum.infrastructure.job.JobExecutionRepositoryImpl;
+import com.patrick.stratum.infrastructure.tracing.OpenTelemetryTraceContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import tools.jackson.databind.json.JsonMapper;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 /** 真实MariaDB验证生产登记与竞争领取；超时位置只用自身SQL时钟夹具，不伪装真实任务执行。 */
 class JobExecutionRepositoryIntegrationTest extends MariaDbIntegrationTest {
@@ -80,6 +88,101 @@ class JobExecutionRepositoryIntegrationTest extends MariaDbIntegrationTest {
         assertEquals(0L, ((Number) row.get("attempt_no")).longValue());
         var lease = claim(input.executionId()).orElseThrow();
         assertEquals(input, lease.submission());
+    }
+
+    /** 正常登记保存初始和当前标准上下文，重复登记不能覆盖首次上下文。 */
+    @Test
+    void capturesStandardTraceAndKeepsFirstForEquivalentRegistration() {
+        var trace = new OpenTelemetryTraceContext(); var first = input("{}", 3);
+        String parent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        try (var ignored = trace.restore(trace.normalize(parent, "vendor=first"))) {
+            assertEquals(first.executionId(), register(first));
+        }
+        var repeated = copy(first, id(), first.idempotencyKey(), first.arguments(), "new-business-trace");
+        try (var ignored = trace.restore(trace.normalize("00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01", "vendor=second"))) {
+            assertEquals(first.executionId(), register(repeated));
+        }
+        assertStandardTrace(first.executionId(), parent, "vendor=first"); assertEquals(1, count());
+    }
+
+    /** 空上下文不会伪造标准标识，回滚时任务及标准上下文同时撤销。 */
+    @Test
+    void keepsEmptyStandardTraceAndRollsBackWithTask() {
+        var trace = new OpenTelemetryTraceContext(); var empty = input("{}", 3); var rolledBack = input("{}", 3);
+        try (var ignored = trace.restore(Optional.empty())) { register(empty); }
+        assertStandardTrace(empty.executionId(), null, null);
+        String parent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        try (var ignored = trace.restore(trace.normalize(parent, "vendor=rollback"))) {
+            assertThrows(IllegalStateException.class, () -> unitOfWork.execute(() -> {
+                repository.register(rolledBack); throw new IllegalStateException("rollback-probe");
+            }));
+            assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM job_execution WHERE execution_id=?", Integer.class,
+                    rolledBack.executionId().toString()));
+            register(rolledBack);
+        }
+        assertStandardTrace(rolledBack.executionId(), parent, "vendor=rollback");
+    }
+
+    /** 死信重放任务复用登记边界捕获原始上下文，重复请求不覆盖。 */
+    @Test
+    void capturesStandardTraceForReplayTaskRegistration() {
+        var trace = new OpenTelemetryTraceContext(); UUID request = UUID.randomUUID();
+        var first = replayRequest(request, UUID.randomUUID(), UUID.randomUUID(), TIME);
+        String parent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        try (var ignored = trace.restore(trace.normalize(parent, "vendor=replay"))) {
+            assertEquals(first.submission().executionId(), unitOfWork.execute(() -> replayTasks.register(first)));
+        }
+        try (var ignored = trace.restore(Optional.empty())) {
+            assertEquals(first.submission().executionId(), unitOfWork.execute(() -> replayTasks.register(first)));
+        }
+        assertStandardTrace(first.submission().executionId(), parent, "vendor=replay");
+    }
+
+    /**
+     * 追踪捕获、规范化或契约异常不阻断真实登记，只输出安全类型并保留空上下文。
+     * @param output 测试捕获的日志
+     */
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void continuesRegistrationWhenTraceComponentFails(CapturedOutput output) {
+        String parent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        for (int mode = 0; mode < 4; mode++) {
+            var trace = mock(StandardTraceContext.class);
+            if (mode == 0) when(trace.capture()).thenThrow(new IllegalStateException("sensitive-capture-value"));
+            else if (mode == 1) {
+                when(trace.capture()).thenReturn(Optional.of(new StandardTraceContext.Carrier(parent, "vendor=value")));
+                when(trace.normalize(parent, "vendor=value")).thenThrow(new IllegalStateException("sensitive-normalize-value"));
+            } else if (mode == 2) when(trace.capture()).thenReturn(null);
+            else {
+                when(trace.capture()).thenReturn(Optional.of(new StandardTraceContext.Carrier(parent, "vendor=value")));
+                when(trace.normalize(parent, "vendor=value")).thenReturn(null);
+            }
+            var input = input("{}", 3);
+            var failingRepository = new JobExecutionRepositoryImpl(jdbc.getDataSource(), JsonMapper.builder().build(), trace);
+            assertEquals(input.executionId(), unitOfWork.execute(() -> failingRepository.register(input)));
+            assertStandardTrace(input.executionId(), null, null);
+            assertEquals(input.traceId(), jdbc.queryForObject("SELECT trace_id FROM job_execution WHERE execution_id=?",
+                    String.class, input.executionId().toString()));
+        }
+        assertTrue(output.getOut().contains("任务标准追踪上下文捕获失败"));
+        assertTrue(output.getOut().contains("IllegalStateException"));
+        assertFalse(output.getOut().contains("sensitive-capture-value"));
+        assertFalse(output.getOut().contains("sensitive-normalize-value"));
+    }
+
+    /**
+     * 核验首次登记的初始及当前标准上下文。
+     * @param id 执行UUID
+     * @param parent 预期父头或空值
+     * @param state 预期状态头或空值
+     */
+    private void assertStandardTrace(UUID id, String parent, String state) {
+        var row = jdbc.queryForMap("""
+                SELECT initial_standard_traceparent,initial_standard_tracestate,standard_traceparent,standard_tracestate
+                FROM job_execution WHERE execution_id=?
+                """, id.toString());
+        assertEquals(parent, row.get("initial_standard_traceparent")); assertEquals(state, row.get("initial_standard_tracestate"));
+        assertEquals(parent, row.get("standard_traceparent")); assertEquals(state, row.get("standard_tracestate"));
     }
 
     /** 同任务/键及同JSON值复用首次UUID，不替换首次trace或新增记录。 */
