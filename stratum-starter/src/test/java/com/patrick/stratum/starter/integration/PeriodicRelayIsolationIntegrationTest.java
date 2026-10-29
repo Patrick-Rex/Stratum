@@ -10,6 +10,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -23,6 +25,7 @@ import com.patrick.stratum.application.transaction.UnitOfWork;
 import com.patrick.stratum.common.error.StratumException;
 import com.patrick.stratum.common.base.cache.CacheInvalidation;
 import com.patrick.stratum.common.base.cache.VersionedCache;
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.event.OutboxConsumer;
 import com.patrick.stratum.domain.event.OutboxConsumptionRepository.Group;
 import com.patrick.stratum.domain.event.OutboxMessage;
@@ -69,6 +72,7 @@ import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
+import org.slf4j.MDC;
 import tools.jackson.databind.json.JsonMapper;
 
 import static com.patrick.stratum.infrastructure.messaging.RabbitTopologyConfiguration.ERP_QUEUE;
@@ -377,6 +381,75 @@ class PeriodicRelayIsolationIntegrationTest {
             try { listeners.close(); }
             finally { redis.delete(List.of(key, "null:" + key.substring(4), "version:" + key.substring(4))); }
         }
+    }
+
+    /**
+     * 实际事务、Relay和Broker消费保留原始追踪，历史空值及重投相互隔离。
+     * @throws Exception 监听器或数据库操作失败
+     */
+    @Test
+    void carriesTraceThroughRealTransactionsAndBrokerRedelivery() throws Exception {
+        var trace = parent.getBean(StandardTraceContext.class);
+        var normal = flowEvent("normal"); var historical = flowEvent("historical"); var retry = flowEvent("retry");
+        String normalParent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        String retryParent = "00-cccccccccccccccccccccccccccccccc-ffffffffffffffff-01";
+        try (var ignored = trace.restore(trace.normalize(normalParent, "a=one"))) {
+            work.execute(() -> { outbox.append(normal); return null; });
+        }
+        try (var ignored = trace.restore(Optional.empty())) {
+            work.execute(() -> { outbox.append(historical); return null; });
+        }
+        try (var ignored = trace.restore(trace.normalize(retryParent, "c=two"))) {
+            work.execute(() -> { outbox.append(retry); return null; });
+        }
+        var observed = new ConcurrentHashMap<String, CopyOnWriteArrayList<Optional<StandardTraceContext.Carrier>>>();
+        var business = new ConcurrentHashMap<String, String>(); var retryAttempts = new AtomicInteger();
+        var listeners = new AnnotationConfigApplicationContext(); children.add(listeners);
+        listeners.setParent(parent);
+        listeners.getEnvironment().getPropertySources().addFirst(new MapPropertySource("trace-consumer-test", Map.of(
+                "stratum.messaging.enabled", true, "stratum.messaging.consumer.enabled", true)));
+        listeners.registerBean("traceProbeConsumer", OutboxConsumer.class, () -> (delivery, group) -> {
+            String eventId = delivery.message().eventId();
+            observed.computeIfAbsent(eventId, ignored -> new CopyOnWriteArrayList<>()).add(trace.capture());
+            business.put(eventId, MDC.get("businessTraceId"));
+            if (eventId.equals(retry.eventId()) && retryAttempts.incrementAndGet() == 1) return OutboxConsumer.Outcome.WAITING;
+            return consumer.consume(delivery, group);
+        }, definition -> definition.setPrimary(true));
+        listeners.register(RabbitOutboxConsumerConfiguration.class);
+        String caller = "00-dddddddddddddddddddddddddddddddd-eeeeeeeeeeeeeeee-01";
+        try (var ignored = trace.restore(trace.normalize(caller, "caller=value"))) {
+            int count = parent.getBean(OutboxRelayApplicationService.class).runBatch(
+                    new OutboxRelayRepository.ClaimRequest(3, Duration.ofSeconds(30)),
+                    new OutboxRelayRepository.RetryPolicy(3, Duration.ofSeconds(1), Duration.ofSeconds(1)));
+            assertEquals(3, count); assertEquals(caller, trace.capture().orElseThrow().traceparent());
+        }
+        listeners.refresh();
+        await().atMost(Duration.ofSeconds(20)).until(() -> receiptCount(normal) == 1 && receiptCount(historical) == 1
+                && receiptCount(retry) == 1);
+        listeners.close();
+        assertEquals(1, observed.get(normal.eventId()).size()); assertEquals(1, observed.get(historical.eventId()).size());
+        assertEquals(normalParent, observed.get(normal.eventId()).getFirst().orElseThrow().traceparent());
+        assertEquals("a=one", observed.get(normal.eventId()).getFirst().orElseThrow().tracestate());
+        assertTrue(observed.get(historical.eventId()).getFirst().isEmpty());
+        assertEquals(2, retryAttempts.get()); assertEquals(2, observed.get(retry.eventId()).size());
+        for (var attempt : observed.get(retry.eventId())) {
+            assertEquals(retryParent, attempt.orElseThrow().traceparent()); assertEquals("c=two", attempt.orElseThrow().tracestate());
+        }
+        assertEquals(normal.traceId(), business.get(normal.eventId()));
+        assertEquals(historical.traceId(), business.get(historical.eventId()));
+        assertEquals(retry.traceId(), business.get(retry.eventId()));
+        assertEquals(0, admin.getQueueInfo(ERP_QUEUE).getMessageCount());
+        assertEquals(0, admin.getQueueInfo(ERP_QUEUE + ".dlq").getMessageCount());
+    }
+
+    /**
+     * 构造独立聚合事件，按测试场景区分业务关联。
+     * @param label 测试场景
+     * @return 新事件
+     */
+    private OutboxMessage flowEvent(String label) {
+        return new OutboxMessage(UUID.randomUUID().toString(), "erp.probe.created", UUID.randomUUID().toString(),
+                Instant.parse("2026-10-30T00:00:00Z"), "{}", "flow-" + label);
     }
 
     /**
