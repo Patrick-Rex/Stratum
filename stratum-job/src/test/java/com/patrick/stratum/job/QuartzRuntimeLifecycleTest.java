@@ -25,7 +25,7 @@ class QuartzRuntimeLifecycleTest {
         var primary = scheduler("ordinary", true, calls);
         var relay = scheduler("relay", false, calls);
         var registry = new JobHandlerRegistry(List.of(new Probe()));
-        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null, null, null), registry, 1);
+        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null, null, null, null), registry, 1);
         var lifecycle = new QuartzRuntimeLifecycle(List.of(primary, relay), executor, List.of());
         lifecycle.start(); lifecycle.stop();
         assertEquals(List.of("ordinary", "relay"), calls);
@@ -39,7 +39,7 @@ class QuartzRuntimeLifecycleTest {
         var calls = new ArrayList<String>();
         var primary = scheduler("ordinary", false, calls); var relay = scheduler("relay", false, calls);
         var registry = new JobHandlerRegistry(List.of(new Probe()));
-        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null, null, null), registry, 1);
+        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null, null, null, null), registry, 1);
         assertThrows(IllegalArgumentException.class, () -> new QuartzRuntimeLifecycle(List.of(primary), executor, List.of(relay)));
         var lifecycle = new QuartzRuntimeLifecycle(List.of(primary, relay), executor, List.of(relay));
         lifecycle.start(); assertEquals(List.of("start-relay"), calls);
@@ -55,7 +55,7 @@ class QuartzRuntimeLifecycleTest {
         var primary = scheduler("ordinary", false, calls); var relay = scheduler("relay", false, calls);
         var backlog = scheduler("backlog", false, true, calls);
         var registry = new JobHandlerRegistry(List.of(new Probe()));
-        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null, null, null), registry, 1);
+        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null, null, null, null), registry, 1);
         var lifecycle = new QuartzRuntimeLifecycle(List.of(primary, relay, backlog), executor, List.of(relay, backlog));
         assertThrows(IllegalStateException.class, lifecycle::start);
         assertEquals(List.of("start-relay", "start-backlog", "ordinary", "relay", "backlog"), calls);
@@ -72,7 +72,7 @@ class QuartzRuntimeLifecycleTest {
             default -> throw new UnsupportedOperationException("测试未使用的方法");
         });
         var relay = scheduler("relay", false, calls); var registry = new JobHandlerRegistry(List.of(new Probe()));
-        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null, null, null), registry, 1);
+        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null, null, null, null), registry, 1);
         var lifecycle = new QuartzRuntimeLifecycle(List.of(primary, broken, relay), executor, List.of());
         lifecycle.start(); lifecycle.stop(); assertEquals(List.of("ordinary", "broken", "relay"), calls);
         assertEquals(JobExecutionResult.CLOSED, executor.execute("probe", UUID.randomUUID()));
@@ -93,7 +93,7 @@ class QuartzRuntimeLifecycleTest {
             default -> throw new UnsupportedOperationException("测试未使用的方法");
         });
         var registry = new JobHandlerRegistry(List.of(new Probe()));
-        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null, null, null), registry, 1);
+        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null, null, null, null), registry, 1);
         var lifecycle = new QuartzRuntimeLifecycle(List.of(fault, other), executor, List.of());
         lifecycle.start(); lifecycle.stop();
         assertTrue(faultReads.get() >= 3); assertTrue(otherReads.get() >= 3);
@@ -116,7 +116,7 @@ class QuartzRuntimeLifecycleTest {
             default -> throw new UnsupportedOperationException("测试未使用的方法");
         });
         var later = scheduler("later", false, calls); var registry = new JobHandlerRegistry(List.of(new Probe()));
-        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null, null, null), registry, 1);
+        var executor = new JobTaskExecutor(new ProtectedJobWorker(null, registry, null, null, null, null), registry, 1);
         var lifecycle = new QuartzRuntimeLifecycle(List.of(primary, blocking, later), executor, List.of(blocking, later));
         try (var threads = java.util.concurrent.Executors.newFixedThreadPool(2)) {
             var start = threads.submit(lifecycle::start); assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));

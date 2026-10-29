@@ -20,10 +20,12 @@ import ch.qos.logback.core.read.ListAppender;
 import com.patrick.stratum.application.job.JobExecutionApplicationService;
 import com.patrick.stratum.application.job.JobHandler;
 import com.patrick.stratum.common.trace.TraceIdContext;
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository.Submission;
 import com.patrick.stratum.domain.job.JobExecutionRepository.Lease;
 import com.patrick.stratum.infrastructure.job.SchedulerConfiguration;
+import com.patrick.stratum.infrastructure.tracing.OpenTelemetryTraceContext;
 import com.patrick.stratum.job.JobExecutionResult;
 import com.patrick.stratum.job.JobRuntimeConfiguration;
 import com.patrick.stratum.job.JobMetrics;
@@ -33,6 +35,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.quartz.Scheduler;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
@@ -118,6 +121,88 @@ class JobRuntimeIntegrationTest extends MariaDbIntegrationTest {
         assertTrue(scrape.contains("stratum_job_duration_seconds_count"));
         assertFalse(scrape.contains(id.toString())); assertFalse(scrape.contains("runtime-trace"));
         assertFalse(scrape.contains("secret-runtime-canary"));
+    }
+
+    /** 工作线程恢复登记上下文和双标识日志字段，调用方上下文不被更改。 */
+    @Test
+    void restoresStoredStandardContextOnPrivateWorker() throws Exception {
+        var trace = new OpenTelemetryTraceContext(); var executor = runtime(); UUID id;
+        String parent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        String caller = "00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01";
+        try (var ignored = trace.restore(trace.normalize(parent, "vendor=job"))) { id = register(10); }
+        MDC.put("businessTraceId", "caller-business"); MDC.put("trace_id", "caller-standard"); MDC.put("span_id", "caller-span");
+        try (var ignored = trace.restore(trace.normalize(caller, "vendor=caller"))) {
+            assertEquals(JobExecutionResult.SUCCEEDED, executor.execute(probe.code, id));
+            assertEquals(caller, trace.capture().orElseThrow().traceparent());
+            assertEquals("caller-business", MDC.get("businessTraceId"));
+            assertEquals("caller-standard", MDC.get("trace_id")); assertEquals("caller-span", MDC.get("span_id"));
+        } finally { MDC.remove("businessTraceId"); MDC.remove("trace_id"); MDC.remove("span_id"); }
+        assertEquals(parent, probe.standardTrace.orElseThrow().traceparent());
+        assertEquals("vendor=job", probe.standardTrace.orElseThrow().tracestate());
+        assertEquals("runtime-trace", probe.businessMdc);
+        assertEquals("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", probe.standardMdc); assertEquals("bbbbbbbbbbbbbbbb", probe.spanMdc);
+    }
+
+    /** 历史空上下文和非法父头使用根上下文，不继承调用方标准标识。 */
+    @Test
+    void keepsHistoricalAndInvalidContextIsolated() throws Exception {
+        var trace = new OpenTelemetryTraceContext(); var executor = runtime(); UUID historical; UUID invalid;
+        try (var ignored = trace.restore(Optional.empty())) { historical = register(10); invalid = register(10); }
+        jdbc.update("UPDATE job_execution SET standard_traceparent=?,standard_tracestate=? WHERE execution_id=?",
+                "invalid-parent", "invalid-state", invalid.toString());
+        String caller = "00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01";
+        try (var ignored = trace.restore(trace.normalize(caller, "vendor=caller"))) {
+            assertEquals(JobExecutionResult.SUCCEEDED, executor.execute(probe.code, historical));
+            assertTrue(probe.standardTrace.isEmpty()); assertNull(probe.standardMdc); assertNull(probe.spanMdc);
+            assertEquals(JobExecutionResult.SUCCEEDED, executor.execute(probe.code, invalid));
+            assertTrue(probe.standardTrace.isEmpty()); assertNull(probe.standardMdc); assertNull(probe.spanMdc);
+            assertEquals(caller, trace.capture().orElseThrow().traceparent());
+        }
+    }
+
+    /** 规范化或恢复组件故障时跳过处理器并保留租约，到期接管后按既有规则可重试。 */
+    @Test
+    void leavesLeaseForRecoveryWhenTraceComponentFails() throws Exception {
+        var actual = new OpenTelemetryTraceContext();
+        String parent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        var logger = (Logger) LoggerFactory.getLogger(ProtectedJobWorker.class);
+        var captured = new ListAppender<ILoggingEvent>(); captured.start(); logger.addAppender(captured);
+        try {
+            for (boolean failNormalize : List.of(true, false)) {
+                var faulty = mock(StandardTraceContext.class);
+                if (failNormalize) when(faulty.normalize(nullable(String.class), nullable(String.class)))
+                        .thenThrow(new IllegalStateException("private-normalize-failure"));
+                else {
+                    when(faulty.normalize(nullable(String.class), nullable(String.class)))
+                            .thenAnswer(call -> actual.normalize(call.getArgument(0), call.getArgument(1)));
+                    when(faulty.restore(any())).thenThrow(new IllegalStateException("private-restore-failure"));
+                }
+                UUID id;
+                try (var ignored = actual.restore(actual.normalize(parent, "vendor=job"))) { id = register(10, 2); }
+                int before = probe.calls.get(); var faultyExecutor = runtime(false, faulty);
+                assertEquals(JobExecutionResult.STATE_UNCERTAIN, faultyExecutor.execute(probe.code, id));
+                assertEquals(before, probe.calls.get()); assertEquals("RUNNING", state(id));
+                assertEquals("RUNNING", jdbc.queryForObject("SELECT result FROM job_attempt WHERE execution_id=?", String.class, id.toString()));
+                assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dead_job WHERE execution_id=?", Integer.class, id.toString()));
+                jdbc.update("""
+                        UPDATE job_execution e JOIN job_attempt a ON a.execution_id=e.execution_id AND a.attempt_no=e.attempt_no
+                        SET e.start_time=UTC_TIMESTAMP(6)-INTERVAL 41 SECOND,e.lease_until=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND,
+                        a.start_time=UTC_TIMESTAMP(6)-INTERVAL 41 SECOND WHERE e.execution_id=?
+                        """, id.toString());
+                var recoveredExecutor = runtime();
+                assertEquals(JobExecutionResult.SKIPPED, recoveredExecutor.execute(probe.code, id));
+                assertEquals("RETRY_WAIT", state(id));
+                assertEquals("LEASE_EXPIRED", jdbc.queryForObject("SELECT result FROM job_attempt WHERE execution_id=? AND attempt_no=1", String.class, id.toString()));
+                jdbc.update("UPDATE job_execution SET next_attempt_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE execution_id=?", id.toString());
+                assertEquals(JobExecutionResult.SUCCEEDED, recoveredExecutor.execute(probe.code, id));
+                assertEquals(before + 1, probe.calls.get()); assertEquals(parent, probe.standardTrace.orElseThrow().traceparent());
+            }
+            var warnings = captured.list.stream().filter(event -> event.getFormattedMessage().contains("任务标准追踪恢复失败")).toList();
+            assertEquals(2, warnings.size());
+            assertTrue(warnings.stream().allMatch(event -> event.getKeyValuePairs().stream()
+                    .anyMatch(pair -> pair.key.equals("errorType") && pair.value.equals("IllegalStateException"))));
+            assertFalse(warnings.toString().contains("private-normalize-failure")); assertFalse(warnings.toString().contains("private-restore-failure"));
+        } finally { logger.detachAppender(captured); captured.stop(); }
     }
 
     /** 原异常正文及参数不进技术日志，失败与死亡记录真实提交且具备必需关联字段。 */
@@ -286,6 +371,17 @@ class JobRuntimeIntegrationTest extends MariaDbIntegrationTest {
      * @throws Exception 调度器身份读取失败
      */
     private JobTaskExecutor runtime(boolean failingMetrics) throws Exception {
+        return runtime(failingMetrics, null);
+    }
+
+    /**
+     * 建立独立执行器，可为工作线程注入标准追踪故障探针。
+     * @param failingMetrics 是否让指标记录失败
+     * @param trace 可空的标准追踪测试替身
+     * @return 当前用例负责关闭的执行器
+     * @throws Exception 调度器身份读取失败
+     */
+    private JobTaskExecutor runtime(boolean failingMetrics, StandardTraceContext trace) throws Exception {
         var context = new AnnotationConfigApplicationContext();
         String name = "runtime-" + UUID.randomUUID(); names.add(name); contexts.add(context);
         context.setParent(parent);
@@ -293,6 +389,7 @@ class JobRuntimeIntegrationTest extends MariaDbIntegrationTest {
                 "stratum.jobs.enabled", true, "stratum.jobs.name", name, "stratum.jobs.workers", 1,
                 "observability.job.slow-threshold-ms", failingMetrics ? 1 : 500)));
         context.registerBean(JobHandler.class, () -> probe);
+        if (trace != null) context.registerBean("traceProbe", StandardTraceContext.class, () -> trace, definition -> definition.setPrimary(true));
         if (failingMetrics) {
             var failing = mock(JobMetrics.class);
             when(failing.record(anyString(), any(), anyLong())).thenThrow(new IllegalStateException("secret-metrics-canary"));
@@ -319,10 +416,20 @@ class JobRuntimeIntegrationTest extends MariaDbIntegrationTest {
      * @return 随机执行身份
      */
     private UUID register(int timeoutSeconds) {
+        return register(timeoutSeconds, 1);
+    }
+
+    /**
+     * 按指定重试次数登记本用例的已到期任务。
+     * @param timeoutSeconds 单次处理预算秒数
+     * @param attempts 周期内最大尝试数
+     * @return 随机执行身份
+     */
+    private UUID register(int timeoutSeconds, int attempts) {
         UUID id = UUID.randomUUID(); ids.add(id);
         Instant time = Instant.parse("2026-01-01T00:00:00Z");
         var definition = new JobDefinition(probe.code, JobDefinition.Type.ONCE, Optional.empty(), Optional.of(time), timeoutSeconds,
-                new JobDefinition.RetryPolicy(1, Duration.ofSeconds(1), Duration.ofSeconds(1)), JobDefinition.IdempotencyRule.EXPLICIT_KEY);
+                new JobDefinition.RetryPolicy(attempts, Duration.ofSeconds(1), Duration.ofSeconds(1)), JobDefinition.IdempotencyRule.EXPLICIT_KEY);
         return jobs.register(new Submission(id, definition, time, id.toString(), "{\"canary\":\"secret-runtime-canary\"}", "runtime-trace"));
     }
 
@@ -352,6 +459,10 @@ class JobRuntimeIntegrationTest extends MariaDbIntegrationTest {
         private volatile boolean virtual;
         private volatile boolean inTransaction;
         private volatile String trace;
+        private volatile Optional<StandardTraceContext.Carrier> standardTrace;
+        private volatile String businessMdc;
+        private volatile String standardMdc;
+        private volatile String spanMdc;
         private volatile Lease lease;
 
         /**
@@ -377,6 +488,8 @@ class JobRuntimeIntegrationTest extends MariaDbIntegrationTest {
             virtual = Thread.currentThread().isVirtual();
             inTransaction = TransactionSynchronizationManager.isActualTransactionActive();
             trace = TraceIdContext.getRequiredTraceId();
+            standardTrace = new OpenTelemetryTraceContext().capture();
+            businessMdc = MDC.get("businessTraceId"); standardMdc = MDC.get("trace_id"); spanMdc = MDC.get("span_id");
             calls.incrementAndGet(); maximum.accumulateAndGet(active.incrementAndGet(), Math::max); entered.countDown();
             try {
                 switch (mode) {

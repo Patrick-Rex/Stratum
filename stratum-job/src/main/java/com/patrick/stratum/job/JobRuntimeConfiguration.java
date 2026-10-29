@@ -3,6 +3,7 @@ package com.patrick.stratum.job;
 import com.patrick.stratum.application.event.OutboxRelayControlApplicationService;
 import com.patrick.stratum.application.job.JobExecutionApplicationService;
 import com.patrick.stratum.application.job.JobHandler;
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -50,12 +51,14 @@ public class JobRuntimeConfiguration {
      * @param relayControl Relay共享暂停准入应用入口
      * @param metrics 已配置的任务指标
      * @param settings 慢任务阈值
+     * @param standardTrace 标准追踪上下文边界
      * @return 由Spring代理管理的工作器
      */
     @Bean
     ProtectedJobWorker protectedJobWorker(JobExecutionApplicationService jobs, JobHandlerRegistry registry,
-            OutboxRelayControlApplicationService relayControl, JobMetrics metrics, JobMetrics.Settings settings) {
-        return new ProtectedJobWorker(jobs, registry, relayControl, metrics, settings);
+            OutboxRelayControlApplicationService relayControl, JobMetrics metrics, JobMetrics.Settings settings,
+            StandardTraceContext standardTrace) {
+        return new ProtectedJobWorker(jobs, registry, relayControl, metrics, settings, standardTrace);
     }
 
     /**

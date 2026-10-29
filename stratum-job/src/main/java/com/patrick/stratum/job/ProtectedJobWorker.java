@@ -1,6 +1,8 @@
 package com.patrick.stratum.job;
 
 import java.time.Instant;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -8,12 +10,14 @@ import com.patrick.stratum.application.event.OutboxRelayControlApplicationServic
 import com.patrick.stratum.application.job.JobExecutionApplicationService;
 import com.patrick.stratum.application.job.JobHandler;
 import com.patrick.stratum.common.trace.TraceIdContext;
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.job.JobExecutionRepository.Lease;
 import com.patrick.stratum.domain.job.JobRecoveryRepository.Outcome;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.javacrumbs.shedlock.core.LockAssert;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
+import org.slf4j.MDC;
 
 /**
  * 在实际工作线程持有可续期ShedLock，事务外调用已登记处理器，独立工作单元保存固定结果。
@@ -27,6 +31,7 @@ public class ProtectedJobWorker {
     private final OutboxRelayControlApplicationService relayControl;
     private final JobMetrics metrics;
     private final JobMetrics.Settings settings;
+    private final StandardTraceContext standardTrace;
 
     /**
      * 按固定代码互斥，实际处理和代理解锁结束前始终保留锁与线程。
@@ -66,8 +71,51 @@ public class ProtectedJobWorker {
      */
     private void runAttempt(String code, UUID executionId, JobHandler handler, Lease lease, JobRunControl control, boolean run) {
         var previous = TraceIdContext.getTraceId();
+        String previousBusiness = MDC.get("businessTraceId"); String previousTrace = MDC.get("trace_id"); String previousSpan = MDC.get("span_id");
         TraceIdContext.setTraceId(lease.submission().traceId());
+        MDC.put("businessTraceId", lease.submission().traceId()); MDC.remove("trace_id"); MDC.remove("span_id");
         long start = System.nanoTime();
+        try {
+            Optional<StandardTraceContext.Carrier> parent;
+            StandardTraceContext.TraceScope restored;
+            try {
+                var fields = lease.standardTrace();
+                parent = Objects.requireNonNull(standardTrace.normalize(fields.map(value -> value.traceparent()).orElse(null),
+                        fields.map(value -> value.tracestate()).orElse(null)));
+                restored = Objects.requireNonNull(standardTrace.restore(parent));
+            } catch (RuntimeException failure) {
+                control.finishing(Outcome.FAILED); control.record(JobExecutionResult.STATE_UNCERTAIN);
+                recordMetric(code, JobExecutionResult.STATE_UNCERTAIN, System.nanoTime() - start);
+                try { log.atWarn().addKeyValue("errorType", failure.getClass().getSimpleName()).log("任务标准追踪恢复失败，保留租约"); }
+                catch (RuntimeException ignored) { /* 告警失败不能让任务继续执行。 */ }
+                return;
+            }
+            try (restored) {
+                parent.ifPresent(value -> {
+                    MDC.put("trace_id", value.traceparent().substring(3, 35));
+                    MDC.put("span_id", value.traceparent().substring(36, 52));
+                });
+                runRestoredAttempt(code, executionId, handler, lease, control, run, start);
+            }
+        } finally {
+            if (previous.isPresent()) TraceIdContext.setTraceId(previous.orElseThrow());
+            else TraceIdContext.clear();
+            restoreMdc("businessTraceId", previousBusiness); restoreMdc("trace_id", previousTrace); restoreMdc("span_id", previousSpan);
+        }
+    }
+
+    /**
+     * 在已恢复的追踪作用域内执行处理器，并在独立工作单元完成本次领取。
+     * @param code 预期任务代码
+     * @param executionId 预期执行UUID
+     * @param handler 已登记处理器
+     * @param lease 已提交领取
+     * @param control 本次截止协调
+     * @param run 是否允许调用处理器
+     * @param start 本次实际工作开始的单调时刻
+     */
+    private void runRestoredAttempt(String code, UUID executionId, JobHandler handler, Lease lease,
+            JobRunControl control, boolean run, long start) {
         Outcome actual = Outcome.FAILED;
         String failureType = "";
         try {
@@ -87,24 +135,40 @@ public class ProtectedJobWorker {
             failureType = failure.getClass().getSimpleName();
             if (failure instanceof Error error) throw error;
         } finally {
-            try {
-                Outcome outcome = control.finishing(actual);
-                boolean updated = jobs.finish(lease, outcome);
-                var result = updated ? result(outcome) : JobExecutionResult.STATE_UNCERTAIN;
-                control.record(result);
-                long elapsed = System.nanoTime() - start;
-                boolean slow = elapsed >= TimeUnit.MILLISECONDS.toNanos(settings.slowThresholdMs());
-                try { metrics.record(code, result, elapsed); }
-                catch (RuntimeException failure) {
-                    log.atWarn().addKeyValue("jobCode", code).addKeyValue("errorType", failure.getClass().getSimpleName())
-                            .log("任务指标记录失败 jobCode={} errorType={}", code, failure.getClass().getSimpleName());
-                }
-                logResult(code, lease, outcome, updated, elapsed, failureType, slow);
-            } finally {
-                if (previous.isPresent()) TraceIdContext.setTraceId(previous.orElseThrow());
-                else TraceIdContext.clear();
-            }
+            Outcome outcome = control.finishing(actual);
+            boolean updated = jobs.finish(lease, outcome);
+            var result = updated ? result(outcome) : JobExecutionResult.STATE_UNCERTAIN;
+            control.record(result);
+            long elapsed = System.nanoTime() - start;
+            boolean slow = elapsed >= TimeUnit.MILLISECONDS.toNanos(settings.slowThresholdMs());
+            recordMetric(code, result, elapsed);
+            logResult(code, lease, outcome, updated, elapsed, failureType, slow);
         }
+    }
+
+    /**
+     * 有界记录任务指标，指标故障不改变已决定的任务状态。
+     * @param code 已登记代码
+     * @param result 固定结果
+     * @param elapsed 单调时钟耗时纳秒
+     */
+    private void recordMetric(String code, JobExecutionResult result, long elapsed) {
+        try { metrics.record(code, result, elapsed); }
+        catch (RuntimeException failure) {
+            try {
+                log.atWarn().addKeyValue("jobCode", code).addKeyValue("errorType", failure.getClass().getSimpleName())
+                        .log("任务指标记录失败 jobCode={} errorType={}", code, failure.getClass().getSimpleName());
+            } catch (RuntimeException ignored) { /* 观测组件故障不改变任务状态。 */ }
+        }
+    }
+
+    /**
+     * 恢复进入任务前的单个日志上下文字段。
+     * @param key 固定字段名
+     * @param value 可空先前值
+     */
+    private void restoreMdc(String key, String value) {
+        if (value == null) MDC.remove(key); else MDC.put(key, value);
     }
 
     /**
