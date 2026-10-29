@@ -10,11 +10,13 @@ import java.util.UUID;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import com.patrick.stratum.common.trace.CorrelationIdPolicy;
 import com.patrick.stratum.interfaceadapter.web.RequestTraceFilter;
+import io.opentelemetry.api.trace.Span;
 import org.springframework.boot.logging.structured.StructuredLogFormatter;
 import tools.jackson.databind.json.JsonMapper;
 
 /** Starter结构化日志，仅输出登记字段和真实标准追踪上下文，不展开任意MDC、异常消息或对象。 */
 public final class StarterStructuredLogFormatter implements StructuredLogFormatter<ILoggingEvent> {
+    private static final String TRACE_THREAD_MDC_KEY = "stratumTraceThreadId";
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private static final String ENVIRONMENT = System.getenv().getOrDefault("STRATUM_ENV", "local");
     private static final Set<String> FIELDS = Set.of("queryCode", "durationMs", "resultCount", "result", "jobCode", "executionId",
@@ -26,11 +28,20 @@ public final class StarterStructuredLogFormatter implements StructuredLogFormatt
     @Override public String format(ILoggingEvent event) {
         Map<String, String> context = event.getMDCPropertyMap(); if (context == null) context = Map.of();
         String business = context.get(RequestTraceFilter.BUSINESS_TRACE_MDC_KEY);
+        String standardTrace = standardId(context.get("trace_id"), 32);
+        String standardSpan = standardId(context.get("span_id"), 16);
+        if ((standardTrace.isEmpty() || standardSpan.isEmpty())
+                && Long.toString(Thread.currentThread().threadId()).equals(context.get(TRACE_THREAD_MDC_KEY))) {
+            try {
+                var current = Span.current().getSpanContext();
+                if (current.isValid()) { standardTrace = current.getTraceId(); standardSpan = current.getSpanId(); }
+            } catch (RuntimeException ignored) { /* 追踪组件故障不阻止日志输出。 */ }
+        }
         var fields = new LinkedHashMap<String, Object>();
         fields.put("timestamp", event.getInstant().toString()); fields.put("level", event.getLevel().toString());
         fields.put("service", "stratum-starter"); fields.put("env", ENVIRONMENT);
-        fields.put("traceId", standardId(context.get("trace_id"), 32));
-        fields.put("spanId", standardId(context.get("span_id"), 16));
+        fields.put("traceId", standardTrace);
+        fields.put("spanId", standardSpan);
         fields.put("message", event.getFormattedMessage()); fields.put("logger", event.getLoggerName());
         var pairs = event.getKeyValuePairs();
         if (pairs != null) for (var pair : pairs) {

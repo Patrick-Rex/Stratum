@@ -8,6 +8,11 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.classic.spi.IThrowableProxy;
 import ch.qos.logback.classic.spi.StackTraceElementProxy;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanContext;
+import io.opentelemetry.api.trace.TraceFlags;
+import io.opentelemetry.api.trace.TraceState;
+import io.opentelemetry.context.Context;
 import org.junit.jupiter.api.Test;
 import org.slf4j.event.KeyValuePair;
 import tools.jackson.databind.json.JsonMapper;
@@ -45,6 +50,41 @@ class StarterStructuredLogFormatterTest {
         var row = json.readTree(formatter.format(event));
         assertEquals("event-42", row.path("businessTraceId").asText());
         assertEquals("", row.path("traceId").asText()); assertEquals("", row.path("spanId").asText());
+    }
+
+    /** 同一任务线程缺少Agent注入时，从真实当前上下文获取父跨度或嵌套跨度。 */
+    @Test
+    void usesCurrentTaskSpanWhenAgentFieldsAreAbsent() {
+        var event = event(); String trace = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        when(event.getMDCPropertyMap()).thenReturn(Map.of("businessTraceId", "job-1",
+                "stratumTraceThreadId", Long.toString(Thread.currentThread().threadId())));
+        var parent = SpanContext.createFromRemoteParent(trace, "bbbbbbbbbbbbbbbb", TraceFlags.getSampled(), TraceState.getDefault());
+        var child = SpanContext.create(trace, "cccccccccccccccc", TraceFlags.getSampled(), TraceState.getDefault());
+        try (var outer = Context.root().with(Span.wrap(parent)).makeCurrent()) {
+            var first = json.readTree(formatter.format(event));
+            assertEquals(trace, first.path("traceId").asText()); assertEquals("bbbbbbbbbbbbbbbb", first.path("spanId").asText());
+            try (var inner = Context.current().with(Span.wrap(child)).makeCurrent()) {
+                String output = formatter.format(event); var nested = json.readTree(output);
+                assertEquals(trace, nested.path("traceId").asText()); assertEquals("cccccccccccccccc", nested.path("spanId").asText());
+                assertEquals("job-1", nested.path("businessTraceId").asText()); assertFalse(output.contains("stratumTraceThreadId"));
+            }
+        }
+    }
+
+    /** Agent已注入字段时使用事件快照；跨线程格式化不能读取其他线程当前上下文。 */
+    @Test
+    void prefersInjectedSnapshotAndDoesNotBorrowOtherThreadContext() {
+        var event = event(); String trace = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        var parent = SpanContext.createFromRemoteParent(trace, "bbbbbbbbbbbbbbbb", TraceFlags.getSampled(), TraceState.getDefault());
+        try (var ignored = Context.root().with(Span.wrap(parent)).makeCurrent()) {
+            when(event.getMDCPropertyMap()).thenReturn(Map.of("trace_id", trace, "span_id", "cccccccccccccccc",
+                    "stratumTraceThreadId", Long.toString(Thread.currentThread().threadId())));
+            var injected = json.readTree(formatter.format(event));
+            assertEquals(trace, injected.path("traceId").asText()); assertEquals("cccccccccccccccc", injected.path("spanId").asText());
+            when(event.getMDCPropertyMap()).thenReturn(Map.of("stratumTraceThreadId", "0"));
+            var deferred = json.readTree(formatter.format(event));
+            assertEquals("", deferred.path("traceId").asText()); assertEquals("", deferred.path("spanId").asText());
+        }
     }
 
     /** 异常只输出类型与有界调用位置，不序列化异常消息或任意对象。 */

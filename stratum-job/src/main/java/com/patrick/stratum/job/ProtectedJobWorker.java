@@ -26,6 +26,7 @@ import org.slf4j.MDC;
 @RequiredArgsConstructor
 @Slf4j
 public class ProtectedJobWorker {
+    private static final String TRACE_THREAD_MDC_KEY = "stratumTraceThreadId";
     private final JobExecutionApplicationService jobs;
     private final JobHandlerRegistry registry;
     private final OutboxRelayControlApplicationService relayControl;
@@ -72,8 +73,10 @@ public class ProtectedJobWorker {
     private void runAttempt(String code, UUID executionId, JobHandler handler, Lease lease, JobRunControl control, boolean run) {
         var previous = TraceIdContext.getTraceId();
         String previousBusiness = MDC.get("businessTraceId"); String previousTrace = MDC.get("trace_id"); String previousSpan = MDC.get("span_id");
+        String previousThread = MDC.get(TRACE_THREAD_MDC_KEY);
         TraceIdContext.setTraceId(lease.submission().traceId());
         MDC.put("businessTraceId", lease.submission().traceId()); MDC.remove("trace_id"); MDC.remove("span_id");
+        MDC.put(TRACE_THREAD_MDC_KEY, Long.toString(Thread.currentThread().threadId()));
         long start = System.nanoTime();
         try {
             Optional<StandardTraceContext.Carrier> parent;
@@ -91,16 +94,13 @@ public class ProtectedJobWorker {
                 return;
             }
             try (restored) {
-                parent.ifPresent(value -> {
-                    MDC.put("trace_id", value.traceparent().substring(3, 35));
-                    MDC.put("span_id", value.traceparent().substring(36, 52));
-                });
                 runRestoredAttempt(code, executionId, handler, lease, control, run, start);
             }
         } finally {
             if (previous.isPresent()) TraceIdContext.setTraceId(previous.orElseThrow());
             else TraceIdContext.clear();
             restoreMdc("businessTraceId", previousBusiness); restoreMdc("trace_id", previousTrace); restoreMdc("span_id", previousSpan);
+            restoreMdc(TRACE_THREAD_MDC_KEY, previousThread);
         }
     }
 

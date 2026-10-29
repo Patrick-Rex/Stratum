@@ -140,7 +140,7 @@ class JobRuntimeIntegrationTest extends MariaDbIntegrationTest {
         assertEquals(parent, probe.standardTrace.orElseThrow().traceparent());
         assertEquals("vendor=job", probe.standardTrace.orElseThrow().tracestate());
         assertEquals("runtime-trace", probe.businessMdc);
-        assertEquals("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", probe.standardMdc); assertEquals("bbbbbbbbbbbbbbbb", probe.spanMdc);
+        assertNull(probe.standardMdc); assertNull(probe.spanMdc);
     }
 
     /** 历史空上下文和非法父头使用根上下文，不继承调用方标准标识。 */
