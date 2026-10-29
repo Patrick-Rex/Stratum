@@ -97,6 +97,34 @@ public interface JobExecutionRepository {
     }
 
     /**
+     * 值对象：从持久化边界读取的有界标准追踪原始字段，协议校验由执行边界完成。
+     * @param traceparent 非空且最多55字符的持久父头，可能不符合W3C格式
+     * @param tracestate 可空且最多512字符的持久状态，可能不符合W3C格式
+     */
+    record TraceFields(String traceparent, String tracestate) {
+        /**
+         * 限制读取证据的大小，不把尚未校验的字段当作有效追踪。
+         * @param traceparent 持久父头
+         * @param tracestate 可空持久状态
+         * @throws NullPointerException 父头为空
+         * @throws IllegalArgumentException 字段超出存储边界
+         * @apiNote 示例：{@code new TraceFields(parent, state)}，须在执行前规范化。
+         */
+        public TraceFields {
+            Objects.requireNonNull(traceparent, "追踪父头不能为空");
+            if (traceparent.length() > 55 || (tracestate != null && tracestate.length() > 512)) {
+                throw new IllegalArgumentException("任务追踪字段超出存储边界");
+            }
+        }
+
+        /**
+         * 默认摘要不暴露未可信任的追踪字段。
+         * @return 固定脱敏摘要
+         */
+        @Override public String toString() { return "JobTraceFields[已隐藏]"; }
+    }
+
+    /**
      * 值对象：数据库生成的领取证据，旧令牌和旧周期不得修改新执行状态。
      * @param submission 已持久化输入
      * @param token 唯一领取令牌
@@ -105,9 +133,10 @@ public interface JobExecutionRepository {
      * @param attempt 跨人工恢复周期累计的正尝试序号
      * @param failures 当前周期已完成失败次数
      * @param cycle 人工恢复周期，从0开始
+     * @param standardTrace 当前周期的有界原始追踪字段；历史任务可为空
      */
     record Lease(Submission submission, UUID token, Instant startTime, Instant expiresAt,
-            long attempt, int failures, long cycle) {
+            long attempt, int failures, long cycle, Optional<TraceFields> standardTrace) {
         /**
          * 核验不可变证据格式；实际所有权必须在数据库当前读下重新核验。
          * @param submission 原输入
@@ -117,6 +146,7 @@ public interface JobExecutionRepository {
          * @param attempt 正尝试序号
          * @param failures 非负且小于本周期最大次数
          * @param cycle 非负人工恢复周期
+         * @param standardTrace 当前周期的原始追踪字段可选值
          * @throws NullPointerException 输入或令牌缺失
          * @throws IllegalArgumentException 时间、次数或周期不合法
          * @apiNote 示例：new Lease(submission, UUID.randomUUID(), start, end, 1, 0, 0)。
@@ -124,12 +154,31 @@ public interface JobExecutionRepository {
         public Lease {
             Objects.requireNonNull(submission, "领取输入不能为空");
             Objects.requireNonNull(token, "领取令牌不能为空");
+            Objects.requireNonNull(standardTrace, "标准追踪可选值不能为空");
             JobDefinition.requireTime(startTime);
             JobDefinition.requireTime(expiresAt);
             if (!expiresAt.isAfter(startTime) || expiresAt.isAfter(startTime.plusSeconds(330))
                     || attempt < 1 || failures < 0 || failures >= submission.definition().retryPolicy().maxAttempts() || cycle < 0) {
                 throw new IllegalArgumentException("任务领取证据不合法");
             }
+        }
+
+        /**
+         * 保留原有构造方式，缺少标准追踪字段时使用空值。
+         * @param submission 原输入
+         * @param token 唯一令牌
+         * @param startTime 数据库UTC微秒开始时刻
+         * @param expiresAt UTC租期截止时间
+         * @param attempt 正尝试序号
+         * @param failures 当前周期失败次数
+         * @param cycle 人工恢复周期
+         * @throws NullPointerException 输入或令牌缺失
+         * @throws IllegalArgumentException 时间、次数或周期不合法
+         * @apiNote 示例：{@code new Lease(submission, token, start, end, 1, 0, 0)}。
+         */
+        public Lease(Submission submission, UUID token, Instant startTime, Instant expiresAt,
+                long attempt, int failures, long cycle) {
+            this(submission, token, startTime, expiresAt, attempt, failures, cycle, Optional.empty());
         }
 
         /**

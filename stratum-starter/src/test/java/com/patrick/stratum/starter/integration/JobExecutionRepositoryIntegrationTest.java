@@ -20,6 +20,7 @@ import com.patrick.stratum.domain.job.DeadLetterReplayTaskRepository;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository;
 import com.patrick.stratum.domain.job.JobLeaseAuthority;
+import com.patrick.stratum.domain.job.JobRecoveryRepository;
 import com.patrick.stratum.infrastructure.job.JobExecutionRepositoryImpl;
 import com.patrick.stratum.infrastructure.tracing.OpenTelemetryTraceContext;
 import org.junit.jupiter.api.AfterEach;
@@ -43,6 +44,7 @@ class JobExecutionRepositoryIntegrationTest extends MariaDbIntegrationTest {
     private final JobCancellationRepository cancellation;
     private final DeadLetterReplayTaskRepository replayTasks;
     private final JobLeaseAuthority leaseAuthority;
+    private final JobRecoveryRepository recovery;
     private final JdbcTemplate jdbc;
     private final List<UUID> executions = new ArrayList<>();
     private final List<UUID> replayRequests = new ArrayList<>();
@@ -55,13 +57,15 @@ class JobExecutionRepositoryIntegrationTest extends MariaDbIntegrationTest {
      * @param cancellation 生产未开始取消端口
      * @param replayTasks 重放任务绑定端口
      * @param leaseAuthority 任务领取资格端口
+     * @param recovery 任务完成端口
      * @param jdbc 独立断言与自身夹具清理
      */
     @Autowired
     JobExecutionRepositoryIntegrationTest(UnitOfWork unitOfWork, JobExecutionRepository repository,
-            JobCancellationRepository cancellation, DeadLetterReplayTaskRepository replayTasks, JobLeaseAuthority leaseAuthority, JdbcTemplate jdbc) {
+            JobCancellationRepository cancellation, DeadLetterReplayTaskRepository replayTasks, JobLeaseAuthority leaseAuthority,
+            JobRecoveryRepository recovery, JdbcTemplate jdbc) {
         this.unitOfWork = unitOfWork; this.repository = repository; this.cancellation = cancellation; this.replayTasks = replayTasks;
-        this.leaseAuthority = leaseAuthority; this.jdbc = jdbc;
+        this.leaseAuthority = leaseAuthority; this.recovery = recovery; this.jdbc = jdbc;
     }
 
     /** 仅清理本用例登记的随机执行身份及其技术历史。 */
@@ -136,6 +140,48 @@ class JobExecutionRepositoryIntegrationTest extends MariaDbIntegrationTest {
             assertEquals(first.submission().executionId(), unitOfWork.execute(() -> replayTasks.register(first)));
         }
         assertStandardTrace(first.submission().executionId(), parent, "vendor=replay");
+    }
+
+    /** 领取和过期接管后的新尝试保留原始字段，篡改字段不能通过当前领取资格核验。 */
+    @Test
+    void carriesCurrentTraceWithLeaseAndFencesAlteredEvidence() {
+        var trace = new OpenTelemetryTraceContext(); var input = input("{}", 3);
+        String parent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        try (var ignored = trace.restore(trace.normalize(parent, "vendor=first"))) { register(input); }
+        var original = claim(input.executionId()).orElseThrow();
+        assertEquals(new JobExecutionRepository.TraceFields(parent, "vendor=first"), original.standardTrace().orElseThrow());
+        assertTrue(unitOfWork.execute(() -> leaseAuthority.lockCurrent(original)));
+        var forged = new JobExecutionRepository.Lease(original.submission(), original.token(), original.startTime(), original.expiresAt(),
+                original.attempt(), original.failures(), original.cycle(),
+                Optional.of(new JobExecutionRepository.TraceFields(parent, "vendor=changed")));
+        assertFalse(unitOfWork.execute(() -> leaseAuthority.lockCurrent(forged)));
+        assertFalse(unitOfWork.execute(() -> recovery.finish(forged, JobRecoveryRepository.Outcome.SUCCEEDED)));
+        var missing = new JobExecutionRepository.Lease(original.submission(), original.token(), original.startTime(), original.expiresAt(),
+                original.attempt(), original.failures(), original.cycle());
+        assertFalse(unitOfWork.execute(() -> leaseAuthority.lockCurrent(missing)));
+        expire(input.executionId()); assertTrue(claim(input.executionId()).isEmpty());
+        jdbc.update("UPDATE job_execution SET next_attempt_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE execution_id=?", input.executionId().toString());
+        var retry = claim(input.executionId()).orElseThrow();
+        assertEquals(2, retry.attempt()); assertEquals(original.standardTrace(), retry.standardTrace());
+        assertTrue(unitOfWork.execute(() -> leaseAuthority.lockCurrent(retry)));
+        assertFalse(unitOfWork.execute(() -> leaseAuthority.lockCurrent(original)));
+        assertTrue(unitOfWork.execute(() -> recovery.finish(retry, JobRecoveryRepository.Outcome.SUCCEEDED)));
+    }
+
+    /** 历史空值保持空证据；不合法持久头保留为原始有界字段供执行边界校验。 */
+    @Test
+    void carriesHistoricalEmptyAndUntrustedStoredTrace() {
+        var trace = new OpenTelemetryTraceContext(); var historical = input("{}", 3); var malformed = input("{}", 3);
+        try (var ignored = trace.restore(Optional.empty())) { register(historical); register(malformed); }
+        jdbc.update("UPDATE job_execution SET standard_traceparent=?,standard_tracestate=? WHERE execution_id=?",
+                "invalid-parent", "untrusted-state", malformed.executionId().toString());
+        assertTrue(claim(historical.executionId()).orElseThrow().standardTrace().isEmpty());
+        var unavailable = mock(StandardTraceContext.class);
+        var reader = new JobExecutionRepositoryImpl(jdbc.getDataSource(), JsonMapper.builder().build(), unavailable);
+        var fields = unitOfWork.execute(() -> reader.claim(malformed.executionId())).orElseThrow().standardTrace().orElseThrow();
+        verifyNoInteractions(unavailable);
+        assertEquals("invalid-parent", fields.traceparent()); assertEquals("untrusted-state", fields.tracestate());
+        assertFalse(fields.toString().contains("untrusted-state"));
     }
 
     /**

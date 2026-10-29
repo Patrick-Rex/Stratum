@@ -110,6 +110,7 @@ class JobContractsTest {
         UUID token = UUID.randomUUID();
         var lease = new JobExecutionRepository.Lease(submission, token, TIME, TIME.plusSeconds(60), 1, 0, 0);
         assertEquals(token, lease.token());
+        assertTrue(lease.standardTrace().isEmpty());
         assertFalse(lease.toString().contains(token.toString()));
         assertFalse(lease.toString().contains("key"));
         assertThrows(IllegalArgumentException.class, () -> new JobExecutionRepository.Lease(submission, token, TIME, TIME, 1, 0, 0));
@@ -117,6 +118,22 @@ class JobContractsTest {
         assertThrows(IllegalArgumentException.class, () -> new JobExecutionRepository.Lease(submission, token, TIME, TIME.plusSeconds(60), 0, 0, 0));
         assertThrows(IllegalArgumentException.class, () -> new JobExecutionRepository.Lease(submission, token, TIME, TIME.plusSeconds(60), 1, 3, 0));
         assertThrows(IllegalArgumentException.class, () -> new JobExecutionRepository.Lease(submission, token, TIME, TIME.plusSeconds(60), 1, 0, -1));
+    }
+
+    /** 领取证据保留有界原始追踪字段，旧构造为空且默认摘要不泄露字段或令牌。 */
+    @Test
+    void retainsAndRedactsUntrustedTraceFieldsInLease() {
+        var submission = submission("{}", "key", "trace"); UUID token = UUID.randomUUID();
+        var fields = new JobExecutionRepository.TraceFields("unvalidated-parent", "vendor=private");
+        var lease = new JobExecutionRepository.Lease(submission, token, TIME, TIME.plusSeconds(60), 1, 0, 0, Optional.of(fields));
+        assertEquals(fields, lease.standardTrace().orElseThrow());
+        assertFalse(lease.toString().contains("unvalidated-parent")); assertFalse(lease.toString().contains("vendor=private"));
+        assertFalse(fields.toString().contains("unvalidated-parent")); assertFalse(fields.toString().contains("vendor=private"));
+        assertThrows(NullPointerException.class, () -> new JobExecutionRepository.TraceFields(null, null));
+        assertThrows(IllegalArgumentException.class, () -> new JobExecutionRepository.TraceFields("x".repeat(56), null));
+        assertThrows(IllegalArgumentException.class, () -> new JobExecutionRepository.TraceFields("x", "y".repeat(513)));
+        assertThrows(NullPointerException.class,
+                () -> new JobExecutionRepository.Lease(submission, token, TIME, TIME.plusSeconds(60), 1, 0, 0, null));
     }
 
     /** 人工恢复只能引用当前死亡记录和安全trace，不能替换原任务参数。 */

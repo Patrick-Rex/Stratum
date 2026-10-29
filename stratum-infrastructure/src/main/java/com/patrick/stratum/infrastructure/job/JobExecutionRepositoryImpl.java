@@ -177,7 +177,7 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository, JobCa
                     VALUES (?,?,?,?,?,?,'RUNNING',?)
                     """, executionId.toString(), attempt, row.cycle(), token.toString(), time(row.submission().scheduleTime()),
                     time(now), row.submission().traceId());
-            return Optional.of(new Lease(row.submission(), token, now, expires, attempt, row.failures(), row.cycle()));
+            return Optional.of(new Lease(row.submission(), token, now, expires, attempt, row.failures(), row.cycle(), row.standardTrace()));
         } catch (DataAccessException failure) {
             throw translate(failure);
         }
@@ -229,7 +229,7 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository, JobCa
         return row != null && row.state() == State.RUNNING && lease.token().equals(row.token())
                 && row.attempt() == lease.attempt() && row.failures() == lease.failures() && row.cycle() == lease.cycle()
                 && lease.submission().equals(row.submission()) && lease.startTime().equals(row.startTime())
-                && lease.expiresAt().equals(row.expiresAt());
+                && lease.expiresAt().equals(row.expiresAt()) && lease.standardTrace().equals(row.standardTrace());
     }
 
     /**
@@ -300,9 +300,11 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository, JobCa
         var submission = new Submission(UUID.fromString(rs.getString("execution_id")), definition,
                 instant(rs, "schedule_time"), rs.getString("idempotency_key"), rs.getString("arguments"), rs.getString("trace_id"));
         String token = rs.getString("lease_token");
+        String parent = rs.getString("standard_traceparent"); String traceState = rs.getString("standard_tracestate");
+        var standardTrace = parent == null ? Optional.<TraceFields>empty() : Optional.of(new TraceFields(parent, traceState));
         return new Row(submission, State.valueOf(rs.getString("state")), rs.getLong("attempt_no"), rs.getInt("failure_count"),
                 rs.getLong("cycle_no"), token == null ? null : UUID.fromString(token), instant(rs, "start_time"),
-                instant(rs, "lease_until"), instant(rs, "next_attempt_at"), rs.getLong("version"));
+                instant(rs, "lease_until"), instant(rs, "next_attempt_at"), rs.getLong("version"), standardTrace);
     }
 
     /**
@@ -395,9 +397,10 @@ public class JobExecutionRepositoryImpl implements JobExecutionRepository, JobCa
      * @param expiresAt 可空租期
      * @param nextAttempt 下次到期时刻
      * @param version 乐观版本
+     * @param standardTrace 原样读取的有界当前追踪字段
      */
     record Row(Submission submission, State state, long attempt, int failures, long cycle,
-            UUID token, Instant startTime, Instant expiresAt, Instant nextAttempt, long version) {
+            UUID token, Instant startTime, Instant expiresAt, Instant nextAttempt, long version, Optional<TraceFields> standardTrace) {
         /**
          * 只输出安全执行身份与状态。
          * @return 安全技术摘要
