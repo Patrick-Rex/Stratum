@@ -1727,12 +1727,12 @@ RabbitMQ发布器在无Agent时将当前有效、规范化的 `traceparent` 和�
 
 ### RabbitMQ监听追踪现状
 
-在独立JVM、真实Broker和固定OpenTelemetry Java Agent 2.33.0下，生产发布器发送的消息头指向Agent生成的发布跨度，该跨度以恢复的原事件上下文为父；生产监听器的接收后处理器和应用消费回调处均处于同一个Agent消费跨度，其直接父跨度是消息头所指的发布跨度。无Agent时有效消息头可到达监听器，但当前监听器不会自动恢复该上下文。2项真实Broker进程测试通过，零失败、错误或跳过；消费业务使用受控端口替身，真实事务链路及消费端处理仍待后续节点。
+在独立JVM、真实Broker和固定OpenTelemetry Java Agent 2.33.0下，生产发布器发送的消息头指向Agent生成的发布跨度，该跨度以恢复的原事件上下文为父；生产监听器的接收后处理器和应用消费回调处均处于同一个Agent消费跨度，其直接父跨度是消息头所指的发布跨度。当时无Agent时有效消息头可到达监听器，但监听器尚未自动恢复该上下文；后续改进与验收见下文。2项真实Broker进程测试通过，零失败、错误或跳过；消费业务使用受控端口替身，真实事务链路及消费端处理仍待后续节点。
 
 
 ### 消息监听线程追踪隔离
 
-每条消息进入Spring监听入口前临时切换到根上下文，结束后恢复工作线程原值，防止复用线程残留追踪或baggage串入消息。固定Agent在Spring监听入口建立自己的消费跨度；切换消息语义约定时可能通过父跨度或跨度链接表达关联，参考[固定版本Agent实现](https://github.com/open-telemetry/opentelemetry-java-instrumentation/blob/v2.33.0/instrumentation/spring/spring-rabbit-1.0/javaagent/src/main/java/io/opentelemetry/javaagent/instrumentation/spring/rabbit/v1_0/SpringRabbitSingletons.java)。3项真实Broker独立JVM测试、8项消费单元及7项真实Broker/调度集成测试通过，零失败、错误或跳过；无Agent消息头恢复仍待下一节点。
+每条消息进入Spring监听入口前临时切换到根上下文，结束后恢复工作线程原值，防止复用线程残留追踪或baggage串入消息。固定Agent在Spring监听入口建立自己的消费跨度；切换消息语义约定时可能通过父跨度或跨度链接表达关联，参考[固定版本Agent实现](https://github.com/open-telemetry/opentelemetry-java-instrumentation/blob/v2.33.0/instrumentation/spring/spring-rabbit-1.0/javaagent/src/main/java/io/opentelemetry/javaagent/instrumentation/spring/rabbit/v1_0/SpringRabbitSingletons.java)。3项真实Broker独立JVM测试、8项消费单元及7项真实Broker/调度集成测试通过，零失败、错误或跳过；当时无Agent消息头恢复仍待下一节点，后续结果见下文。
 
 
 ### 消费标准上下文与故障等待
@@ -1740,3 +1740,10 @@ RabbitMQ发布器在无Agent时将当前有效、规范化的 `traceparent` 和�
 每条消费优先保留Agent已建立的本地消费跨度；无Agent时从有界的文本消息头恢复规范W3C上下文，历史空值或非法父头使用根上下文，非法state只丢弃state。消息处理的业务关联及无Agent下有效标准标识写入独立日志字段，退出时恢复调用方线程上下文。用户确认：若追踪组件无法恢复上下文，跳过业务并以等待类别nack重投，不增加业务失败次数，只记录安全异常类型；确认传输异常仍按既有通道处理。
 
 13项消费单元测试及1项实际Agent独立进程测试通过，零失败、错误或跳过；Agent进程使用受控通道替身，不涉及Broker。本次未验证真实Broker的故障延迟、重投次数及真实监听链路，留待c4b2b。
+
+
+### 消费追踪故障真实Broker验收
+
+使用RabbitMQ 4.3.6独立测试空间验证：连续注入规范化及恢复组件故障时，业务回调不执行，两次nack均实际延迟重投且`x-delivery-count`保持零；组件恢复后同一事件只消费一次，不进入死信。无Agent监听按每条消息恢复有效上下文，后续历史消息不继承前一条；固定Java Agent默认语义与可选消息语义模式均保留自身消费跨度及其父链或链接。测试进程分别采集标准输出和Agent诊断输出，避免并发写入导致导出JSON交错。
+
+3项Agent与无Agent真实Broker进程测试、13项消费单元测试和9项真实Broker/数据库/Redis/Quartz集成测试通过，零失败、错误或跳过。加强逐次延迟断言后另重跑1项故障恢复测试通过；真实事务中正常、历史及重投的消费组合继续c4c。

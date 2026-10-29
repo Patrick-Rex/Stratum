@@ -12,6 +12,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.event.OutboxConsumptionRepository.Group;
 import com.patrick.stratum.domain.event.OutboxConsumer;
 import com.patrick.stratum.domain.event.OutboxMessage;
@@ -20,10 +21,12 @@ import com.patrick.stratum.infrastructure.messaging.RabbitMessagingConfiguration
 import com.patrick.stratum.infrastructure.messaging.RabbitOutboxConsumerConfiguration;
 import com.patrick.stratum.infrastructure.messaging.RabbitOutboxPublisherConfiguration;
 import com.patrick.stratum.infrastructure.messaging.RabbitTopologyConfiguration;
+import com.patrick.stratum.infrastructure.tracing.OpenTelemetryTraceContext;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.amqp.core.AcknowledgeMode;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageProperties;
@@ -40,6 +43,7 @@ import tools.jackson.databind.json.JsonMapper;
 import static com.patrick.stratum.domain.event.OutboxConsumer.Outcome.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.awaitility.Awaitility.await;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /** 真实Broker检查监听启停、原生计数、手动确认和预取归还；应用端口为受控替身。 */
@@ -102,6 +106,82 @@ class RabbitOutboxConsumerIntegrationTest {
         assertThrows(IOException.class, () -> listener.onMessage(message, channel));
         verify(channel).basicReject(7L, true); verify(channel).abort(); verifyNoMoreInteractions(channel);
         assertTrue(context.getBean(CachingConnectionFactory.class).createConnection().getDelegate().isOpen());
+    }
+
+    /**
+     * 真实Broker按消息恢复无Agent上下文，下一条历史消息不继承前一条。
+     * @throws Exception Broker消费或等待失败
+     */
+    @Test
+    void restoresEachMessageContextWithoutAgent() throws Exception {
+        var trace = new OpenTelemetryTraceContext(); var first = delivery(); var historical = delivery();
+        var seen = new java.util.concurrent.ConcurrentHashMap<String, java.util.Optional<StandardTraceContext.Carrier>>();
+        var business = new java.util.concurrent.ConcurrentHashMap<String, String>();
+        var done = new CountDownLatch(2);
+        start((delivery, group) -> {
+            seen.put(delivery.message().eventId(), trace.capture()); business.put(delivery.message().eventId(), MDC.get("businessTraceId"));
+            done.countDown(); return CONSUMED;
+        }, Map.of());
+        String parent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        try (var ignored = trace.restore(trace.normalize(parent, "vendor=value"))) {
+            assertEquals(OutboxPublisher.PublishResult.CONFIRMED, context.getBean(OutboxPublisher.class).publish(first));
+        }
+        assertEquals(OutboxPublisher.PublishResult.CONFIRMED, context.getBean(OutboxPublisher.class).publish(historical));
+        assertTrue(done.await(10, TimeUnit.SECONDS));
+        assertEquals(parent, seen.get(first.message().eventId()).orElseThrow().traceparent());
+        assertEquals("vendor=value", seen.get(first.message().eventId()).orElseThrow().tracestate());
+        assertTrue(seen.get(historical.message().eventId()).isEmpty());
+        assertEquals(first.message().traceId(), business.get(first.message().eventId()));
+        assertEquals(historical.message().traceId(), business.get(historical.message().eventId()));
+    }
+
+    /**
+     * 追踪组件故障期间实际延迟重投且不增加业务失败计数，恢复后只执行一次原消息。
+     * @throws Exception Broker消费或等待失败
+     */
+    @Test
+    void delaysTraceFailuresWithoutCountingBusinessFailureAndRecovers() throws Exception {
+        var actual = new OpenTelemetryTraceContext(); var trace = mock(StandardTraceContext.class);
+        var attempts = new AtomicInteger(); var restores = new AtomicInteger(); var business = new AtomicInteger();
+        var completed = new CountDownLatch(1);
+        var message = delivery(); String parent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+        when(trace.capture()).thenAnswer(call -> actual.capture());
+        when(trace.normalize(nullable(String.class), nullable(String.class))).thenAnswer(call -> {
+            if (Thread.currentThread().getName().startsWith("stratum-rabbit-consumer-") && attempts.getAndIncrement() == 0) {
+                throw new IllegalStateException("private-normalize-failure");
+            }
+            return actual.normalize(call.getArgument(0), call.getArgument(1));
+        });
+        when(trace.restore(any())).thenAnswer(call -> {
+            if (Thread.currentThread().getName().startsWith("stratum-rabbit-consumer-") && restores.getAndIncrement() == 0) {
+                throw new IllegalStateException("private-restore-failure");
+            }
+            return actual.restore(call.getArgument(0));
+        });
+        start((received, group) -> {
+            assertEquals(message.message().eventId(), received.message().eventId());
+            assertEquals(parent, actual.capture().orElseThrow().traceparent());
+            business.incrementAndGet(); completed.countDown(); return CONSUMED;
+        }, Map.of(), trace);
+        var listener = context.getBean("erpOutboxListener", SimpleMessageListenerContainer.class);
+        var counts = new CopyOnWriteArrayList<Long>(); var receivedAt = new CopyOnWriteArrayList<Long>();
+        listener.addAfterReceivePostProcessors(received -> {
+            Object count = received.getMessageProperties().getHeader("x-delivery-count");
+            counts.add(count == null ? 0L : ((Number) count).longValue()); receivedAt.add(System.nanoTime()); return received;
+        });
+        try (var ignored = actual.restore(actual.normalize(parent, "vendor=value"))) {
+            assertEquals(OutboxPublisher.PublishResult.CONFIRMED, context.getBean(OutboxPublisher.class).publish(message));
+        }
+        assertTrue(completed.await(10, TimeUnit.SECONDS)); listener.stop();
+        assertEquals(3, attempts.get()); assertEquals(2, restores.get()); assertEquals(1, business.get());
+        assertEquals(List.of(0L, 0L, 0L), counts);
+        assertTrue(Duration.ofNanos(receivedAt.get(1) - receivedAt.get(0)).toMillis() >= 80);
+        assertTrue(Duration.ofNanos(receivedAt.get(2) - receivedAt.get(1)).toMillis() >= 80);
+        var metrics = context.getBean(SimpleMeterRegistry.class);
+        assertEquals(2, metrics.get("stratum.messaging.consumed").tags("group", "erp_audit", "result", "waiting").counter().count());
+        assertEquals(1, metrics.get("stratum.messaging.consumed").tags("group", "erp_audit", "result", "consumed").counter().count());
+        assertNull(metrics.find("stratum.messaging.consumed").tags("group", "erp_audit", "result", "failed").counter());
+        assertEquals(0, context.getBean(RabbitAdmin.class).getQueueInfo(RabbitTopologyConfiguration.ERP_QUEUE + ".dlq").getMessageCount());
     }
 
     /** 真实等待nack不增加失败数，实际reject才增加，成功后消息已确认且线程有界。 */
@@ -183,6 +263,16 @@ class RabbitOutboxConsumerIntegrationTest {
      * @param overrides 本测试资源配置
      */
     private void start(OutboxConsumer consumer, Map<String, Object> overrides) {
+        start(consumer, overrides, null);
+    }
+
+    /**
+     * 装配专用消息上下文，并允许注入本用例的追踪故障探针。
+     * @param consumer 受控应用结果
+     * @param overrides 本测试资源配置
+     * @param trace 可空标准追踪边界
+     */
+    private void start(OutboxConsumer consumer, Map<String, Object> overrides, StandardTraceContext trace) {
         var properties = new HashMap<>(RabbitIntegrationSupport.connectionProperties());
         properties.put("stratum.messaging.consumer.enabled", true);
         properties.put("stratum.messaging.topology.retry-min", "100ms");
@@ -193,6 +283,7 @@ class RabbitOutboxConsumerIntegrationTest {
         context.registerBean(JsonMapper.class, () -> JsonMapper.builder().build());
         context.registerBean(SimpleMeterRegistry.class, SimpleMeterRegistry::new, definition -> definition.setDestroyMethodName("close"));
         context.registerBean(OutboxConsumer.class, () -> consumer);
+        if (trace != null) context.registerBean(StandardTraceContext.class, () -> trace);
         context.register(RabbitMessagingConfiguration.class, RabbitTopologyConfiguration.class,
                 RabbitOutboxPublisherConfiguration.class, RabbitOutboxConsumerConfiguration.class);
         context.refresh();

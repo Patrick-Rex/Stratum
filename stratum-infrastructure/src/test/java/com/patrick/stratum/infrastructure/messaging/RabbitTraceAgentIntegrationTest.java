@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @Tag("otel-agent")
 class RabbitTraceAgentIntegrationTest {
     /**
-     * 验证无Agent时头透传但生产监听器没有自动恢复跨度。
+     * 验证无Agent时生产监听器恢复远端上下文，且不继承线程残留。
      * @throws Exception 进程或输出失败
      */
     @Test
@@ -27,7 +27,8 @@ class RabbitTraceAgentIntegrationTest {
         var probe = runFixture(false, false).fields();
         assertEquals("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01", probe.get(1));
         assertEquals("vendor=value", probe.get(2));
-        assertEquals("none", probe.get(3)); assertEquals("none", probe.get(4)); assertEquals("false", probe.get(5));
+        assertEquals("none", probe.get(3));
+        assertEquals("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbb:true", probe.get(4)); assertEquals("false", probe.get(5));
         assertTrue(Integer.parseInt(probe.get(6)) >= 1); assertEquals("false", probe.get(7));
     }
 
@@ -68,7 +69,7 @@ class RabbitTraceAgentIntegrationTest {
     }
 
     /**
-     * 启动带或不带Agent的独立JVM并读取唯一有界探针。
+     * 启动带或不带Agent的独立JVM，分流采集并读取唯一有界探针。
      * @param agentEnabled 是否加载固定版本Agent
      * @param stableMessaging 是否启用新的消息语义约定
      * @return 消费探针和实际导出的同链路跨度
@@ -83,7 +84,8 @@ class RabbitTraceAgentIntegrationTest {
                 "-Xms32m", "-Xmx256m", "-XX:ActiveProcessorCount=2"));
         if (agentEnabled) command.add("-javaagent:" + agent);
         command.addAll(List.of("-cp", classpath, RabbitTraceAgentFixture.class.getName()));
-        Path output = Files.createTempFile("stratum-rabbit-trace-agent-", ".log"); Process process = null;
+        Path output = Files.createTempFile("stratum-rabbit-trace-agent-", ".log");
+        Path diagnostics = Files.createTempFile("stratum-rabbit-trace-agent-error-", ".log"); Process process = null;
         try {
             var builder = new ProcessBuilder(command); var environment = builder.environment();
             environment.keySet().removeIf(name -> name.startsWith("OTEL_") || name.equals("JAVA_TOOL_OPTIONS") || name.equals("JDK_JAVA_OPTIONS"));
@@ -91,14 +93,17 @@ class RabbitTraceAgentIntegrationTest {
             environment.put("OTEL_LOGS_EXPORTER", "none"); environment.put("OTEL_TRACES_SAMPLER", "always_on");
             environment.put("OTEL_BSP_SCHEDULE_DELAY", "100");
             if (stableMessaging) environment.put("OTEL_SEMCONV_STABILITY_OPT_IN", "messaging");
-            builder.redirectErrorStream(true).redirectOutput(output.toFile()); process = builder.start();
+            builder.redirectOutput(output.toFile()).redirectError(diagnostics.toFile()); process = builder.start();
             assertTrue(process.waitFor(Duration.ofSeconds(55)), "消息追踪测试进程未退出");
-            String text;
-            try (var input = Files.newInputStream(output)) {
-                byte[] bytes = input.readNBytes(4 * 1024 * 1024 + 1);
-                if (bytes.length > 4 * 1024 * 1024) throw new IllegalStateException("追踪探针输出超界");
-                text = new String(bytes, StandardCharsets.UTF_8);
+            var captured = new StringBuilder();
+            for (Path path : List.of(output, diagnostics)) {
+                try (var input = Files.newInputStream(path)) {
+                    byte[] bytes = input.readNBytes(4 * 1024 * 1024 + 1);
+                    if (bytes.length > 4 * 1024 * 1024) throw new IllegalStateException("追踪探针输出超界");
+                    captured.append(new String(bytes, StandardCharsets.UTF_8)).append('\n');
+                }
             }
+            String text = captured.toString();
             assertEquals(0, process.exitValue(), "消息追踪测试进程失败");
             var probes = text.lines().filter(line -> line.startsWith("STRATUM_TRACE_PROBE|")).toList();
             assertEquals(1, probes.size(), "缺少唯一消费探针");
@@ -123,7 +128,9 @@ class RabbitTraceAgentIntegrationTest {
                     process.destroyForcibly();
                     if (!process.waitFor(Duration.ofSeconds(5))) throw new IllegalStateException("消息追踪子进程未退出");
                 }
-            } finally { Files.deleteIfExists(output); }
+            } finally {
+                try { Files.deleteIfExists(output); } finally { Files.deleteIfExists(diagnostics); }
+            }
         }
     }
 
