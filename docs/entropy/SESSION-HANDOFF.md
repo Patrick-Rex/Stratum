@@ -1,18 +1,20 @@
 # Stratum 最近会话交接
 
-## 交接报告（2026-10-28）
+## 交接报告（2026-10-29）
 
-- completedNode: NODE-F02.5c4b1（隔离消费线程残留追踪）。
+- completedNode: NODE-F02.5c4b1（隔离消费线程残留追踪），已提交并推送 `f00890b`。
+- currentNode: NODE-F02.5c4b2a（进行中，未验收、未提交）。
 - changedFiles:
+  - `docs/AI可执行开发计划.md`
   - `docs/CONTEXT.md`
-  - `docs/development.md`
   - `docs/entropy/SESSION-HANDOFF.md`
+  - `stratum-infrastructure/src/main/java/com/patrick/stratum/infrastructure/messaging/RabbitOutboxConsumerAdapter.java`
   - `stratum-infrastructure/src/main/java/com/patrick/stratum/infrastructure/messaging/RabbitOutboxConsumerConfiguration.java`
-  - `stratum-infrastructure/src/test/java/com/patrick/stratum/infrastructure/messaging/RabbitTraceAgentFixture.java`
   - `stratum-infrastructure/src/test/java/com/patrick/stratum/infrastructure/messaging/RabbitTraceAgentIntegrationTest.java`
+  - `stratum-starter/src/test/java/com/patrick/stratum/infrastructure/messaging/RabbitOutboxConsumerTest.java`
+  - `stratum-starter/src/test/java/com/patrick/stratum/starter/integration/RabbitOutboxConsumerIntegrationTest.java`
 
-- validations: 3项Agent与无Agent真实Broker进程测试、8项消费单元及7项Broker和Quartz集成通过，零失败、错误或跳过；验证线程恢复及Agent父链或链接。文档与 Git 差异检查在提交前执行；以实际执行结果为准。
-- unresolved: 无Agent消费头恢复、历史消息及真实事务链路仍待完成；任务传播及真实Agent端到端待验收；采集持有者进程故障接管未验证；部署范围暂缓；父节点仅在全部子节点完成后标为完成，不将契约编译视为集成测试。
-- nextNode: NODE-F02.5c4b2。
-- 当前节点验收后审查、提交、推送；完成后继续下一节点，不重复请求授权。
-- CONTEXT 已更新。用户原有Docker服务保留；本轮独立MariaDB、Redis及RabbitMQ测试空间暂留供后续节点使用，会话结束前清理。连接状态保存在本机临时目录stratum-F01-state.json及stratum-F01-mq.json，不提交凭据。
+- validations: 2026-10-28故障分支修改前的正常路径曾通过3项真实Agent/Broker进程、11项单元及8项集成测试。2026-10-29修改后13项消费单元测试通过，零失败、错误或跳过；已编译集成测试源码，尚未实际执行新增Broker故障用例。
+- unresolved: 用户已确认追踪恢复故障时暂停业务并延迟重投，不增加业务失败次数；13项消费单元测试通过。Docker引擎当前不可用，真实Broker故障重投及Agent监听链路留给c4b2b；真实事务端到端、异步任务追踪及采集持有者进程故障接管仍待验证；部署范围暂缓。
+- nextNode: 先用不依赖Broker的真实Agent测试完成 NODE-F02.5c4b2a 并提交推送，再执行 NODE-F02.5c4b2b。
+- 本轮未创建Docker测试容器。启动Docker Desktop后引擎仍停用；正常退出超时，自动审批审查拒绝结束相关进程（仅返回“被策略阻止”），本轮启动的进程仍需处理。
