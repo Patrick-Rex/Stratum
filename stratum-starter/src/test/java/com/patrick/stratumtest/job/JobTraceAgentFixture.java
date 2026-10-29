@@ -15,6 +15,7 @@ import com.patrick.stratum.application.job.JobHandler;
 import com.patrick.stratum.common.trace.StandardTraceContext;
 import com.patrick.stratum.domain.job.JobDefinition;
 import com.patrick.stratum.domain.job.JobExecutionRepository.Submission;
+import com.patrick.stratum.domain.job.JobRecoveryRepository.ReplayRequest;
 import com.patrick.stratum.starter.StratumStarterApplication;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.baggage.Baggage;
@@ -29,10 +30,14 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 import static org.awaitility.Awaitility.await;
 
-/** 独立JVM中以真实Agent、Quartz及MariaDB验证任务标准追踪。 */
+/**
+ * 独立JVM中以真实Agent、Quartz及MariaDB验证任务标准追踪。
+ * <p>示例：由测试启动本类的{@link #main(String[])}，并提供隔离测试环境。</p>
+ */
 public final class JobTraceAgentFixture {
     private static final String NORMAL_PARENT = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
     private static final String RETRY_PARENT = "00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01";
+    private static final String MANUAL_PARENT = "00-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-ffffffffffffffff-01";
 
     /** 禁止实例化独立进程入口。 */
     private JobTraceAgentFixture() { }
@@ -82,7 +87,9 @@ public final class JobTraceAgentFixture {
                 awaitSuccess(jdbc, retry);
                 var attempts = jdbc.queryForList("SELECT result FROM job_attempt WHERE execution_id=? ORDER BY attempt_no", String.class, retry.toString());
                 if (!attempts.equals(List.of("FAILED", "SUCCEEDED"))) throw new IllegalStateException("任务重试结果不匹配");
-                System.out.println("STRATUM_JOB_DONE|normal|historical|retry");
+                verifyManualRecovery(jobs, jdbc, trace, code, ids, "manual", true);
+                verifyManualRecovery(jobs, jdbc, trace, code, ids, "manualroot", false);
+                System.out.println("STRATUM_JOB_DONE|normal|historical|retry|manual|manualroot");
             }
         } finally { cleanup(url, name, code, ids); }
     }
@@ -109,8 +116,50 @@ public final class JobTraceAgentFixture {
      * @throws org.awaitility.core.ConditionTimeoutException 任务未在限定时间内成功
      */
     private static void awaitSuccess(JdbcTemplate jdbc, UUID id) {
-        await().atMost(Duration.ofSeconds(30)).until(() -> "SUCCEEDED".equals(jdbc.queryForObject(
+        awaitState(jdbc, id, "SUCCEEDED");
+    }
+
+    /**
+     * 等待当前用例的实际数据库状态。
+     * @param jdbc 测试数据库客户端
+     * @param id 当前用例任务UUID
+     * @param state 固定预期状态
+     * @throws org.awaitility.core.ConditionTimeoutException 状态未在限定时间内出现
+     */
+    private static void awaitState(JdbcTemplate jdbc, UUID id, String state) {
+        await().atMost(Duration.ofSeconds(30)).until(() -> state.equals(jdbc.queryForObject(
                 "SELECT state FROM job_execution WHERE execution_id=?", String.class, id.toString())));
+    }
+
+    /**
+     * 首周期失败后从指定恢复上下文启动新周期，只验证恢复后的首次执行。
+     * @param jobs 实际任务状态入口
+     * @param jdbc 测试数据库客户端
+     * @param trace 标准追踪边界
+     * @param code 随机固定代码
+     * @param ids 本次拥有的执行身份
+     * @param scenario 固定测试场景
+     * @param hasParent 恢复操作是否携带有效上下文
+     */
+    private static void verifyManualRecovery(JobExecutionApplicationService jobs, JdbcTemplate jdbc, StandardTraceContext trace,
+            String code, List<UUID> ids, String scenario, boolean hasParent) {
+        UUID id;
+        try (var restored = trace.restore(trace.normalize(NORMAL_PARENT, "vendor=initial"))) {
+            id = register(jobs, code, scenario, 1); ids.add(id);
+        }
+        awaitState(jdbc, id, "DEAD");
+        String dead = jdbc.queryForObject("SELECT dead_id FROM dead_job WHERE execution_id=? AND cycle_no=0", String.class, id.toString());
+        var parent = hasParent ? trace.normalize(MANUAL_PARENT, "vendor=manual") : Optional.<StandardTraceContext.Carrier>empty();
+        try (var restored = trace.restore(parent)) {
+            jobs.replay(new ReplayRequest(UUID.randomUUID(), UUID.fromString(dead), "job-flow-recovery-" + scenario));
+        }
+        awaitSuccess(jdbc, id);
+        var row = jdbc.queryForMap("SELECT initial_standard_traceparent,standard_traceparent,cycle_no FROM job_execution WHERE execution_id=?", id.toString());
+        if (!NORMAL_PARENT.equals(row.get("initial_standard_traceparent"))
+                || !java.util.Objects.equals(hasParent ? MANUAL_PARENT : null, row.get("standard_traceparent"))
+                || ((Number) row.get("cycle_no")).longValue() != 1) throw new IllegalStateException("恢复上下文或周期不匹配");
+        var attempts = jdbc.queryForList("SELECT result FROM job_attempt WHERE execution_id=? ORDER BY attempt_no", String.class, id.toString());
+        if (!attempts.equals(List.of("FAILED", "SUCCEEDED"))) throw new IllegalStateException("恢复周期尝试不匹配");
     }
 
     /**
@@ -156,7 +205,10 @@ public final class JobTraceAgentFixture {
         return value;
     }
 
-    /** 测试专用固定处理器，不进入生产组件扫描。 */
+    /**
+     * 测试专用固定处理器配置，不进入生产组件扫描。
+     * <p>示例：由{@link SpringApplicationBuilder}显式注册本配置。</p>
+     */
     @Configuration(proxyBeanMethods = false)
     public static class ProbeConfiguration {
         /**
@@ -181,6 +233,8 @@ public final class JobTraceAgentFixture {
                 case "{\"scenario\":\"normal\"}" -> "normal";
                 case "{\"scenario\":\"historical\"}" -> "historical";
                 case "{\"scenario\":\"retry\"}" -> "retry";
+                case "{\"scenario\":\"manual\"}" -> "manual";
+                case "{\"scenario\":\"manualroot\"}" -> "manualroot";
                 default -> throw new IllegalArgumentException("未知测试场景");
             };
             int attempt = attempts.computeIfAbsent(input.executionId(), ignored -> new AtomicInteger()).incrementAndGet();
@@ -195,7 +249,9 @@ public final class JobTraceAgentFixture {
                 LOG.info("job-trace-fixture {} {}", scenario, attempt);
                 System.out.println("STRATUM_JOB_TRACE|" + scenario + "|" + attempt + "|" + before + "|"
                         + active.getTraceId() + ":" + active.getSpanId() + "|" + baggage + "|" + state);
-                if (scenario.equals("retry") && attempt == 1) throw new IllegalStateException("test-failure");
+                if (!scenario.equals("normal") && !scenario.equals("historical") && attempt == 1) {
+                    throw new IllegalStateException("test-failure");
+                }
             } finally { span.end(); }
         }
     }
