@@ -4,7 +4,7 @@ Stratum 是采用 Java、Spring Boot 和 DDD 分层的多模块单体项目，�
 
 ## 当前状态
 
-2026-11-02 的非部署回归共 1093 项测试通过，范围和 Nacos、通用审计及部署遗留见[本轮验收记录](docs/本轮验收.md)。
+2026-11-02 的非部署回归共 1093 项测试通过，范围和配置中心、通用审计及部署遗留见[本轮验收记录](docs/本轮验收.md)。
 
 Phase A/B/C已完成：具备分层命令与工作单元、MariaDB/Easy-Query、Outbox可靠落盘、版本化缓存与分布式锁、QueryGateway、统一HTTP协议及OpenAPI/Knife4j。ERP已实现四类主数据、采购销售订单、分批收货/出库和库存余额/流水；写入与事件、幂等回执同事务，完整HTTP业务闭环已验收。
 
@@ -12,7 +12,7 @@ Phase D已实现本地账号、环境初始化、BCrypt、RS256登录/刷新、R
 
 D03已完成角色仓库管理与业务读写范围：ALL或指定仓库按多角色取并集；administrator固定全部、普通角色默认无仓库。读取在数据库计数/分页/详情前过滤；创建和履约在命令及回执重放前检查范围。API权限独立，只有履约API及范围也可收发货；无范围创建403、原订单目标404。同一会话立即看到范围变更，旧回执不能绕过撤权。
 
-2026-10-26的E02.5全工程验收重新执行39个任务，210项单元、542项Starter显式集成和10项Gateway真实集成共762项全部通过，0失败、错误或跳过。E01/E02已完成持久化顺序、事务外有界Relay、发布确认、原生延迟重试、消费去重、缓存补偿、ERP事件留痕、死信归档及人工重放恢复闭环。同聚合等待前序消费成功，死信阻塞期间其他聚合继续。后台任务已具备Quartz、ShedLock、可选周期Relay及死信重放任务管理API；Nacos尚未接入；应用内观测已完成F02验收，外部观测后端及部署相关节点暂缓。准确节点状态见[CONTEXT](docs/CONTEXT.md)，历史验收不代表本次重新执行。
+2026-10-26的E02.5全工程验收重新执行39个任务，210项单元、542项Starter显式集成和10项Gateway真实集成共762项全部通过，0失败、错误或跳过。E01/E02已完成持久化顺序、事务外有界Relay、发布确认、原生延迟重试、消费去重、缓存补偿、ERP事件留痕、死信归档及人工重放恢复闭环。同聚合等待前序消费成功，死信阻塞期间其他聚合继续。后台任务已具备Quartz、ShedLock、可选周期Relay及死信重放任务管理API；本轮暂不接入配置中心；应用内观测已完成F02验收，外部观测后端及部署相关节点暂缓。准确节点状态见[CONTEXT](docs/CONTEXT.md)，历史验收不代表本次重新执行。
 
 2026-10-27的E03.6全工程回归重新执行42个任务，258项单元、10项Gateway集成和680项Starter集成共948项通过，零失败、错误或跳过；E03任务调度与周期Relay已完成。
 
@@ -45,7 +45,7 @@ Starter和独立Gateway均可通过各自的 `bootRun -PotelAgent=true` 显式�
 
 消息连接默认关闭；设置`STRATUM_MQ_ENABLED=true`时须显式提供`STRATUM_MQ_VHOST/USERNAME/PASSWORD`，地址用`STRATUM_MQ_HOST/PORT`。启用后会连接RabbitMQ 4.3+、校验版本并声明缓存补偿与ERP事件留痕的Topic/Quorum及DLQ拓扑；Outbox专用发布适配已具备持久JSON、关联confirm及mandatory返回判定，已提供显式Relay批次入口；消息连接启用后，另设`STRATUM_MQ_CONSUMER_ENABLED=true`才启动消费，消费默认关闭。周期Relay需要同时启用任务、消息和`STRATUM_JOBS_RELAY_ENABLED=true`；共享状态初始暂停，当前管理员使用`/api/management/outbox/relay`按观察版本恢复。详见[开发与迭代](docs/development.md)。
 
-当前通过环境变量配置MariaDB、Redis和外部RSA密钥，初始管理员凭据不设默认值；Nacos尚未接入。未配置JWT时ERP端点返回401。启用认证后使用`/auth/login`与`/auth/refresh`，业务请求携带`Authorization: Bearer`；本人退出为`/auth/logout`、全部退出为`/auth/logout-all`。管理员通过`/api/auth/accounts`、`/api/auth/roles`及`/api/auth/permissions`管理账号与角色，通过`/api/auth/roles/{id}/warehouse-scope`的GET/PUT读取和配置角色仓库范围。启动后可检查`http://localhost:8080/actuator/health`，结束时按`Ctrl+C`退出。
+当前使用本地配置文件和环境变量配置MariaDB、Redis和外部RSA密钥，初始管理员凭据不设默认值；配置中心仅保留接入占位。未配置JWT时ERP端点返回401。启用认证后使用`/auth/login`与`/auth/refresh`，业务请求携带`Authorization: Bearer`；本人退出为`/auth/logout`、全部退出为`/auth/logout-all`。管理员通过`/api/auth/accounts`、`/api/auth/roles`及`/api/auth/permissions`管理账号与角色，通过`/api/auth/roles/{id}/warehouse-scope`的GET/PUT读取和配置角色仓库范围。启动后可检查`http://localhost:8080/actuator/health`，结束时按`Ctrl+C`退出。
 
 Gateway与Starter分别运行，默认监听`127.0.0.1:8081`，无需业务数据库凭据；监听地址/端口通过`STRATUM_GATEWAY_ADDRESS`、`STRATUM_GATEWAY_PORT`配置。先用`STRATUM_GATEWAY_REDIS_HOST/PORT/PASSWORD`提供可用Redis连接，再另开终端启动：
 

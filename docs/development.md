@@ -46,7 +46,7 @@
 
 Domain 源码未导入框架，模块直接声明 common 依赖；根构建统一配置的 Lombok 编译期依赖同样作用于 Domain，不能将“源码无框架导入”表述为“所有配置均无第三方依赖”。
 
-Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ已接入显式启用的连接配置，持久化Topic/Quorum拓扑及发布确认适配已建立，Relay、有序消费、死信归档及人工重放闭环已通过E02.5全工程验收；Quartz JDBC/ShedLock数据库锁已具备默认关闭的显式装配；任务有界执行器、固定Quartz触发及可选周期Relay已接入并验收；异步任务API和应用内观测已完成；Nacos、外部观测服务及部署编排尚未接入。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
+Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完成启动装配，事务行为验证见 NODE-B03.2b；本地JWT认证、会话撤销及管理员应用用例已实现；RabbitMQ已接入显式启用的连接配置，持久化Topic/Quorum拓扑及发布确认适配已建立，Relay、有序消费、死信归档及人工重放闭环已通过E02.5全工程验收；Quartz JDBC/ShedLock数据库锁已具备默认关闭的显式装配；任务有界执行器、固定Quartz触发及可选周期Relay已接入并验收；异步任务API和应用内观测已完成；配置中心本轮暂不接入，外部观测服务及部署编排尚未接入。选型约束见 [技术架构](技术架构.md) 和对应专题文档。
 
 以下目标基线沿用原项目入口的既有约定，尚未接入时不作为当前依赖版本：
 
@@ -56,7 +56,7 @@ Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完�
 | MariaDB | 10.11+ |
 | Redis | 开发单节点，生产 Sentinel |
 | RabbitMQ | 4.3+；本机现有4.3.6，客户端Spring AMQP 4.0.2已接入，原生延迟重试拓扑已于E01.2验收 |
-| Nacos | 3.2.0+ |
+| 配置中心 | 本轮不接入；现行[架构宪法](CONSTITUTION.md)冻结 Nacos，未来变更须由人工调整宪法 |
 | 网关 | Spring Cloud Gateway Server WebFlux 5.0.4 / Cloud 2025.1.4，独立进程；项目外负载均衡 |
 | 后台任务 | Spring Scheduler + Quartz + ShedLock |
 | 认证 | Spring Security + JWT + RBAC，启用 token 撤销 |
@@ -91,7 +91,7 @@ Easy-Query、MariaDB JDBC、Flyway、Redis、Caffeine 已接入依赖，已完�
 
 ## 本地启动与退出
 
-当前 Starter 已接入 MariaDB 数据源、Flyway 与 Redis 客户端；运行需要可访问的 MariaDB 数据库与 Redis。Nacos 尚未接入，已移除不可解析的导入占位。
+当前 Starter 已接入 MariaDB 数据源、Flyway 与 Redis 客户端；运行需要可访问的 MariaDB 数据库与 Redis。Starter 与 Gateway 使用本地配置文件和环境变量，配置中心本轮暂不接入；两者仅在配置文件保留中立注释占位，没有启用远程配置或动态刷新。现行[架构宪法](CONSTITUTION.md)仍冻结 Nacos，未来若选择其他配置中心须先由人工按宪法变更。
 
 在同一 PowerShell 终端设置自己的连接信息，不将密码提交到仓库。默认数据库地址为 `jdbc:mariadb://127.0.0.1:13307/stratum`，用户为 `stratum`；密码必须由环境变量提供。
 

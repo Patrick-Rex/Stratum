@@ -10,7 +10,7 @@
 
 ```
 阶段：Phase F（非部署验收汇总完成）
-当前节点：等待Nacos范围确认；部署相关节点暂缓
+当前节点：原计划非部署验收已完成；配置中心和部署相关节点暂缓
 上次会话日期：2026-11-02（NODE-F04.1 验收）
 项目状态：NODE-B01 已完成，Domain 核心抽象已建立（AggregateRoot、Entity、ValueObject、Repository、DomainEvent），domain 模块直接声明 common 依赖，源码无框架导入；根构建统一配置 Lombok 编译期依赖；Phase A 与 Phase B 已完成；Phase C 已完成；Phase D 非部署范围已完成，D04.2部署暂缓
 ```
@@ -348,13 +348,13 @@
 
 ## 3. 待执行节点（按顺序）
 
-原计划非部署验收汇总 **NODE-F04.1** 已完成；Nacos是否补齐最小接入已询问用户，尚待答复。D04.2、F03和F04.2的部署范围暂缓；当前不宣称完整v1.0交付。
+原计划非部署验收汇总 **NODE-F04.1** 已完成。用户确认本轮使用本地配置文件和环境变量，配置中心暂不接入，仅保留中立注释占位；D04.2、F03和F04.2的部署范围暂缓，当前不宣称完整v1.0交付。
 
 ---
 
 ## 4. 活跃阻塞项
 
-Nacos配置中心和通用操作/数据变更审计尚未实现；Nacos是否纳入本轮正在等待用户确认。死信采集持有者进程故障接管尚未单独验证。完整边界见[本轮验收](本轮验收.md)。
+配置中心本轮暂不接入；通用操作/数据变更审计尚未实现，死信采集持有者进程故障接管尚未单独验证。现行宪法冻结Nacos，未来若更换选型须先由人工变更。完整边界见[本轮验收](本轮验收.md)。
 
 F01已完成；Starter指标入口按已确认的直连管理CIDR保护。Gateway与Starter标准HTTP跨度和双标识日志已完成F02.4验收；异步标准上下文已按[ADR-008](adr/ADR-008-业务关联与标准追踪.md)及开发计划接入；真实Agent的任务与消息链路及观测组合验收已完成。死信可见数量单次查询已通过真实Broker验收，用户已确认多实例共享采集方案，采用独立采集调度组防止其他实例领取未知任务；测试资源状态见最近交接。
 
@@ -394,7 +394,7 @@ BIZ-001主数据规则与BIZ-002分批履约规则已由用户于2026-10-24确�
 |------|------|----------|
 | DECISION-A01 | 根工程收敛为 Gradle 聚合根，并按 `stratum-*` 统一模块命名与注册 | `build.gradle`、`settings.gradle` |
 | DECISION-A02 | 将“变更后必须同步更新 CONTEXT 与 SESSION-HANDOFF”固化为工作区级强制规则 | `.github/copilot-instructions.md`、`.github/prompts/stratum-node.prompt.md` |
-| DECISION-A03 | starter 模块采用 Spring Boot 4.0.5 启动，默认启用 local profile，并预留 Nacos 配置导入占位 | `build.gradle`、`stratum-starter/build.gradle`、`stratum-starter/src/main/resources/application.yml` |
+| DECISION-A03 | starter 模块采用 Spring Boot 4.0.5 启动，默认启用 local profile；历史Nacos导入占位已移除，当前仅保留中立注释占位 | `build.gradle`、`stratum-starter/build.gradle`、`stratum-starter/src/main/resources/application.yml` |
 | DECISION-A04 | 版本由外部统一约定；子模块构建脚本禁止声明版本号（包括插件版本） | `build.gradle`、`stratum-starter/build.gradle` |
 | DECISION-A05 | 统一响应模型、错误码结构与 traceId 线程上下文下沉到 common；interface 通过工厂类复用 | `stratum-common/src/main/java/com/patrick/stratum/common/**`、`stratum-interface/src/main/java/com/patrick/stratum/interfaceadapter/response/ApiResponseFactory.java` |
 | DECISION-A06 | 全局异常处理放置于 starter，异常映射优先识别 StratumException，统一通过 ErrorCode.messageKey + MessageSource 输出本地化 message，Accept-Language 缺失时默认 zh-CN | `stratum-common/src/main/java/com/patrick/stratum/common/error/StratumException.java`、`stratum-starter/src/main/java/com/patrick/stratum/starter/web/GlobalExceptionHandler.java`、`stratum-starter/src/main/resources/messages*.properties` |

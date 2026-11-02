@@ -1,4 +1,5 @@
 spring:
+  # 配置中心接入预留位置；当前不启用远程配置或动态刷新。
   application:
     name: stratum-starter
   profiles:
