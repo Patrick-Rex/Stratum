@@ -4,6 +4,8 @@ Stratum 是采用 Java、Spring Boot 和 DDD 分层的多模块单体项目，�
 
 ## 当前状态
 
+2026-11-02 的非部署回归共 1093 项测试通过，范围和 Nacos、通用审计及部署遗留见[本轮验收记录](docs/本轮验收.md)。
+
 Phase A/B/C已完成：具备分层命令与工作单元、MariaDB/Easy-Query、Outbox可靠落盘、版本化缓存与分布式锁、QueryGateway、统一HTTP协议及OpenAPI/Knife4j。ERP已实现四类主数据、采购销售订单、分批收货/出库和库存余额/流水；写入与事件、幂等回执同事务，完整HTTP业务闭环已验收。
 
 Phase D已实现本地账号、环境初始化、BCrypt、RS256登录/刷新、Redis会话撤销、账号角色管理及运行时API鉴权。初始化管理员通过真实角色拥有全部已登记权限；普通账号默认无业务权限。主数据读写、采购销售读取/创建/履约及库存读取分别检查实时权限；`/auth/me`下发本人FEAT功能权限。授权撤回后不能继续重放写入回执，启停和成员关系变更撤销旧会话，并保护最后一名可用管理员。
@@ -25,6 +27,7 @@ Starter和独立Gateway均可通过各自的 `bootRun -PotelAgent=true` 显式�
 | 目的 | 入口 |
 |------|------|
 | 开发协作规则 | [AGENTS.md](AGENTS.md) |
+| 本轮验收与遗留 | [非部署验收记录](docs/本轮验收.md) |
 | 环境、实际技术基线、构建与运行 | [开发与迭代](docs/development.md) |
 | 查找设计与流程文档 | [文档导航](docs/README.md) |
 | 接续开发 | [当前状态](docs/CONTEXT.md)、[最近交接](docs/entropy/SESSION-HANDOFF.md) |
