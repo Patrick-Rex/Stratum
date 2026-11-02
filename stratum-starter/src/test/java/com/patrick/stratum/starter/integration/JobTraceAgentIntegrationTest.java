@@ -34,6 +34,8 @@ class JobTraceAgentIntegrationTest {
         var first = observed.sample("retry", 1); var second = observed.sample("retry", 2);
         var manualFirst = observed.sample("manual", 1); var manualNext = observed.sample("manual", 2);
         var rootFirst = observed.sample("manualroot", 1); var rootNext = observed.sample("manualroot", 2);
+        var retryFirst = observed.sample("manualretry", 1); var retrySecond = observed.sample("manualretry", 2);
+        var resumedFirst = observed.sample("manualretry", 3); var resumedRetry = observed.sample("manualretry", 4);
         assertEquals("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbb:true", normal.before());
         assertEquals("normal", normal.state());
         assertEquals("none", historical.before());
@@ -62,13 +64,24 @@ class JobTraceAgentIntegrationTest {
         assertNotEquals("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", recoveryRoot);
         assertNotEquals(historicalTrace, recoveryRoot);
         verifySpan(observed, "manualroot", rootNext, recoveryRoot, "");
+        assertEquals(manualFirst.before(), retryFirst.before()); assertEquals(retryFirst.before(), retrySecond.before());
+        assertEquals("initial", retryFirst.state()); assertEquals("initial", retrySecond.state());
+        assertEquals(manualNext.before(), resumedFirst.before()); assertEquals("manual", resumedFirst.state());
+        assertEquals(resumedFirst.before(), resumedRetry.before()); assertEquals("manual", resumedRetry.state());
+        assertNotEquals(resumedFirst.span(), resumedRetry.span());
+        verifySpan(observed, "manualretry", retryFirst, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb");
+        verifySpan(observed, "manualretry", retrySecond, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb");
+        verifySpan(observed, "manualretry", resumedFirst, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "ffffffffffffffff");
+        verifySpan(observed, "manualretry", resumedRetry, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "ffffffffffffffff");
         for (var entry : observed.samples().entrySet()) {
             var sample = entry.getValue(); assertEquals("false", sample.baggage());
             var log = observed.logs().get(entry.getKey()); assertNotNull(log, entry.getKey());
             String[] current = sample.span().split(":"); assertEquals(2, current.length);
             assertEquals(current[0], log.trace()); assertEquals(current[1], log.span());
             String[] key = entry.getKey().split(":");
-            String business = (key[0].startsWith("manual") && key[1].equals("2"))
+            boolean recovered = key[0].equals("manualretry") ? Integer.parseInt(key[1]) >= 3
+                    : key[0].startsWith("manual") && key[1].equals("2");
+            String business = recovered
                     ? "job-flow-recovery-" + key[0] : "job-flow-" + key[0];
             assertEquals(business, log.business());
         }
@@ -150,21 +163,21 @@ class JobTraceAgentIntegrationTest {
      */
     private Observation parse(String stdout, String stderr) {
         var json = JsonMapper.builder().build(); var samples = new HashMap<String, Sample>(); var logs = new HashMap<String, LogIdentity>();
-        assertEquals(1, stdout.lines().filter(line -> line.equals("STRATUM_JOB_DONE|normal|historical|retry|manual|manualroot")).count());
+        assertEquals(1, stdout.lines().filter(line -> line.equals("STRATUM_JOB_DONE|normal|historical|retry|manual|manualroot|manualretry")).count());
         for (String line : stdout.split("\\R")) {
             if (line.startsWith("STRATUM_JOB_TRACE|")) {
                 var fields = List.of(line.split("\\|", -1)); assertEquals(7, fields.size());
                 assertNull(samples.put(fields.get(1) + ":" + fields.get(2), new Sample(fields.get(3), fields.get(4), fields.get(5), fields.get(6))));
             } else if (line.startsWith("{\"timestamp\"")) {
                 var row = json.readTree(line); String message = row.path("message").asText();
-                if (message.matches("job-trace-fixture (normal|historical|retry|manual|manualroot) [12]")) {
+                if (message.matches("job-trace-fixture (normal|historical|retry|manual|manualroot|manualretry) [1-4]")) {
                     var parts = message.split(" ");
                     assertNull(logs.put(parts[1] + ":" + parts[2], new LogIdentity(row.path("traceId").asText(),
                             row.path("spanId").asText(), row.path("businessTraceId").asText())));
                 }
             }
         }
-        assertEquals(8, samples.size()); assertEquals(8, logs.size());
+        assertEquals(12, samples.size()); assertEquals(12, logs.size());
         var spans = new HashMap<String, SpanIdentity>();
         for (String line : stderr.split("\\R")) {
             int offset = line.indexOf("{\"resource\""); if (offset < 0) continue;

@@ -89,7 +89,8 @@ public final class JobTraceAgentFixture {
                 if (!attempts.equals(List.of("FAILED", "SUCCEEDED"))) throw new IllegalStateException("任务重试结果不匹配");
                 verifyManualRecovery(jobs, jdbc, trace, code, ids, "manual", true);
                 verifyManualRecovery(jobs, jdbc, trace, code, ids, "manualroot", false);
-                System.out.println("STRATUM_JOB_DONE|normal|historical|retry|manual|manualroot");
+                verifyManualRetry(jobs, jdbc, trace, code, ids);
+                System.out.println("STRATUM_JOB_DONE|normal|historical|retry|manual|manualroot|manualretry");
             }
         } finally { cleanup(url, name, code, ids); }
     }
@@ -160,6 +161,35 @@ public final class JobTraceAgentFixture {
                 || ((Number) row.get("cycle_no")).longValue() != 1) throw new IllegalStateException("恢复上下文或周期不匹配");
         var attempts = jdbc.queryForList("SELECT result FROM job_attempt WHERE execution_id=? ORDER BY attempt_no", String.class, id.toString());
         if (!attempts.equals(List.of("FAILED", "SUCCEEDED"))) throw new IllegalStateException("恢复周期尝试不匹配");
+    }
+
+    /**
+     * 核验人工恢复后再次失败和自动重试的完整周期及持久化上下文。
+     * @param jobs 实际任务状态入口
+     * @param jdbc 测试数据库客户端
+     * @param trace 标准追踪边界
+     * @param code 随机固定代码
+     * @param ids 本次拥有的执行身份
+     */
+    private static void verifyManualRetry(JobExecutionApplicationService jobs, JdbcTemplate jdbc, StandardTraceContext trace,
+            String code, List<UUID> ids) {
+        UUID id;
+        try (var restored = trace.restore(trace.normalize(NORMAL_PARENT, "vendor=initial"))) {
+            id = register(jobs, code, "manualretry", 2); ids.add(id);
+        }
+        awaitState(jdbc, id, "DEAD");
+        String dead = jdbc.queryForObject("SELECT dead_id FROM dead_job WHERE execution_id=? AND cycle_no=0", String.class, id.toString());
+        try (var restored = trace.restore(trace.normalize(MANUAL_PARENT, "vendor=manual"))) {
+            jobs.replay(new ReplayRequest(UUID.randomUUID(), UUID.fromString(dead), "job-flow-recovery-manualretry"));
+        }
+        awaitSuccess(jdbc, id);
+        var attempts = jdbc.queryForList("SELECT result FROM job_attempt WHERE execution_id=? ORDER BY attempt_no", String.class, id.toString());
+        if (!attempts.equals(List.of("FAILED", "FAILED", "FAILED", "SUCCEEDED"))) throw new IllegalStateException("恢复后重试次数不匹配");
+        var row = jdbc.queryForMap("SELECT initial_standard_traceparent,initial_standard_tracestate,standard_traceparent,standard_tracestate FROM job_execution WHERE execution_id=?", id.toString());
+        if (!NORMAL_PARENT.equals(row.get("initial_standard_traceparent")) || !"vendor=initial".equals(row.get("initial_standard_tracestate"))
+                || !MANUAL_PARENT.equals(row.get("standard_traceparent")) || !"vendor=manual".equals(row.get("standard_tracestate"))) {
+            throw new IllegalStateException("恢复后重试上下文不匹配");
+        }
     }
 
     /**
@@ -235,6 +265,7 @@ public final class JobTraceAgentFixture {
                 case "{\"scenario\":\"retry\"}" -> "retry";
                 case "{\"scenario\":\"manual\"}" -> "manual";
                 case "{\"scenario\":\"manualroot\"}" -> "manualroot";
+                case "{\"scenario\":\"manualretry\"}" -> "manualretry";
                 default -> throw new IllegalArgumentException("未知测试场景");
             };
             int attempt = attempts.computeIfAbsent(input.executionId(), ignored -> new AtomicInteger()).incrementAndGet();
@@ -249,7 +280,8 @@ public final class JobTraceAgentFixture {
                 LOG.info("job-trace-fixture {} {}", scenario, attempt);
                 System.out.println("STRATUM_JOB_TRACE|" + scenario + "|" + attempt + "|" + before + "|"
                         + active.getTraceId() + ":" + active.getSpanId() + "|" + baggage + "|" + state);
-                if (!scenario.equals("normal") && !scenario.equals("historical") && attempt == 1) {
+                if ((scenario.equals("manualretry") && attempt < 4)
+                        || (!scenario.equals("normal") && !scenario.equals("historical") && !scenario.equals("manualretry") && attempt == 1)) {
                     throw new IllegalStateException("test-failure");
                 }
             } finally { span.end(); }
